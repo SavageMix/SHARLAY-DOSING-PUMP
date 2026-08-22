@@ -2,6 +2,7 @@ node_modules/
 dist/
 .expo/
 *.log
+*.tsbuildinfo
 .env
 .env.local
 .DS_Store
