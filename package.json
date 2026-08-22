@@ -1,0 +1,19 @@
+{
+  "name": "reef-doser",
+  "version": "1.0.0",
+  "private": true,
+  "description": "4-channel aquarium dosing pump controller",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:device": "npm run dev -w apps/device",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "tsc -b"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0"
+  }
+}

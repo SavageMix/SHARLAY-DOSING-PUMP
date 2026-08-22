@@ -1,0 +1,12 @@
+{
+  "name": "@reef/cloud",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "echo '@reef/cloud build: placeholder'",
+    "typecheck": "tsc -b"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}
