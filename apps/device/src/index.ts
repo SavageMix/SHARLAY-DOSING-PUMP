@@ -1,5 +1,5 @@
-import { REEF_DOSER_VERSION, type PumpChannel } from '@reef/shared';
+import { REEF_DOSER_VERSION, type PumpId } from '@reef/shared';
 
-const activeChannel: PumpChannel = 'alk';
+const activeChannel: PumpId = 'alk';
 
 console.log(`Reef Doser device v${REEF_DOSER_VERSION} starting on channel ${activeChannel}`);
