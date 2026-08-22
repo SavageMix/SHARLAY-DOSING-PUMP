@@ -8,3 +8,7 @@ export interface PumpConfig {
   maxSingleDoseMl: number;
   maxDailyDoseMl: number;
 }
+
+// Non-negotiable safety limits enforced by the dosing engine, never the UI.
+export const SAFETY_MAX_SINGLE_DOSE_ML = 5;
+export const SAFETY_MAX_DAILY_DOSE_ML = 25;
