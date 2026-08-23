@@ -28,14 +28,18 @@ const calibrateStopBodySchema = z.object({
 const scheduleCreateBodySchema = z.object({
   pumpId: pumpIdSchema,
   volumeMl: z.number().positive(),
-  cron: z.string().min(1),
+  timesPerDay: z.number().int().min(1).max(24),
+  startTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/),
+  repeatEveryNDays: z.number().int().min(1).max(7),
   enabled: z.boolean().optional().default(true),
 });
 
 const scheduleUpdateBodySchema = z.object({
   pumpId: pumpIdSchema.optional(),
   volumeMl: z.number().positive().optional(),
-  cron: z.string().min(1).optional(),
+  timesPerDay: z.number().int().min(1).max(24).optional(),
+  startTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).optional(),
+  repeatEveryNDays: z.number().int().min(1).max(7).optional(),
   enabled: z.boolean().optional(),
   lastRunAt: z.string().nullable().optional(),
 });

@@ -1,4 +1,4 @@
-import { CronExpressionParser } from 'cron-parser';
+import { getPreviousDueDate } from '@reef/shared';
 import type { DoseEvent, DoseSchedule, PumpId } from '@reef/shared';
 
 export interface SchedulerRepository {
@@ -46,7 +46,7 @@ export class Scheduler {
     const schedules = this.repository.getEnabledSchedules();
 
     for (const schedule of schedules) {
-      const previousDue = this.getPreviousDueDate(schedule, now);
+      const previousDue = getPreviousDueDate(schedule, now);
       if (!previousDue) continue;
 
       const lastRun = schedule.lastRunAt
@@ -84,24 +84,6 @@ export class Scheduler {
         schedule.id,
         previousDue.toISOString(),
       );
-    }
-  }
-
-  private getPreviousDueDate(
-    schedule: DoseSchedule,
-    now: Date,
-  ): Date | null {
-    try {
-      // Use UTC so scheduled times are deterministic regardless of the Pi's
-      // local timezone configuration.
-      const interval = CronExpressionParser.parse(schedule.cron, {
-        currentDate: now,
-        tz: 'UTC',
-      });
-      return interval.prev().toDate();
-    } catch {
-      console.error(`Invalid cron expression for schedule ${schedule.id}: ${schedule.cron}`);
-      return null;
     }
   }
 }

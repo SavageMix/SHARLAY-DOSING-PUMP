@@ -30,11 +30,14 @@ function createFakeEngine(): SchedulerEngine {
 }
 
 function makeSchedule(
-  overrides: Partial<DoseSchedule> & { cron: string; pumpId: PumpId },
+  overrides: Partial<DoseSchedule> & { pumpId: PumpId },
 ): DoseSchedule {
   return {
     id: 'sched-1',
     volumeMl: 1,
+    timesPerDay: 1,
+    startTime: '09:00',
+    repeatEveryNDays: 1,
     enabled: true,
     lastRunAt: null,
     ...overrides,
@@ -55,7 +58,7 @@ describe('Scheduler', () => {
       makeSchedule({
         id: 'sched-1',
         pumpId: 'alk',
-        cron: '0 9 * * *',
+        startTime: '09:00',
         lastRunAt: null,
       }),
     );
@@ -82,7 +85,7 @@ describe('Scheduler', () => {
       makeSchedule({
         id: 'sched-1',
         pumpId: 'alk',
-        cron: '0 9 * * *',
+        startTime: '09:00',
         // lastRunAt was not persisted before the power cut.
         lastRunAt: '2026-08-22T09:00:00.000Z',
       }),
@@ -120,7 +123,7 @@ describe('Scheduler', () => {
       makeSchedule({
         id: 'sched-1',
         pumpId: 'alk',
-        cron: '0 9 * * *',
+        startTime: '09:00',
         enabled: false,
         lastRunAt: null,
       }),
@@ -143,7 +146,7 @@ describe('Scheduler', () => {
       makeSchedule({
         id: 'sched-1',
         pumpId: 'alk',
-        cron: '0 9 * * *',
+        startTime: '09:00',
         lastRunAt: '2026-08-23T09:00:00.000Z',
       }),
     );
@@ -164,7 +167,7 @@ describe('Scheduler', () => {
       makeSchedule({
         id: 'sched-1',
         pumpId: 'alk',
-        cron: '0 9 * * *',
+        startTime: '09:00',
         lastRunAt: null,
       }),
     );

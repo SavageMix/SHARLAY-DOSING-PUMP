@@ -37,7 +37,9 @@ export class ReefDatabase implements DoseRepository, SchedulerRepository {
         id TEXT PRIMARY KEY,
         pump_id TEXT NOT NULL,
         volume_ml REAL NOT NULL,
-        cron TEXT NOT NULL,
+        times_per_day INTEGER NOT NULL,
+        start_time TEXT NOT NULL,
+        repeat_every_n_days INTEGER NOT NULL,
         enabled INTEGER NOT NULL DEFAULT 0,
         last_run_at TEXT
       );
@@ -179,14 +181,18 @@ export class ReefDatabase implements DoseRepository, SchedulerRepository {
     const lastRunAt = schedule.lastRunAt ?? null;
     this.db
       .prepare(
-        `INSERT INTO schedules (id, pump_id, volume_ml, cron, enabled, last_run_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO schedules (
+          id, pump_id, volume_ml, times_per_day, start_time,
+          repeat_every_n_days, enabled, last_run_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
         schedule.pumpId,
         schedule.volumeMl,
-        schedule.cron,
+        schedule.timesPerDay,
+        schedule.startTime,
+        schedule.repeatEveryNDays,
         schedule.enabled ? 1 : 0,
         lastRunAt,
       );
@@ -200,7 +206,9 @@ export class ReefDatabase implements DoseRepository, SchedulerRepository {
         id: string;
         pump_id: PumpId;
         volume_ml: number;
-        cron: string;
+        times_per_day: number;
+        start_time: string;
+        repeat_every_n_days: number;
         enabled: number;
         last_run_at: string | null;
       }>;
@@ -208,7 +216,9 @@ export class ReefDatabase implements DoseRepository, SchedulerRepository {
       id: row.id,
       pumpId: row.pump_id,
       volumeMl: row.volume_ml,
-      cron: row.cron,
+      timesPerDay: row.times_per_day,
+      startTime: row.start_time,
+      repeatEveryNDays: row.repeat_every_n_days,
       enabled: Boolean(row.enabled),
       lastRunAt: row.last_run_at,
     }));
@@ -238,9 +248,17 @@ export class ReefDatabase implements DoseRepository, SchedulerRepository {
       updates.push('volume_ml = ?');
       values.push(partial.volumeMl);
     }
-    if (partial.cron !== undefined) {
-      updates.push('cron = ?');
-      values.push(partial.cron);
+    if (partial.timesPerDay !== undefined) {
+      updates.push('times_per_day = ?');
+      values.push(partial.timesPerDay);
+    }
+    if (partial.startTime !== undefined) {
+      updates.push('start_time = ?');
+      values.push(partial.startTime);
+    }
+    if (partial.repeatEveryNDays !== undefined) {
+      updates.push('repeat_every_n_days = ?');
+      values.push(partial.repeatEveryNDays);
     }
     if (partial.enabled !== undefined) {
       updates.push('enabled = ?');

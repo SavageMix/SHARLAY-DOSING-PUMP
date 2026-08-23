@@ -4,7 +4,9 @@ export interface DoseSchedule {
   id: string;
   pumpId: PumpId;
   volumeMl: number;
-  cron: string;
+  timesPerDay: number;
+  startTime: string; // HH:mm
+  repeatEveryNDays: number;
   enabled: boolean;
   lastRunAt: string | null;
 }

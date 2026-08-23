@@ -63,7 +63,9 @@ export interface ListSchedulesResponse {
 export interface CreateScheduleRequest {
   pumpId: PumpId;
   volumeMl: number;
-  cron: string;
+  timesPerDay: number;
+  startTime: string;
+  repeatEveryNDays: number;
   enabled?: boolean;
 }
 
@@ -73,7 +75,9 @@ export interface CreateScheduleResponse {
 
 export interface UpdateScheduleRequest {
   volumeMl?: number;
-  cron?: string;
+  timesPerDay?: number;
+  startTime?: string;
+  repeatEveryNDays?: number;
   enabled?: boolean;
 }
 
