@@ -1,10 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { computeDoseLimits } from '@reef/shared';
-import type { DoseEvent, PumpId } from '@reef/shared';
+import type { DoseEvent, DoseSource, PumpId } from '@reef/shared';
 import { driversDisable } from './gpio.js';
 import { runSteps } from './stepper.js';
-
-export type DoseSource = 'manual' | 'schedule' | 'calibration';
 
 export interface PumpCalibration {
   pumpId: PumpId;
@@ -16,10 +14,11 @@ export interface PumpCalibration {
  * whether this is SQLite, a JSON file, or an in-memory store for tests.
  */
 export interface DoseRepository {
-  getSystemVolumeLitres(): Promise<number>;
-  getTodayDoseMl(pumpId: PumpId): Promise<number>;
-  getPumpCalibration(pumpId: PumpId): Promise<PumpCalibration>;
-  saveDoseEvent(event: DoseEvent): Promise<void>;
+  getSystemVolumeLitres(): number | Promise<number>;
+  getTodayDoseMl(pumpId: PumpId): number | Promise<number>;
+  getPumpCalibration(pumpId: PumpId): PumpCalibration | Promise<PumpCalibration>;
+  saveDoseEvent(event: DoseEvent): void | Promise<void>;
+  decrementContainer(pumpId: PumpId, amountMl: number): void | Promise<void>;
 }
 
 interface QueueItem {
@@ -27,6 +26,7 @@ interface QueueItem {
   pumpId: PumpId;
   amountMl: number;
   source: DoseSource;
+  scheduleId: string | null;
 }
 
 export interface EngineStatus {
@@ -49,9 +49,10 @@ class Engine {
     pumpId: PumpId,
     amountMl: number,
     source: DoseSource,
+    scheduleId: string | null = null,
   ): Promise<string> {
     const id = randomUUID();
-    this.queue.push({ id, pumpId, amountMl, source });
+    this.queue.push({ id, pumpId, amountMl, source, scheduleId });
     void this.processQueue();
     return id;
   }
@@ -86,11 +87,21 @@ class Engine {
       requestedMl: item.amountMl,
       actualMl: null,
       status: 'running',
+      source: item.source,
+      scheduleId: item.scheduleId,
       startedAt: new Date().toISOString(),
       finishedAt: null,
       error: null,
     };
     this.current = event;
+
+    // Persist the running event immediately so a scheduler reboot can see it
+    // and never double-fire a scheduled dose.
+    try {
+      await this.repository.saveDoseEvent(event);
+    } catch (saveError) {
+      console.error('Failed to save running dose event:', saveError);
+    }
 
     try {
       const systemVolumeLitres =
@@ -122,6 +133,12 @@ class Engine {
 
       event.actualMl = item.amountMl;
       event.status = 'completed';
+
+      try {
+        await this.repository.decrementContainer(item.pumpId, item.amountMl);
+      } catch (containerError) {
+        console.error('Failed to decrement container:', containerError);
+      }
     } catch (error) {
       event.status = 'failed';
       event.error = error instanceof Error ? error.message : String(error);

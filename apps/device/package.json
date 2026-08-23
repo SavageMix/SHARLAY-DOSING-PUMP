@@ -12,9 +12,12 @@
   },
   "dependencies": {
     "@reef/shared": "*",
+    "better-sqlite3": "^13.0.3",
+    "cron-parser": "^5.10.0",
     "pigpio": "^3.3.1"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "typescript": "^5.5.0",
     "vitest": "^4.1.11"
   }

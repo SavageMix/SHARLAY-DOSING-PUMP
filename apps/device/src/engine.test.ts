@@ -33,6 +33,7 @@ function createMockRepository(
       Promise.resolve({ pumpId, stepsPerMl: STEPS_PER_ML }),
     ),
     saveDoseEvent: vi.fn().mockResolvedValue(undefined),
+    decrementContainer: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -74,7 +75,8 @@ describe('DoseEngine', () => {
     await waitForQueueDrain(engine);
 
     expect(order).toEqual(['alk', 'ca', 'no3']);
-    expect(repo.saveDoseEvent).toHaveBeenCalledTimes(3);
+    expect(repo.saveDoseEvent).toHaveBeenCalledTimes(6); // running + final per dose
+    expect(repo.decrementContainer).toHaveBeenCalledTimes(3);
   });
 
   it('rejects doses exceeding the single-dose limit', async () => {
@@ -179,5 +181,20 @@ describe('DoseEngine', () => {
     const event = getSavedEvent(repo);
     expect(event.status).toBe('completed');
     expect(event.actualMl).toBe(2.5);
+    expect(event.source).toBe('manual');
+    expect(event.scheduleId).toBeNull();
+    expect(repo.decrementContainer).toHaveBeenCalledWith('alk', 2.5);
+  });
+
+  it('records scheduleId and source for scheduled doses', async () => {
+    const repo = createMockRepository();
+    const engine = createEngine(repo);
+
+    await engine.submitDose('alk', 1, 'schedule', 'sched-1');
+    await waitForQueueDrain(engine);
+
+    const event = getSavedEvent(repo);
+    expect(event.source).toBe('schedule');
+    expect(event.scheduleId).toBe('sched-1');
   });
 });

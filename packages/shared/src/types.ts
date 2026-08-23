@@ -6,6 +6,7 @@ export interface DoseSchedule {
   volumeMl: number;
   cron: string;
   enabled: boolean;
+  lastRunAt: string | null;
 }
 
 export interface PumpState {
@@ -16,6 +17,8 @@ export interface PumpState {
   todayDoseMl: number;
   containerRemainingMl: number;
 }
+
+export type DoseSource = 'manual' | 'schedule' | 'calibration';
 
 export type DoseEventStatus =
   | 'queued'
@@ -30,6 +33,8 @@ export interface DoseEvent {
   requestedMl: number;
   actualMl: number | null;
   status: DoseEventStatus;
+  source: DoseSource;
+  scheduleId: string | null;
   startedAt: string;
   finishedAt: string | null;
   error: string | null;
