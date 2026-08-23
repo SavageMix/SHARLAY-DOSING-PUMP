@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Build and deploy Reef Doser to a Raspberry Pi.
+# Usage:
+#   PI_HOST=192.168.1.42 ./scripts/deploy-pi.sh
+#
+# Defaults:
+#   PI_HOST    (required — set to your Pi's hostname or IP)
+#   PI_USER    (default: pi)
+#   REMOTE_DIR (default: /opt/reef-doser)
+
+PI_HOST="${PI_HOST:-}"
+PI_USER="${PI_USER:-pi}"
+REMOTE_DIR="${REMOTE_DIR:-/opt/reef-doser}"
+
+if [ -z "$PI_HOST" ]; then
+  echo "ERROR: Set PI_HOST to the Pi's hostname or IP address."
+  echo "Example: PI_HOST=192.168.1.42 ./scripts/deploy-pi.sh"
+  exit 1
+fi
+
+echo "==> Building TypeScript locally..."
+npm run build
+
+echo "==> Syncing to ${PI_USER}@${PI_HOST}:${REMOTE_DIR}..."
+rsync -avz --delete \
+  --exclude='.git' \
+  --exclude='node_modules' \
+  --exclude='apps/*/dist' \
+  --exclude='*.tsbuildinfo' \
+  --exclude='.env' \
+  ./ "${PI_USER}@${PI_HOST}:${REMOTE_DIR}/"
+
+echo "==> Installing dependencies on the Pi..."
+ssh "${PI_USER}@${PI_HOST}" "cd ${REMOTE_DIR} && npm install --omit=dev"
+
+echo "==> Installing/starting systemd service..."
+ssh "${PI_USER}@${PI_HOST}" "
+  set -e
+  sudo cp ${REMOTE_DIR}/systemd/reefdoser.service /etc/systemd/system/reefdoser.service
+  sudo systemctl daemon-reload
+  sudo systemctl enable reefdoser.service
+  sudo systemctl restart reefdoser.service
+"
+
+echo "==> Waiting 2s for service status..."
+sleep 2
+ssh "${PI_USER}@${PI_HOST}" "sudo systemctl status reefdoser.service --no-pager"
+
+echo "==> Deploy complete."
+echo "    Logs: ssh ${PI_USER}@${PI_HOST} 'sudo journalctl -u reefdoser -f'"

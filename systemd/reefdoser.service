@@ -1,0 +1,20 @@
+[Unit]
+Description=Reef Doser pump controller
+After=network.target
+# Note: this device uses the npm `pigpio` client talking directly to the
+# hardware. There is no pigpiod daemon dependency.
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/reef-doser
+Environment=NODE_ENV=production
+Environment=REEF_DB_PATH=/opt/reef-doser/reef-doser.db
+Environment=REEF_HOST=0.0.0.0
+Environment=REEF_PORT=8000
+ExecStart=/usr/bin/node /opt/reef-doser/apps/device/dist/index.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
