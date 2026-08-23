@@ -36,6 +36,7 @@ export function Text(props: TextProps) {
 
   return <DefaultText style={[{ color }, style]} {...otherProps} />;
 }
+export const ThemedText = Text;
 
 export function View(props: ViewProps) {
   const { style, lightColor, darkColor, ...otherProps } = props;
@@ -43,6 +44,7 @@ export function View(props: ViewProps) {
 
   return <DefaultView style={[{ backgroundColor }, style]} {...otherProps} />;
 }
+export const ThemedView = View;
 
 export type TextInputProps = ThemeProps & DefaultTextInput['props'];
 
@@ -52,3 +54,4 @@ export function TextInput(props: TextInputProps) {
 
   return <DefaultTextInput style={[{ color }, style]} {...otherProps} />;
 }
+export const ThemedTextInput = TextInput;

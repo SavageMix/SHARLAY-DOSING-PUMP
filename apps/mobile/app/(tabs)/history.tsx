@@ -4,7 +4,8 @@ import { useFocusEffect } from 'expo-router';
 
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/Themed';
-import { getDeviceBaseUrl, getHistory, type DoseEvent } from '@/src/api/client';
+import { getDeviceBaseUrl, getHistory } from '@/src/api/client';
+import type { DoseEvent } from '@reef/shared';
 import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
 
 const PUMP_ORDER: DoseEvent['pumpId'][] = ['alk', 'ca', 'no3', 'po4'];
