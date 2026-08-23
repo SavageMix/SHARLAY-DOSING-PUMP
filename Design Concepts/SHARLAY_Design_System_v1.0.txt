@@ -1,0 +1,237 @@
+SHARLAY Design System v1.0
+
+Brand: SHARLAY
+
+Tagline: Smart Dosing. Stable Results.
+
+Design Philosophy
+
+Luxury marine technology. The interface should feel calm and expensive.
+Only active states, live data, and important actions glow.
+
+Brand Identity
+
+-   Custom wide-spaced SHARLAY wordmark.
+-   Signature wave-cut A with cyan highlight.
+-   The wave becomes a recurring UI animation across the app and
+    hardware.
+
+Colour Palette
+
+Primary
+
+  Name            Hex       Usage
+  --------------- --------- --------------------
+  Obsidian        #070A12   Main background
+  Abyss           #111827   Cards
+  Midnight        #182333   Secondary surfaces
+  Electric Aqua   #20E3D8   Primary accent
+  Reef Violet     #8A5CFF   Secondary accent
+  Coral Bloom     #FF5FA2   Highlight
+  Pearl           #F5F7FA   Primary text
+  Titanium        #C6CED8   Secondary text
+
+Supporting
+
+-   Sapphire — #2F80FF
+-   Deep Ocean — #0D1B2A
+-   Slate — #6B7280
+-   Mist — #9CA3AF
+-   Success — #00D084
+-   Warning — #FFB547
+-   Danger — #FF4D5A
+
+Signature Gradients
+
+-   Ocean Wave: #20E3D8 → #2F80FF → #8A5CFF
+-   Premium Button: #2F80FF → #8A5CFF → #FF5FA2
+-   Live Data Glow: #20E3D8 → #8A5CFF
+
+Typography
+
+Primary Font: Plus Jakarta Sans
+
+Weights: - Light (300) - Regular (400) - Medium (500) - SemiBold (600) -
+Bold (700)
+
+Type Scale
+
+-   Display — 40 / Light
+-   H1 — 32 / SemiBold
+-   H2 — 24 / SemiBold
+-   H3 — 20 / Medium
+-   Title — 18 / Medium
+-   Body — 16 / Regular
+-   Small — 14 / Regular
+-   Caption — 12 / Medium
+-   Tiny — 10 / Medium
+
+Spacing System (8-point grid)
+
+-   XS: 4
+-   SM: 8
+-   MD: 16
+-   LG: 24
+-   XL: 32
+-   XXL: 48
+-   Hero: 64
+
+Border Radius
+
+-   Buttons: 16
+-   Cards: 24
+-   Inputs: 18
+-   Widgets: 28
+-   Modals: 32
+-   App Icon: 26
+
+Shadows
+
+-   Card: Y12 / Blur40 / 18%
+-   Floating Widget: Y18 / Blur60 / 24%
+-   Aqua Glow: Blur18 / 30%
+
+Glass Effect
+
+-   Background: rgba(17,24,39,0.78)
+-   Blur: 20px
+-   Border: rgba(255,255,255,0.08)
+
+Icon System
+
+Rounded 2px outline icons. - Home - Dosing - Testers - Devices -
+Settings - Notifications - Alkalinity - Calcium - Magnesium - Trace
+Elements - Temperature - pH - Salinity - Flow - Reef Health
+
+Navigation
+
+Five-tab bottom navigation: - Command - Dosing - Testers - Devices -
+Settings
+
+Buttons
+
+Primary
+
+-   Blue → Purple → Coral gradient
+-   White text
+-   56px height
+-   16px radius
+
+Secondary
+
+-   Transparent
+-   1px Aqua border
+
+Danger
+
+-   Coral outline only
+
+Widgets
+
+Reef Stability Widget
+
+-   Orbital arc (not a full circle)
+-   Score 0–100
+-   Live glow animation
+
+Live Parameter Cards
+
+-   Alkalinity (Blue)
+-   Calcium (Aqua)
+-   Magnesium (Purple)
+-   Trace Elements (Coral)
+-   Temperature (Aqua)
+-   pH (Blue)
+
+Device Cards
+
+-   Product image
+-   Status
+-   Last communication
+-   Quick control
+
+Charts
+
+-   3px rounded lines
+-   Gradient stroke
+-   Minimal grid (8% opacity)
+-   Data points appear on touch
+
+Motion Design
+
+-   Micro interactions: 200ms
+-   Page transitions: 280ms
+-   Wave loading animation
+-   Cards lift slightly
+-   Charts animate smoothly
+
+Splash Screen
+
+-   Obsidian background
+-   Animated ocean wave
+-   SHARLAY logo fades in
+-   Tagline appears
+-   Total duration: ~1.8s
+
+Hardware OLED UI
+
+-   Black OLED
+-   Electric Aqua highlights
+-   Large numbers
+-   Minimal text
+
+SHARLAY Ecosystem
+
+-   SHARLAY Dose (Aqua)
+-   SHARLAY Test (Purple)
+-   SHARLAY Flow (Blue)
+-   SHARLAY Temp (Coral)
+-   SHARLAY Monitor (White)
+
+Packaging
+
+-   Matte soft-touch black
+-   Spot UV logo
+-   Gloss wave
+-   Magnetic opening
+-   Deep navy interior
+
+UI Principles
+
+1.  One primary action per screen.
+2.  Large readable numbers.
+3.  Generous whitespace.
+4.  Live data feels alive.
+5.  Purple and Aqua are premium accents.
+6.  Glass panels create depth.
+7.  Every screen should feel calm.
+
+Developer Design Tokens
+
+    :root{
+    --obsidian:#070A12;
+    --abyss:#111827;
+    --midnight:#182333;
+    --aqua:#20E3D8;
+    --violet:#8A5CFF;
+    --coral:#FF5FA2;
+    --blue:#2F80FF;
+    --pearl:#F5F7FA;
+    --titanium:#C6CED8;
+    --slate:#6B7280;
+    --radius-sm:16px;
+    --radius-md:24px;
+    --radius-lg:32px;
+    --spacing-xs:4px;
+    --spacing-sm:8px;
+    --spacing-md:16px;
+    --spacing-lg:24px;
+    --spacing-xl:32px;
+    }
+
+SHARLAY Signature Experience
+
+The home screen is Command — an orbital Reef Stability Arc sits over a
+cinematic ocean wave animation, with live Alkalinity, Calcium, Magnesium
+and Temperature metrics arranged around it. This becomes SHARLAY’s
+instantly recognisable signature experience.

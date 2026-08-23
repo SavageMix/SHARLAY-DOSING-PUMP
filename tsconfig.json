@@ -8,7 +8,6 @@
   "references": [
     { "path": "./packages/shared" },
     { "path": "./apps/device" },
-    { "path": "./apps/mobile" },
     { "path": "./apps/cloud" }
   ]
 }
