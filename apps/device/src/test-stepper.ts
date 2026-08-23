@@ -2,7 +2,7 @@ import { runSteps } from './stepper.js';
 import type { PumpId } from '@reef/shared';
 
 const PUMPS: PumpId[] = ['alk', 'ca', 'no3', 'po4'];
-const STEPS_PER_PUMP = 200;
+const STEPS_PER_PUMP = 4000;
 const PAUSE_MS = 1000;
 
 function sleep(ms: number): Promise<void> {
