@@ -16,6 +16,13 @@ export const HARD_LIMITS = {
   maxDailyDoseMlPerPump: 500,
 } as const;
 
+/**
+ * Hardware / timing constants. Tunable by us between releases.
+ */
+export const LIMITS = {
+  stepRateHz: 800,
+} as const;
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }

@@ -49,25 +49,31 @@ export function readEnableState(pumpId: PumpId): number {
   return enPins[pumpId].digitalRead();
 }
 
-const stepPins: Record<PumpId, Gpio> = {
+export const stepPins: Record<PumpId, Gpio> = {
   alk: new Gpio(GPIO_PINS.step.alk, { mode: Gpio.OUTPUT }),
   ca: new Gpio(GPIO_PINS.step.ca, { mode: Gpio.OUTPUT }),
   no3: new Gpio(GPIO_PINS.step.no3, { mode: Gpio.OUTPUT }),
   po4: new Gpio(GPIO_PINS.step.po4, { mode: Gpio.OUTPUT }),
 };
 
+// DIR is shared across all four stepstick drivers. The pumps only run in one
+// direction, so configure it once at startup and leave it LOW.
+export const dirPin = new Gpio(GPIO_PINS.dir, { mode: Gpio.OUTPUT });
+dirPin.digitalWrite(0);
+
 // -----------------------------------------------------------------------------
 // Configure STEP and DIR pins as outputs, all LOW.
 // EN pins are handled separately at module load and are NOT touched here.
 // -----------------------------------------------------------------------------
 export function configurePins(): void {
-  const dirPin = new Gpio(GPIO_PINS.dir, { mode: Gpio.OUTPUT });
-
   for (const pumpId of ALL_PUMP_IDS) {
     stepPins[pumpId].digitalWrite(0);
   }
   dirPin.digitalWrite(0);
 }
+
+// Run configuration at module load so pins are always in a known-safe state.
+configurePins();
 
 // -----------------------------------------------------------------------------
 // Shutdown handler: always leave every driver disabled.
