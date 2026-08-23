@@ -67,6 +67,46 @@ export class ReefDatabase implements DoseRepository, SchedulerRepository {
         value TEXT NOT NULL
       );
     `);
+
+    this.migrateSchedulesTable();
+  }
+
+  /**
+   * The schedules table moved from a raw cron string to structured fields.
+   * If an existing table still has the old `cron` column, drop and recreate
+   * the schedules table. Dose history, pump calibrations, and settings are
+   * preserved; only the schedule rows are lost and must be recreated.
+   */
+  private migrateSchedulesTable(): void {
+    const info = this.db
+      .prepare(
+        "SELECT name FROM pragma_table_info('schedules') WHERE name = 'cron'",
+      )
+      .get() as { name: string } | undefined;
+
+    if (!info) {
+      // No old cron column -> nothing to migrate.
+      return;
+    }
+
+    console.warn(
+      'Migrating schedules table: dropping old cron-based schema. ' +
+        'Existing schedules will need to be recreated in the app.',
+    );
+
+    this.db.exec(`
+      DROP TABLE schedules;
+      CREATE TABLE schedules (
+        id TEXT PRIMARY KEY,
+        pump_id TEXT NOT NULL,
+        volume_ml REAL NOT NULL,
+        times_per_day INTEGER NOT NULL,
+        start_time TEXT NOT NULL,
+        repeat_every_n_days INTEGER NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        last_run_at TEXT
+      );
+    `);
   }
 
   private seed(): void {
