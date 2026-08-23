@@ -14,7 +14,7 @@ import { GPIO_PINS, driversDisable, driversEnable } from './gpio.js';
 // Number of steps per pigpio wave. Each step is 2 pulses (rise + fall),
 // so 1000 steps == 2000 pulses. This keeps waves well under pigpio's DMA
 // buffer and lets us dose arbitrarily long runs by chaining waves.
-const MAX_STEPS_PER_WAVE = 1000;
+export const MAX_STEPS_PER_WAVE = 1000;
 const DRIVER_SETTLE_MS = 5;
 
 function sleep(ms: number): Promise<void> {
@@ -60,6 +60,26 @@ async function sendWave(steps: number, stepGpio: number): Promise<void> {
   } finally {
     waveDelete(waveId);
   }
+}
+
+/**
+ * Low-level helper: send a single chunk of STEP pulses for one pump.
+ * Does NOT enable/disable drivers — the caller owns that.
+ */
+export async function runWaveChunk(
+  pump: PumpId,
+  steps: number,
+): Promise<void> {
+  if (!Number.isInteger(steps) || steps <= 0) {
+    throw new Error(`steps must be a positive integer (got ${steps})`);
+  }
+  if (steps > MAX_STEPS_PER_WAVE) {
+    throw new Error(
+      `chunk exceeds MAX_STEPS_PER_WAVE (${MAX_STEPS_PER_WAVE})`,
+    );
+  }
+  const stepGpio = GPIO_PINS.step[pump];
+  await sendWave(steps, stepGpio);
 }
 
 /**

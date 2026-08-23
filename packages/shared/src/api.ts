@@ -18,19 +18,19 @@ export interface DoseResponse {
 
 export interface CalibrateStartRequest {
   pumpId: PumpId;
-  volumeMl: number;
 }
 
 export interface CalibrateStartResponse {
-  event: DoseEvent;
+  started: true;
 }
 
 export interface CalibrateStopRequest {
   pumpId: PumpId;
-  actualMl: number;
+  measuredMl: number;
 }
 
 export interface CalibrateStopResponse {
+  pumpId: PumpId;
   stepsPerMl: number;
 }
 
@@ -39,7 +39,19 @@ export interface StatusResponse {
   containers: ContainerInfo[];
   currentDose: DoseEvent | null;
   queue: DoseEvent[];
+  queueDepth: number;
   systemVolumeLitres: number;
+}
+
+export interface RefillContainerRequest {
+  pumpId: PumpId;
+  containerSizeMl?: number;
+}
+
+export interface RefillContainerResponse {
+  pumpId: PumpId;
+  remainingMl: number;
+  capacityMl: number;
 }
 
 export interface LimitsResponse extends ComputedDoseLimits {}

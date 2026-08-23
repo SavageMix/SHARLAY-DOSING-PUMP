@@ -34,7 +34,7 @@ export interface EngineStatus {
   queueDepth: number;
 }
 
-class Engine {
+export class Engine {
   private queue: QueueItem[] = [];
   private processing = false;
   private current: DoseEvent | null = null;

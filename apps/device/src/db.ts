@@ -108,7 +108,7 @@ export class ReefDatabase implements DoseRepository, SchedulerRepository {
       .run(value.toString());
   }
 
-  async getTodayDoseMl(pumpId: PumpId): Promise<number> {
+  getTodayDoseMl(pumpId: PumpId): number {
     const row = this.db
       .prepare(
         `SELECT COALESCE(SUM(actual_ml), 0) as total
@@ -121,7 +121,7 @@ export class ReefDatabase implements DoseRepository, SchedulerRepository {
     return row.total;
   }
 
-  async getPumpCalibration(pumpId: PumpId): Promise<PumpCalibration> {
+  getPumpCalibration(pumpId: PumpId): PumpCalibration {
     const row = this.db
       .prepare('SELECT pump_id, steps_per_ml FROM pumps WHERE pump_id = ?')
       .get(pumpId) as
@@ -136,7 +136,7 @@ export class ReefDatabase implements DoseRepository, SchedulerRepository {
     };
   }
 
-  async saveDoseEvent(event: DoseEvent): Promise<void> {
+  saveDoseEvent(event: DoseEvent): void {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO dose_events (
@@ -158,7 +158,7 @@ export class ReefDatabase implements DoseRepository, SchedulerRepository {
       );
   }
 
-  async decrementContainer(pumpId: PumpId, amountMl: number): Promise<void> {
+  decrementContainer(pumpId: PumpId, amountMl: number): void {
     this.db
       .prepare(
         `UPDATE pumps
@@ -349,5 +349,117 @@ export class ReefDatabase implements DoseRepository, SchedulerRepository {
       throw new Error(`Unknown pump ${pumpId}`);
     }
     return row.container_remaining_ml;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pumps / calibration / containers for the API
+  // ---------------------------------------------------------------------------
+
+  updatePumpCalibration(pumpId: PumpId, stepsPerMl: number): void {
+    const result = this.db
+      .prepare('UPDATE pumps SET steps_per_ml = ? WHERE pump_id = ?')
+      .run(stepsPerMl, pumpId);
+    if (result.changes === 0) {
+      throw new Error(`Unknown pump ${pumpId}`);
+    }
+  }
+
+  setContainerCapacity(pumpId: PumpId, capacityMl: number): void {
+    const result = this.db
+      .prepare(
+        'UPDATE pumps SET container_capacity_ml = ? WHERE pump_id = ?',
+      )
+      .run(capacityMl, pumpId);
+    if (result.changes === 0) {
+      throw new Error(`Unknown pump ${pumpId}`);
+    }
+  }
+
+  getAllPumps(): Array<{
+    pumpId: PumpId;
+    stepsPerMl: number | null;
+    containerCapacityMl: number;
+    containerRemainingMl: number;
+  }> {
+    const rows = this.db
+      .prepare(
+        'SELECT pump_id, steps_per_ml, container_capacity_ml, container_remaining_ml FROM pumps',
+      )
+      .all() as Array<{
+        pump_id: PumpId;
+        steps_per_ml: number | null;
+        container_capacity_ml: number;
+        container_remaining_ml: number;
+      }>;
+
+    return rows.map((row) => ({
+      pumpId: row.pump_id,
+      stepsPerMl: row.steps_per_ml,
+      containerCapacityMl: row.container_capacity_ml,
+      containerRemainingMl: row.container_remaining_ml,
+    }));
+  }
+
+  getHistory(
+    options: {
+      pumpId?: PumpId;
+      days?: number;
+      limit?: number;
+      offset?: number;
+    } = {},
+  ): { events: DoseEvent[]; total: number } {
+    const limit = options.limit ?? 100;
+    const offset = options.offset ?? 0;
+    const params: (string | number)[] = [];
+    const conditions: string[] = [];
+
+    if (options.pumpId) {
+      conditions.push('pump_id = ?');
+      params.push(options.pumpId);
+    }
+    if (options.days !== undefined && options.days > 0) {
+      conditions.push("started_at >= datetime('now', '-' || ? || ' days')");
+      params.push(options.days);
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const totalRow = this.db
+      .prepare(`SELECT COUNT(*) as total FROM dose_events ${where}`)
+      .get(...params) as { total: number };
+
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM dose_events ${where}
+         ORDER BY started_at DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(...params, limit, offset) as Array<{
+        id: string;
+        pump_id: PumpId;
+        requested_ml: number;
+        actual_ml: number | null;
+        status: string;
+        source: string;
+        schedule_id: string | null;
+        started_at: string;
+        finished_at: string | null;
+        error: string | null;
+      }>;
+
+    const events = rows.map((row) => ({
+      id: row.id,
+      pumpId: row.pump_id,
+      requestedMl: row.requested_ml,
+      actualMl: row.actual_ml,
+      status: row.status as DoseEvent['status'],
+      source: row.source as DoseEvent['source'],
+      scheduleId: row.schedule_id,
+      startedAt: row.started_at,
+      finishedAt: row.finished_at,
+      error: row.error,
+    }));
+
+    return { events, total: totalRow.total };
   }
 }
