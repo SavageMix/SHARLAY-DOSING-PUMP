@@ -26,10 +26,20 @@ export interface CalibrateStartResponse {
 
 export interface CalibrateStopRequest {
   pumpId: PumpId;
-  measuredMl: number;
 }
 
 export interface CalibrateStopResponse {
+  pumpId: PumpId;
+  totalSteps: number;
+}
+
+export interface CalibrateSaveRequest {
+  pumpId: PumpId;
+  measuredMl: number;
+  totalSteps: number;
+}
+
+export interface CalibrateSaveResponse {
   pumpId: PumpId;
   stepsPerMl: number;
 }

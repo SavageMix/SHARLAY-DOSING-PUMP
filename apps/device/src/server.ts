@@ -24,7 +24,12 @@ const calibrateStartBodySchema = z.object({
 
 const calibrateStopBodySchema = z.object({
   pumpId: pumpIdSchema,
+});
+
+const calibrateSaveBodySchema = z.object({
+  pumpId: pumpIdSchema,
   measuredMl: z.number().positive(),
+  totalSteps: z.number().positive(),
 });
 
 const scheduleCreateBodySchema = z.object({
@@ -273,6 +278,21 @@ const TEST_PAGE_HTML = `<!DOCTYPE html>
     }
 
     async function stopCal(id) {
+      let totalSteps;
+      try {
+        const res = await postJson('/api/calibrate/stop', { pumpId: id });
+        const data = await res.json();
+        if (!res.ok) {
+          showMsg(id, data.error || 'Failed', true);
+          await updateStatus();
+          return;
+        }
+        totalSteps = data.totalSteps;
+      } catch (err) {
+        showMsg(id, err.message, true);
+        return;
+      }
+
       const measured = prompt('Enter measured mL for ' + id + ':');
       if (!measured) return;
       const measuredMl = parseFloat(measured);
@@ -280,8 +300,9 @@ const TEST_PAGE_HTML = `<!DOCTYPE html>
         showMsg(id, 'Invalid measured mL', true);
         return;
       }
+
       try {
-        const res = await postJson('/api/calibrate/stop', { pumpId: id, measuredMl });
+        const res = await postJson('/api/calibrate/save', { pumpId: id, measuredMl, totalSteps });
         const data = await res.json();
         showMsg(id, res.ok ? 'Calibrated: ' + data.stepsPerMl.toFixed(1) + ' steps/mL' : (data.error || 'Failed'), !res.ok);
       } catch (err) {
@@ -417,7 +438,19 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
     }
 
     const totalSteps = await stopCalibration(body.data.pumpId);
-    const stepsPerMl = totalSteps / body.data.measuredMl;
+    return {
+      pumpId: body.data.pumpId,
+      totalSteps,
+    };
+  });
+
+  fastify.post('/api/calibrate/save', async (request, reply) => {
+    const body = calibrateSaveBodySchema.safeParse(request.body);
+    if (!body.success) {
+      return reply.status(400).send({ error: firstZodMessage(body.error) });
+    }
+
+    const stepsPerMl = body.data.totalSteps / body.data.measuredMl;
     db.updatePumpCalibration(body.data.pumpId, stepsPerMl);
 
     return {

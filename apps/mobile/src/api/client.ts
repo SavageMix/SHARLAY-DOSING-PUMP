@@ -1,5 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type {
+  CalibrateSaveRequest,
+  CalibrateSaveResponse,
   CalibrateStartRequest,
   CalibrateStartResponse,
   CalibrateStopRequest,
@@ -104,6 +106,18 @@ export async function stopCalibration(
     baseUrl,
     'POST',
     '/api/calibrate/stop',
+    body,
+  );
+}
+
+export async function saveCalibration(
+  baseUrl: string,
+  body: CalibrateSaveRequest,
+): Promise<CalibrateSaveResponse> {
+  return request<CalibrateSaveResponse>(
+    baseUrl,
+    'POST',
+    '/api/calibrate/save',
     body,
   );
 }
