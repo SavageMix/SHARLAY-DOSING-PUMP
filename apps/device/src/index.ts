@@ -11,7 +11,7 @@ async function main(): Promise<void> {
   const db = new ReefDatabase(DB_PATH);
   const engine = createEngine(db);
   const scheduler = createScheduler(db, engine);
-  const server = createServer(db, engine);
+  const server = await createServer(db, engine);
 
   scheduler.start();
   await server.listen(PORT, HOST);

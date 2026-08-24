@@ -22,15 +22,15 @@ vi.mock('../src/stepper.js', () => ({
 import { createServer } from '../src/server.js';
 
 describe('Server endpoints', () => {
-  function buildServer() {
+  async function buildServer() {
     const db = new ReefDatabase(':memory:');
     const engine = createEngine(db);
-    const server = createServer(db, engine);
+    const server = await createServer(db, engine);
     return { db, server };
   }
 
   it('GET /api/limits returns static LIMITS and effective volume-based caps', async () => {
-    const { db, server } = buildServer();
+    const { db, server } = await buildServer();
     try {
       const response = await server.fastify.inject({
         method: 'GET',
@@ -51,7 +51,7 @@ describe('Server endpoints', () => {
   });
 
   it('GET /api/limits reflects a changed system volume', async () => {
-    const { db, server } = buildServer();
+    const { db, server } = await buildServer();
     try {
       db.setSystemVolumeLitres(200);
 
@@ -65,6 +65,24 @@ describe('Server endpoints', () => {
       expect(body.effective.systemVolumeLitres).toBe(200);
       expect(body.effective.maxSingleDoseMl).toBe(2.6);
       expect(body.effective.maxDailyDoseMlPerPump).toBe(13);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('includes CORS headers reflecting the request origin', async () => {
+    const { db, server } = await buildServer();
+    try {
+      const response = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/limits',
+        headers: { origin: 'http://192.168.0.123:8081' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['access-control-allow-origin']).toBe(
+        'http://192.168.0.123:8081',
+      );
     } finally {
       db.close();
     }

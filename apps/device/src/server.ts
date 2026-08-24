@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import cors from '@fastify/cors';
 import { z } from 'zod';
 import { computeDoseLimits, LIMITS } from '@reef/shared';
 import type { ContainerInfo, PumpState } from '@reef/shared';
@@ -316,9 +317,17 @@ const TEST_PAGE_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
-export function createServer(db: ReefDatabase, engine: Engine) {
+export async function createServer(db: ReefDatabase, engine: Engine) {
   const fastify = Fastify({
     logger: false,
+  });
+
+  // Reflect the request origin. The device is LAN-only, so this lets the
+  // Expo web bundle and any local phone browser talk to the Pi without a
+  // hard-coded allowed-origin list.
+  await fastify.register(cors, {
+    origin: true,
+    credentials: true,
   });
 
   // Catch Fastify validation errors and reply with clean 4xx JSON,
