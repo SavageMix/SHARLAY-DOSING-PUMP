@@ -212,15 +212,14 @@ function CalibrationWizard({
               Run {pumpId.toUpperCase()}
             </ThemedText>
             <ThemedText style={styles.bodyText}>
-              Press and hold START to run the pump into the measuring cup. Release or press STOP when you have a measurable volume.
+              Tap START to run the pump into the measuring cup. Tap STOP when you have a measurable volume.
             </ThemedText>
 
             {!isRunning ? (
               <Pressable
                 style={styles.startButton}
-                onPressIn={handleStart}
-                onPressOut={handleStop}>
-                <ThemedText style={styles.startButtonText}>HOLD START</ThemedText>
+                onPress={handleStart}>
+                <ThemedText style={styles.startButtonText}>START</ThemedText>
               </Pressable>
             ) : (
               <Pressable style={styles.stopButton} onPress={handleStop}>
