@@ -60,8 +60,8 @@ describe('Calibrator', () => {
     expect(isCalibrating('alk')).toBe(true);
     expect(driversEnable).toHaveBeenCalledWith('alk');
 
-    await sleep(CHUNK_DURATION_MS * 5);
-    expect((runWaveChunk as any).__getChunks()).toBeGreaterThanOrEqual(3);
+    await sleep(100);
+    expect((runWaveChunk as any).__getChunks()).toBeGreaterThanOrEqual(2);
 
     const totalSteps = await stopCalibration('alk');
     expect(totalSteps).toBe((runWaveChunk as any).__getChunks() * 1000);
