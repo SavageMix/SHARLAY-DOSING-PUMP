@@ -35,6 +35,9 @@ rsync -avz --delete \
 echo "==> Installing dependencies on the Pi..."
 ssh "${PI_USER}@${PI_HOST}" "cd ${REMOTE_DIR} && npm install --omit=dev"
 
+echo "==> Building device server on the Pi..."
+ssh "${PI_USER}@${PI_HOST}" "cd ${REMOTE_DIR} && npm run build -w apps/device"
+
 echo "==> Installing/starting systemd service..."
 ssh "${PI_USER}@${PI_HOST}" "
   set -e
