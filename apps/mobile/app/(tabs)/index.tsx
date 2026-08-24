@@ -164,7 +164,7 @@ function PumpCard({
 
       {limits && (
         <ThemedText style={styles.limitText}>
-          Max single dose: {limits.maxSingleDoseMl.toFixed(1)} mL
+          Max single dose: {limits.effective.maxSingleDoseMl.toFixed(1)} mL
         </ThemedText>
       )}
 
@@ -455,7 +455,7 @@ export default function DashboardScreen() {
             Queue depth: {data?.status.queueDepth ?? 0}
           </ThemedText>
           <ThemedText style={styles.summaryText}>
-            System volume: {data?.limits.systemVolumeLitres ?? '?'} L
+            System volume: {data?.limits.effective.systemVolumeLitres ?? '?'} L
           </ThemedText>
         </ThemedView>
 
@@ -475,7 +475,7 @@ export default function DashboardScreen() {
       <DoseModal
         visible={modalPumpId !== null}
         pumpId={modalPumpId}
-        maxSingleDoseMl={data?.limits.maxSingleDoseMl ?? 5}
+        maxSingleDoseMl={data?.limits.effective.maxSingleDoseMl ?? 5}
         onClose={() => setModalPumpId(null)}
         onConfirm={handleDoseConfirm}
       />

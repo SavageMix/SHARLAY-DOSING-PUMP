@@ -54,7 +54,14 @@ export interface RefillContainerResponse {
   capacityMl: number;
 }
 
-export interface LimitsResponse extends ComputedDoseLimits {}
+export interface LimitsResponse {
+  limits: {
+    maxSingleDoseMl: number;
+    maxDailyDoseMlPerPump: number;
+    stepRateHz: number;
+  };
+  effective: ComputedDoseLimits;
+}
 
 export interface ListSchedulesResponse {
   schedules: DoseSchedule[];

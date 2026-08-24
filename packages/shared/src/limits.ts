@@ -17,9 +17,13 @@ export const HARD_LIMITS = {
 } as const;
 
 /**
- * Hardware / timing constants. Tunable by us between releases.
+ * Static hardware / safety constants. These are the fallback values shown
+ * by the mobile app before a system volume is configured; the engine itself
+ * uses computeDoseLimits() with the configured system volume.
  */
 export const LIMITS = {
+  maxSingleDoseMl: 50,
+  maxDailyDoseMlPerPump: 250,
   stepRateHz: 800,
 } as const;
 

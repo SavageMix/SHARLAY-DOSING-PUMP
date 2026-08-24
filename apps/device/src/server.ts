@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import { z } from 'zod';
+import { computeDoseLimits, LIMITS } from '@reef/shared';
 import type { ContainerInfo, PumpState } from '@reef/shared';
 import type { ReefDatabase } from './db.js';
 import type { Engine } from './engine.js';
@@ -357,6 +358,13 @@ export function createServer(db: ReefDatabase, engine: Engine) {
     };
   });
 
+  fastify.get('/api/limits', async () => {
+    return {
+      limits: LIMITS,
+      effective: computeDoseLimits(db.getSystemVolumeLitres()),
+    };
+  });
+
   fastify.post('/api/dose', async (request, reply) => {
     const body = doseBodySchema.safeParse(request.body);
     if (!body.success) {
@@ -488,6 +496,7 @@ export function createServer(db: ReefDatabase, engine: Engine) {
   });
 
   return {
+    fastify,
     listen: async (port = 8000, host = '0.0.0.0') => {
       await fastify.listen({ port, host });
       console.log(`Reef Doser server listening on http://${host}:${port}`);
