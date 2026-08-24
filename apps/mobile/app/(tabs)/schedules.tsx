@@ -373,8 +373,8 @@ export default function SchedulesScreen() {
         if (!baseUrl) return;
         try {
           setLoading(true);
-          const data = await getSchedules(baseUrl);
-          if (mounted) setSchedules(data.schedules);
+          const schedules = await getSchedules(baseUrl);
+          if (mounted) setSchedules(schedules);
         } finally {
           if (mounted) setLoading(false);
         }
@@ -429,8 +429,7 @@ export default function SchedulesScreen() {
         setMessage('Schedule created');
       }
       setModalVisible(false);
-      const data = await getSchedules(baseUrl);
-      setSchedules(data.schedules);
+      setSchedules(await getSchedules(baseUrl));
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Failed');
     }
@@ -450,8 +449,7 @@ export default function SchedulesScreen() {
             try {
               await deleteSchedule(baseUrl, schedule.id);
               setMessage('Schedule deleted');
-              const data = await getSchedules(baseUrl);
-              setSchedules(data.schedules);
+              setSchedules(await getSchedules(baseUrl));
             } catch (err) {
               setMessage(err instanceof Error ? err.message : 'Failed');
             }

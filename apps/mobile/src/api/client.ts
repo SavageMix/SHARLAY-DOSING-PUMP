@@ -110,12 +110,13 @@ export async function stopCalibration(
 
 export async function getSchedules(
   baseUrl: string,
-): Promise<{ schedules: DoseSchedule[] }> {
-  return request<{ schedules: DoseSchedule[] }>(
+): Promise<DoseSchedule[]> {
+  const data = await request<{ schedules: DoseSchedule[] }>(
     baseUrl,
     'GET',
     '/api/schedules',
   );
+  return data.schedules;
 }
 
 export async function createSchedule(
