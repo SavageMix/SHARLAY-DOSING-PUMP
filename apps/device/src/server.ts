@@ -20,6 +20,7 @@ const doseBodySchema = z.object({
 
 const calibrateStartBodySchema = z.object({
   pumpId: pumpIdSchema,
+  maxSteps: z.number().int().positive().optional(),
 });
 
 const calibrateStopBodySchema = z.object({
@@ -421,7 +422,9 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
         .send({ error: `Calibration already running for ${body.data.pumpId}` });
     }
 
-    startCalibration(body.data.pumpId);
+    startCalibration(body.data.pumpId, {
+      maxSteps: body.data.maxSteps,
+    });
     return reply.status(202).send({ started: true });
   });
 

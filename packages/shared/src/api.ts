@@ -18,6 +18,11 @@ export interface DoseResponse {
 
 export interface CalibrateStartRequest {
   pumpId: PumpId;
+  /**
+   * Optional hard backstop in steps. If omitted, calibration is capped at
+   * a generous 2-minute runtime worth of steps (~96k at 800 Hz).
+   */
+  maxSteps?: number;
 }
 
 export interface CalibrateStartResponse {
