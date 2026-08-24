@@ -143,3 +143,55 @@ export function getPreviousDueDate(
   const targetMs = todayMidnight + targetDay * 24 * 60 * 60 * 1000 + selectedTime.hour * 60 * 60 * 1000 + selectedTime.minute * 60 * 1000;
   return new Date(targetMs);
 }
+
+/**
+ * Compute the next scheduled occurrence after `now` for a schedule.
+ */
+export function getNextDueDate(
+  schedule: Pick<DoseSchedule, 'timesPerDay' | 'startTime' | 'repeatEveryNDays'>,
+  now: Date,
+): Date | null {
+  const times = computeScheduleTimes(schedule);
+  if (times.length === 0) return null;
+
+  const nowUtc = new Date(now.toISOString());
+  const currentMinutes = nowUtc.getUTCHours() * 60 + nowUtc.getUTCMinutes();
+
+  const todayMidnight = Date.UTC(
+    nowUtc.getUTCFullYear(),
+    nowUtc.getUTCMonth(),
+    nowUtc.getUTCDate(),
+  );
+
+  const sortedTimes = [...times].sort((a, b) => a.hour * 60 + a.minute - (b.hour * 60 + b.minute));
+
+  // Look for the first time-of-day strictly after now.
+  let selectedTime: ScheduleTime | null = null;
+  let dayOffset = 0;
+  for (const t of sortedTimes) {
+    const tMinutes = t.hour * 60 + t.minute;
+    if (tMinutes > currentMinutes) {
+      selectedTime = t;
+      break;
+    }
+  }
+
+  if (!selectedTime) {
+    selectedTime = sortedTimes[0];
+    dayOffset = 1;
+  }
+
+  // Walk forward to the next day on the repeat cycle.
+  const repeat = schedule.repeatEveryNDays;
+  let targetDay = dayOffset;
+  while (targetDay % repeat !== 0) {
+    targetDay++;
+  }
+
+  const targetMs =
+    todayMidnight +
+    targetDay * 24 * 60 * 60 * 1000 +
+    selectedTime.hour * 60 * 60 * 1000 +
+    selectedTime.minute * 60 * 1000;
+  return new Date(targetMs);
+}
