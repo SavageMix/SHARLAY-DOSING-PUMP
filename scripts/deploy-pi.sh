@@ -3,20 +3,20 @@ set -euo pipefail
 
 # Build and deploy Reef Doser to a Raspberry Pi.
 # Usage:
-#   PI_HOST=192.168.1.42 ./scripts/deploy-pi.sh
+#   PI_HOST=192.168.0.33 ./scripts/deploy-pi.sh
 #
 # Defaults:
 #   PI_HOST    (required — set to your Pi's hostname or IP)
 #   PI_USER    (default: pi)
-#   REMOTE_DIR (default: /opt/reef-doser)
+#   REMOTE_DIR (default: /home/pi/SHARLAY-DOSING-PUMP)
 
 PI_HOST="${PI_HOST:-}"
 PI_USER="${PI_USER:-pi}"
-REMOTE_DIR="${REMOTE_DIR:-/opt/reef-doser}"
+REMOTE_DIR="${REMOTE_DIR:-/home/pi/SHARLAY-DOSING-PUMP}"
 
 if [ -z "$PI_HOST" ]; then
   echo "ERROR: Set PI_HOST to the Pi's hostname or IP address."
-  echo "Example: PI_HOST=192.168.1.42 ./scripts/deploy-pi.sh"
+  echo "Example: PI_HOST=192.168.0.33 ./scripts/deploy-pi.sh"
   exit 1
 fi
 
@@ -32,8 +32,10 @@ rsync -avz --delete \
   --exclude='.env' \
   ./ "${PI_USER}@${PI_HOST}:${REMOTE_DIR}/"
 
+# Scoped install keeps the Pi from pulling the entire Expo mobile workspace
+# and its ~684 dependencies.
 echo "==> Installing dependencies on the Pi..."
-ssh "${PI_USER}@${PI_HOST}" "cd ${REMOTE_DIR} && npm install --omit=dev"
+ssh "${PI_USER}@${PI_HOST}" "cd ${REMOTE_DIR} && npm install -w apps/device -w packages/shared --omit=dev"
 
 echo "==> Building device server on the Pi..."
 ssh "${PI_USER}@${PI_HOST}" "cd ${REMOTE_DIR} && npm run build -w apps/device"

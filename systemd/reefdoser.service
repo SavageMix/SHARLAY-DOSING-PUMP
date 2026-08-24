@@ -7,12 +7,11 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/reef-doser
+WorkingDirectory=/home/pi/SHARLAY-DOSING-PUMP/apps/device
 Environment=NODE_ENV=production
-Environment=REEF_DB_PATH=/opt/reef-doser/reef-doser.db
 Environment=REEF_HOST=0.0.0.0
 Environment=REEF_PORT=8000
-ExecStart=/usr/bin/node /opt/reef-doser/apps/device/dist/index.js
+ExecStart=/usr/bin/node /home/pi/SHARLAY-DOSING-PUMP/apps/device/dist/index.js
 Restart=always
 RestartSec=3
 
