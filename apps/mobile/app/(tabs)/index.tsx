@@ -21,7 +21,7 @@ import {
   type DoseResponse,
   type StatusResponse,
 } from '@/src/api/client';
-import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
+import { Theme } from '@/constants/Theme';
 import {
   getNextDueDate,
   type DoseEvent,
@@ -31,6 +31,7 @@ import {
   type PumpState,
 } from '@reef/shared';
 
+const T = Theme;
 const PUMP_ORDER: PumpId[] = ['alk', 'ca', 'no3', 'po4'];
 
 interface DashboardData {
@@ -50,10 +51,7 @@ function formatTime(date: Date): string {
 }
 
 function formatDateTime(date: Date): string {
-  return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-  })}`;
+  return `${date.toLocaleDateString()} ${formatTime(date)}`;
 }
 
 function OfflineBanner({ onRetry }: { onRetry: () => void }) {
@@ -82,21 +80,12 @@ function ContainerBar({
           styles.barFill,
           {
             width: `${pct * 100}%`,
-            backgroundColor: isLow ? Colors.danger : Colors.aqua,
+            backgroundColor: isLow ? T.colors.danger : T.colors.primary,
           },
         ]}
       />
     </ThemedView>
   );
-}
-
-interface PumpCardProps {
-  pump: PumpState;
-  container: { capacityMl: number; remainingMl: number } | undefined;
-  nextDose: Date | null;
-  limits: LimitsResponse | null;
-  doseState: DoseState;
-  onDosePress: () => void;
 }
 
 function PumpCard({
@@ -106,60 +95,79 @@ function PumpCard({
   limits,
   doseState,
   onDosePress,
-}: PumpCardProps) {
+}: {
+  pump: PumpState;
+  container: { capacityMl: number; remainingMl: number } | undefined;
+  nextDose: Date | null;
+  limits: LimitsResponse | null;
+  doseState: DoseState;
+  onDosePress: () => void;
+}) {
   const capacity = container?.capacityMl ?? pump.containerRemainingMl;
   const remaining = container?.remainingMl ?? pump.containerRemainingMl;
   const lowContainer = capacity > 0 && remaining / capacity < 0.15;
 
   let stateBanner: React.ReactNode = null;
-  if (doseState.status === 'queued') {
-    stateBanner = <ThemedText style={[styles.doseState, styles.infoText]}>{doseState.message}</ThemedText>;
-  } else if (doseState.status === 'running') {
-    stateBanner = <ThemedText style={[styles.doseState, styles.infoText]}>{doseState.message}</ThemedText>;
-  } else if (doseState.status === 'done') {
-    stateBanner = <ThemedText style={[styles.doseState, styles.successText]}>{doseState.message}</ThemedText>;
-  } else if (doseState.status === 'error') {
-    stateBanner = <ThemedText style={[styles.doseState, styles.errorText]}>{doseState.message}</ThemedText>;
+  if (doseState.status !== 'idle') {
+    const color =
+      doseState.status === 'error'
+        ? T.colors.danger
+        : doseState.status === 'done'
+        ? T.colors.success
+        : T.colors.primary;
+    stateBanner = (
+      <ThemedText style={[styles.doseState, { color }]}>
+        {doseState.message}
+      </ThemedText>
+    );
   }
 
   return (
     <ThemedView style={styles.pumpCard}>
-      <ThemedView style={styles.row}>
+      <ThemedView style={styles.cardHeader}>
         <ThemedText style={styles.pumpTitle}>{pump.pumpId}</ThemedText>
-        <ThemedText
+        <ThemedView
           style={[
             styles.badge,
-            pump.calibrated ? styles.success : styles.warning,
+            pump.calibrated ? styles.badgeSuccess : styles.badgeWarning,
           ]}>
-          {pump.calibrated ? 'Calibrated' : 'Uncalibrated'}
-        </ThemedText>
-      </ThemedView>
-
-      <ThemedView style={styles.statRow}>
-        <ThemedText style={styles.statLabel}>Dosed today</ThemedText>
-        <ThemedText style={styles.statValue}>
-          {pump.todayDoseMl.toFixed(2)} mL
-        </ThemedText>
-      </ThemedView>
-
-      <ThemedView style={styles.statRow}>
-        <ThemedView style={styles.containerLabelRow}>
-          <ThemedText style={styles.statLabel}>Container</ThemedText>
-          {lowContainer && (
-            <ThemedText style={styles.lowText}>LOW</ThemedText>
-          )}
+          <ThemedText
+            style={[
+              styles.badgeText,
+              pump.calibrated ? styles.badgeTextSuccess : styles.badgeTextWarning,
+            ]}>
+            {pump.calibrated ? 'Calibrated' : 'Uncalibrated'}
+          </ThemedText>
         </ThemedView>
-        <ThemedText style={styles.statValue}>
-          {remaining.toFixed(0)} / {capacity.toFixed(0)} mL
-        </ThemedText>
       </ThemedView>
-      <ContainerBar remaining={remaining} capacity={capacity} />
 
-      <ThemedView style={styles.statRow}>
-        <ThemedText style={styles.statLabel}>Next dose</ThemedText>
-        <ThemedText style={styles.statValue}>
-          {nextDose ? formatDateTime(nextDose) : '—'}
-        </ThemedText>
+      <ThemedView style={styles.metrics}>
+        <ThemedView style={styles.metricRow}>
+          <ThemedText style={styles.metricLabel}>Dosed today</ThemedText>
+          <ThemedText style={styles.metricValue}>
+            {pump.todayDoseMl.toFixed(2)} mL
+          </ThemedText>
+        </ThemedView>
+
+        <ThemedView style={styles.metricRow}>
+          <ThemedView style={styles.labelGroup}>
+            <ThemedText style={styles.metricLabel}>Container</ThemedText>
+            {lowContainer && (
+              <ThemedText style={styles.lowLabel}>LOW</ThemedText>
+            )}
+          </ThemedView>
+          <ThemedText style={styles.metricValue}>
+            {remaining.toFixed(0)} / {capacity.toFixed(0)} mL
+          </ThemedText>
+        </ThemedView>
+        <ContainerBar remaining={remaining} capacity={capacity} />
+
+        <ThemedView style={styles.metricRow}>
+          <ThemedText style={styles.metricLabel}>Next dose</ThemedText>
+          <ThemedText style={styles.metricValue}>
+            {nextDose ? formatDateTime(nextDose) : '—'}
+          </ThemedText>
+        </ThemedView>
       </ThemedView>
 
       {limits && (
@@ -177,21 +185,19 @@ function PumpCard({
   );
 }
 
-interface DoseModalProps {
-  visible: boolean;
-  pumpId: PumpId | null;
-  maxSingleDoseMl: number;
-  onClose: () => void;
-  onConfirm: (pumpId: PumpId, volumeMl: number) => void;
-}
-
 function DoseModal({
   visible,
   pumpId,
   maxSingleDoseMl,
   onClose,
   onConfirm,
-}: DoseModalProps) {
+}: {
+  visible: boolean;
+  pumpId: PumpId | null;
+  maxSingleDoseMl: number;
+  onClose: () => void;
+  onConfirm: (pumpId: PumpId, volumeMl: number) => void;
+}) {
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
 
@@ -230,14 +236,14 @@ function DoseModal({
             style={styles.modalInput}
             keyboardType="decimal-pad"
             placeholder="Volume (mL)"
-            placeholderTextColor={Colors.slate}
+            placeholderTextColor={T.colors.textMuted}
             value={input}
             onChangeText={setInput}
             autoFocus
           />
 
           {error ? (
-            <ThemedText style={styles.errorText}>{error}</ThemedText>
+            <ThemedText style={styles.modalError}>{error}</ThemedText>
           ) : null}
 
           <ThemedView style={styles.modalButtons}>
@@ -276,7 +282,7 @@ export default function DashboardScreen() {
       return () => {
         mounted = false;
       };
-    }, [])
+    }, []),
   );
 
   const load = useCallback(async () => {
@@ -303,7 +309,7 @@ export default function DashboardScreen() {
       load();
       const interval = setInterval(load, 30_000);
       return () => clearInterval(interval);
-    }, [load])
+    }, [load]),
   );
 
   // Poll for dose completion when there are active doses.
@@ -318,7 +324,7 @@ export default function DashboardScreen() {
         load();
       }, 2_000);
       return () => clearInterval(interval);
-    }, [doseStates, load])
+    }, [doseStates, load]),
   );
 
   // Sync dose states against latest status.
@@ -327,7 +333,10 @@ export default function DashboardScreen() {
     setDoseStates((prev) => {
       const next = { ...prev };
       for (const [pumpId, state] of Object.entries(prev)) {
-        if (!state.eventId || (state.status !== 'queued' && state.status !== 'running')) {
+        if (
+          !state.eventId ||
+          (state.status !== 'queued' && state.status !== 'running')
+        ) {
           continue;
         }
         const event =
@@ -335,15 +344,31 @@ export default function DashboardScreen() {
             ? data.status.currentDose
             : data.status.queue.find((e) => e.id === state.eventId);
         if (!event) {
-          // Event left queue and is not current -> likely completed/failed.
-          // Check history is expensive; mark done optimistically.
-          next[pumpId] = { status: 'done', message: 'Dose finished', eventId: state.eventId };
+          next[pumpId] = {
+            status: 'done',
+            message: 'Dose finished',
+            eventId: state.eventId,
+          };
         } else if (event.status === 'running') {
-          next[pumpId] = { status: 'running', message: 'Dosing…', eventId: state.eventId };
+          next[pumpId] = {
+            status: 'running',
+            message: 'Dosing…',
+            eventId: state.eventId,
+          };
         } else if (event.status === 'queued') {
-          next[pumpId] = { status: 'queued', message: `Queued #${data.status.queue.findIndex((e) => e.id === state.eventId) + 1}`, eventId: state.eventId };
+          const position =
+            data.status.queue.findIndex((e) => e.id === state.eventId) + 1;
+          next[pumpId] = {
+            status: 'queued',
+            message: `Queued #${position}`,
+            eventId: state.eventId,
+          };
         } else {
-          next[pumpId] = { status: 'done', message: `Dose ${event.status}`, eventId: state.eventId };
+          next[pumpId] = {
+            status: 'done',
+            message: `Dose ${event.status}`,
+            eventId: state.eventId,
+          };
         }
       }
       return next;
@@ -357,7 +382,7 @@ export default function DashboardScreen() {
 
   const sortedPumps = useMemo(() => {
     return PUMP_ORDER.map(
-      (id) => data?.status.pumps.find((p) => p.pumpId === id)
+      (id) => data?.status.pumps.find((p) => p.pumpId === id),
     ).filter((p): p is PumpState => p !== undefined);
   }, [data?.status]);
 
@@ -375,7 +400,7 @@ export default function DashboardScreen() {
     for (const pumpId of PUMP_ORDER) {
       const pumpSchedules =
         data?.schedules.filter(
-          (s) => s.pumpId === pumpId && s.enabled
+          (s) => s.pumpId === pumpId && s.enabled,
         ) ?? [];
       let next: Date | null = null;
       for (const schedule of pumpSchedules) {
@@ -404,8 +429,7 @@ export default function DashboardScreen() {
         ...s,
         [pumpId]: {
           status: res.event.status === 'running' ? 'running' : 'queued',
-          message:
-            res.event.status === 'running' ? 'Dosing…' : 'Queued',
+          message: res.event.status === 'running' ? 'Dosing…' : 'Queued',
           eventId,
         },
       }));
@@ -439,24 +463,34 @@ export default function DashboardScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onRefresh}
-            tintColor={Colors.aqua}
-            colors={[Colors.aqua]}
+            tintColor={T.colors.primary}
+            colors={[T.colors.primary]}
           />
         }>
         <ThemedView style={styles.headerRow}>
-          <ThemedText style={styles.header}>Dashboard</ThemedText>
+          <ThemedView>
+            <ThemedText style={styles.overline}>SHARLAY</ThemedText>
+            <ThemedText style={styles.header}>Dashboard</ThemedText>
+          </ThemedView>
           {loading && !refreshing && (
-            <ActivityIndicator color={Colors.aqua} />
+            <ActivityIndicator color={T.colors.primary} />
           )}
         </ThemedView>
 
         <ThemedView style={styles.summaryCard}>
-          <ThemedText style={styles.summaryText}>
-            Queue depth: {data?.status.queueDepth ?? 0}
-          </ThemedText>
-          <ThemedText style={styles.summaryText}>
-            System volume: {data?.limits.effective.systemVolumeLitres ?? '?'} L
-          </ThemedText>
+          <ThemedView style={styles.summaryItem}>
+            <ThemedText style={styles.summaryValue}>
+              {data?.status.queueDepth ?? 0}
+            </ThemedText>
+            <ThemedText style={styles.summaryLabel}>Queue depth</ThemedText>
+          </ThemedView>
+          <ThemedView style={styles.summaryDivider} />
+          <ThemedView style={styles.summaryItem}>
+            <ThemedText style={styles.summaryValue}>
+              {data?.limits.effective.systemVolumeLitres ?? '?'} L
+            </ThemedText>
+            <ThemedText style={styles.summaryLabel}>System volume</ThemedText>
+          </ThemedView>
         </ThemedView>
 
         {sortedPumps.map((pump) => (
@@ -466,7 +500,9 @@ export default function DashboardScreen() {
             container={containersByPump.get(pump.pumpId)}
             nextDose={nextDoseByPump.get(pump.pumpId) ?? null}
             limits={data?.limits ?? null}
-            doseState={doseStates[pump.pumpId] ?? { status: 'idle', message: '' }}
+            doseState={
+              doseStates[pump.pumpId] ?? { status: 'idle', message: '' }
+            }
             onDosePress={() => setModalPumpId(pump.pumpId)}
           />
         ))}
@@ -486,7 +522,7 @@ export default function DashboardScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.obsidian,
+    backgroundColor: T.colors.background,
   },
   centered: {
     flex: 1,
@@ -494,196 +530,240 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   offlineBanner: {
-    backgroundColor: Colors.danger,
-    padding: Spacing.md,
+    backgroundColor: T.colors.danger,
+    paddingVertical: T.spacing.md,
+    paddingHorizontal: T.spacing.lg,
     alignItems: 'center',
   },
   offlineText: {
-    ...Typography.body,
-    color: Colors.pearl,
-    fontWeight: '600',
+    ...T.typography.body,
+    color: T.colors.textPrimary,
+    fontFamily: T.typography.fontFamily.semiBold,
   },
   scrollContent: {
-    padding: Spacing.md,
-    paddingBottom: Spacing.xl,
+    padding: T.spacing.lg,
+    paddingBottom: T.spacing.hero,
   },
   headerRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-end',
     justifyContent: 'space-between',
-    marginBottom: Spacing.md,
+    marginBottom: T.spacing.lg,
+  },
+  overline: {
+    ...T.typography.label,
+    color: T.colors.textMuted,
+    marginBottom: T.spacing.xs,
   },
   header: {
-    ...Typography.h1,
-    color: Colors.pearl,
+    ...T.typography.h1,
+    color: T.colors.textPrimary,
   },
   summaryCard: {
-    backgroundColor: Colors.abyss,
-    borderRadius: Radius.md,
-    padding: Spacing.md,
-    marginBottom: Spacing.md,
+    flexDirection: 'row',
+    backgroundColor: T.colors.surface,
+    borderRadius: T.radius.md,
+    padding: T.spacing.lg,
+    marginBottom: T.spacing.lg,
+    borderWidth: 1,
+    borderColor: T.colors.border,
+    ...T.shadows.card,
   },
-  summaryText: {
-    ...Typography.body,
-    color: Colors.titanium,
-    marginBottom: Spacing.xs,
+  summaryItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  summaryDivider: {
+    width: 1,
+    backgroundColor: T.colors.border,
+    marginHorizontal: T.spacing.md,
+  },
+  summaryValue: {
+    ...T.typography.h2,
+    color: T.colors.primary,
+  },
+  summaryLabel: {
+    ...T.typography.caption,
+    color: T.colors.textSecondary,
+    marginTop: T.spacing.xs,
   },
   pumpCard: {
-    backgroundColor: Colors.abyss,
-    borderRadius: Radius.md,
-    padding: Spacing.md,
-    marginBottom: Spacing.md,
+    backgroundColor: T.colors.surface,
+    borderRadius: T.radius.md,
+    padding: T.spacing.lg,
+    marginBottom: T.spacing.lg,
+    borderWidth: 1,
+    borderColor: T.colors.border,
+    ...T.shadows.card,
   },
-  row: {
+  cardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: Spacing.md,
+    marginBottom: T.spacing.md,
   },
   pumpTitle: {
-    ...Typography.h2,
-    color: Colors.pearl,
+    ...T.typography.h2,
+    color: T.colors.textPrimary,
     textTransform: 'uppercase',
   },
   badge: {
-    ...Typography.caption,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 2,
-    borderRadius: Radius.sm,
-    overflow: 'hidden',
+    paddingHorizontal: T.spacing.md,
+    paddingVertical: T.spacing.xs,
+    borderRadius: T.radius.pill,
   },
-  success: {
-    backgroundColor: Colors.success,
-    color: Colors.obsidian,
+  badgeSuccess: {
+    backgroundColor: 'rgba(0, 208, 132, 0.12)',
   },
-  warning: {
-    backgroundColor: Colors.warning,
-    color: Colors.obsidian,
+  badgeWarning: {
+    backgroundColor: 'rgba(255, 181, 71, 0.12)',
   },
-  statRow: {
+  badgeText: {
+    ...T.typography.caption,
+  },
+  badgeTextSuccess: {
+    color: T.colors.success,
+  },
+  badgeTextWarning: {
+    color: T.colors.warning,
+  },
+  metrics: {
+    backgroundColor: T.colors.surfaceElevated,
+    borderRadius: T.radius.sm,
+    padding: T.spacing.md,
+    marginBottom: T.spacing.md,
+  },
+  metricRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: Spacing.xs,
+    marginBottom: T.spacing.sm,
   },
-  containerLabelRow: {
+  labelGroup: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.sm,
+    gap: T.spacing.sm,
   },
-  statLabel: {
-    ...Typography.small,
-    color: Colors.titanium,
+  metricLabel: {
+    ...T.typography.small,
+    color: T.colors.textSecondary,
   },
-  statValue: {
-    ...Typography.body,
-    color: Colors.pearl,
+  metricValue: {
+    ...T.typography.body,
+    color: T.colors.textPrimary,
+    fontFamily: T.typography.fontFamily.medium,
   },
-  lowText: {
-    ...Typography.caption,
-    color: Colors.danger,
-    fontWeight: '700',
+  lowLabel: {
+    ...T.typography.caption,
+    color: T.colors.danger,
+    fontFamily: T.typography.fontFamily.bold,
   },
   barTrack: {
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: Colors.midnight,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: T.colors.border,
     overflow: 'hidden',
-    marginBottom: Spacing.md,
+    marginBottom: T.spacing.md,
   },
   barFill: {
     height: '100%',
-    borderRadius: 4,
+    borderRadius: 3,
   },
   limitText: {
-    ...Typography.small,
-    color: Colors.slate,
-    marginBottom: Spacing.md,
+    ...T.typography.small,
+    color: T.colors.textMuted,
+    marginBottom: T.spacing.md,
   },
   doseButton: {
-    height: 48,
-    borderRadius: Radius.sm,
-    backgroundColor: Colors.blue,
+    height: 52,
+    borderRadius: T.radius.sm,
+    backgroundColor: T.colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
+    ...T.shadows.glow,
   },
   doseButtonText: {
-    ...Typography.title,
-    color: Colors.pearl,
+    ...T.typography.title,
+    color: T.colors.background,
+    fontFamily: T.typography.fontFamily.semiBold,
   },
   doseState: {
-    ...Typography.small,
-    marginTop: Spacing.sm,
+    ...T.typography.small,
+    marginTop: T.spacing.md,
     textAlign: 'center',
-  },
-  infoText: {
-    color: Colors.aqua,
-  },
-  successText: {
-    color: Colors.success,
-  },
-  errorText: {
-    color: Colors.danger,
+    fontFamily: T.typography.fontFamily.medium,
   },
   modalOverlay: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    padding: Spacing.lg,
+    backgroundColor: T.colors.overlay,
+    padding: T.spacing.xxl,
   },
   modalContent: {
     width: '100%',
     maxWidth: 360,
-    backgroundColor: Colors.abyss,
-    borderRadius: Radius.md,
-    padding: Spacing.lg,
+    backgroundColor: T.colors.surface,
+    borderRadius: T.radius.md,
+    padding: T.spacing.xxl,
+    borderWidth: 1,
+    borderColor: T.colors.border,
   },
   modalHeader: {
-    ...Typography.h2,
-    color: Colors.pearl,
-    marginBottom: Spacing.xs,
+    ...T.typography.h2,
+    color: T.colors.textPrimary,
+    marginBottom: T.spacing.xs,
   },
   modalSubheader: {
-    ...Typography.small,
-    color: Colors.titanium,
-    marginBottom: Spacing.md,
+    ...T.typography.small,
+    color: T.colors.textSecondary,
+    marginBottom: T.spacing.lg,
   },
   modalInput: {
-    height: 48,
-    borderRadius: Radius.sm,
+    height: 56,
+    borderRadius: T.radius.sm,
     borderWidth: 1,
-    borderColor: 'rgba(32, 227, 216, 0.3)',
-    backgroundColor: Colors.midnight,
-    color: Colors.pearl,
-    paddingHorizontal: Spacing.md,
-    fontSize: Typography.body.fontSize,
-    marginBottom: Spacing.md,
+    borderColor: T.colors.borderActive,
+    backgroundColor: T.colors.surfaceElevated,
+    color: T.colors.textPrimary,
+    paddingHorizontal: T.spacing.md,
+    fontSize: T.typography.body.fontSize,
+    fontFamily: T.typography.fontFamily.regular,
+    marginBottom: T.spacing.md,
+  },
+  modalError: {
+    ...T.typography.small,
+    color: T.colors.danger,
+    marginBottom: T.spacing.md,
   },
   modalButtons: {
     flexDirection: 'row',
-    gap: Spacing.md,
-    marginTop: Spacing.md,
+    gap: T.spacing.md,
+    marginTop: T.spacing.md,
   },
   modalButton: {
     flex: 1,
     height: 48,
-    borderRadius: Radius.sm,
+    borderRadius: T.radius.sm,
     alignItems: 'center',
     justifyContent: 'center',
   },
   cancelButton: {
-    backgroundColor: Colors.midnight,
+    backgroundColor: T.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: T.colors.border,
   },
   cancelButtonText: {
-    ...Typography.title,
-    color: Colors.pearl,
+    ...T.typography.title,
+    color: T.colors.textPrimary,
+    fontFamily: T.typography.fontFamily.medium,
   },
   confirmButton: {
-    backgroundColor: Colors.blue,
+    backgroundColor: T.colors.primary,
   },
   confirmButtonText: {
-    ...Typography.title,
-    color: Colors.pearl,
+    ...T.typography.title,
+    color: T.colors.background,
+    fontFamily: T.typography.fontFamily.semiBold,
   },
 });

@@ -1,12 +1,13 @@
-/**
- * Learn more about Light and Dark modes:
- * https://docs.expo.io/guides/color-schemes/
- */
-import { Text as DefaultText, TextInput as DefaultTextInput, View as DefaultView } from 'react-native';
+import {
+  Text as DefaultText,
+  TextInput as DefaultTextInput,
+  View as DefaultView,
+} from 'react-native';
 
 import { useColorScheme } from './useColorScheme';
 
 import Colors from '@/constants/Colors';
+import { Theme } from '@/constants/Theme';
 
 type ThemeProps = {
   lightColor?: string;
@@ -34,15 +35,31 @@ export function Text(props: TextProps) {
   const { style, lightColor, darkColor, ...otherProps } = props;
   const color = useThemeColor({ light: lightColor, dark: darkColor }, 'text');
 
-  return <DefaultText style={[{ color }, style]} {...otherProps} />;
+  return (
+    <DefaultText
+      style={[
+        {
+          color,
+          fontFamily: Theme.typography.fontFamily.regular,
+        },
+        style,
+      ]}
+      {...otherProps}
+    />
+  );
 }
 export const ThemedText = Text;
 
 export function View(props: ViewProps) {
   const { style, lightColor, darkColor, ...otherProps } = props;
-  const backgroundColor = useThemeColor({ light: lightColor, dark: darkColor }, 'background');
+  const backgroundColor = useThemeColor(
+    { light: lightColor, dark: darkColor },
+    'background'
+  );
 
-  return <DefaultView style={[{ backgroundColor }, style]} {...otherProps} />;
+  return (
+    <DefaultView style={[{ backgroundColor }, style]} {...otherProps} />
+  );
 }
 export const ThemedView = View;
 
@@ -52,6 +69,17 @@ export function TextInput(props: TextInputProps) {
   const { style, lightColor, darkColor, ...otherProps } = props;
   const color = useThemeColor({ light: lightColor, dark: darkColor }, 'text');
 
-  return <DefaultTextInput style={[{ color }, style]} {...otherProps} />;
+  return (
+    <DefaultTextInput
+      style={[
+        {
+          color,
+          fontFamily: Theme.typography.fontFamily.regular,
+        },
+        style,
+      ]}
+      {...otherProps}
+    />
+  );
 }
 export const ThemedTextInput = TextInput;
