@@ -19,7 +19,9 @@ import {
   saveCalibration,
   setDeviceBaseUrl,
   startCalibration,
+  startPrime,
   stopCalibration,
+  stopPrime,
 } from '@/src/api/client';
 import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
 import { type PumpId } from '@reef/shared';
@@ -338,6 +340,15 @@ export default function SettingsScreen() {
   } | null>(null);
   const [wizardPump, setWizardPump] = useState<PumpId | null>(null);
   const [message, setMessage] = useState('');
+  const [primingPump, setPrimingPump] = useState<PumpId | null>(null);
+  const [primeStartTime, setPrimeStartTime] = useState<number | null>(null);
+  const [primeElapsedMs, setPrimeElapsedMs] = useState(0);
+  const [primeResult, setPrimeResult] = useState<{
+    pumpId: PumpId;
+    totalSteps: number;
+    approxMl: number | null;
+  } | null>(null);
+  const [primeError, setPrimeError] = useState('');
 
   useFocusEffect(
     useCallback(() => {
@@ -402,6 +413,17 @@ export default function SettingsScreen() {
     router.replace('/');
   };
 
+  // Prime elapsed-time ticker.
+  useFocusEffect(
+    useCallback(() => {
+      if (!primeStartTime) return;
+      const interval = setInterval(() => {
+        setPrimeElapsedMs(Date.now() - primeStartTime);
+      }, 250);
+      return () => clearInterval(interval);
+    }, [primeStartTime]),
+  );
+
   const pumpsById = useMemo(() => {
     const map = new Map<PumpId, { calibrated: boolean; stepsPerMl: number | null }>();
     for (const p of status?.pumps ?? []) {
@@ -409,6 +431,42 @@ export default function SettingsScreen() {
     }
     return map;
   }, [status]);
+
+  const handlePrimeStart = async (pumpId: PumpId) => {
+    if (!savedUrl) return;
+    setPrimeError('');
+    setPrimeResult(null);
+    try {
+      await startPrime(savedUrl, { pumpId });
+      setPrimingPump(pumpId);
+      setPrimeStartTime(Date.now());
+      setPrimeElapsedMs(0);
+    } catch (err) {
+      setPrimeError(err instanceof Error ? err.message : 'Failed to start prime');
+    }
+  };
+
+  const handlePrimeStop = async () => {
+    if (!savedUrl || !primingPump) return;
+    setPrimeError('');
+    try {
+      const res = await stopPrime(savedUrl, { pumpId: primingPump });
+      setPrimingPump(null);
+      setPrimeStartTime(null);
+      setPrimeResult(res);
+    } catch (err) {
+      setPrimingPump(null);
+      setPrimeStartTime(null);
+      setPrimeError(err instanceof Error ? err.message : 'Failed to stop prime');
+    }
+  };
+
+  const formatElapsed = (ms: number): string => {
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  };
 
   return (
     <ThemedView style={styles.container}>
@@ -463,6 +521,70 @@ export default function SettingsScreen() {
                   disabled={status ? status.queueDepth > 0 : false}>
                   <ThemedText style={styles.calButtonText}>Calibrate</ThemedText>
                 </Pressable>
+              </ThemedView>
+            );
+          })}
+        </ThemedView>
+
+        <ThemedView style={styles.card}>
+          <ThemedText style={styles.label}>Prime lines</ThemedText>
+          {status && status.queueDepth > 0 && (
+            <ThemedView style={styles.queueWarning}>
+              <ThemedText style={styles.queueWarningText}>
+                Dose in progress — priming is blocked until the queue is clear.
+              </ThemedText>
+            </ThemedView>
+          )}
+          {primeError ? (
+            <ThemedText style={styles.errorText}>{primeError}</ThemedText>
+          ) : null}
+          {primeResult ? (
+            <ThemedView style={styles.resultCard}>
+              <ThemedText style={styles.bodyText}>
+                Primed {primeResult.pumpId.toUpperCase()}:{' '}
+                {primeResult.totalSteps.toLocaleString()} steps
+                {primeResult.approxMl !== null
+                  ? ` (~${primeResult.approxMl.toFixed(2)} mL)`
+                  : ' (pump uncalibrated)'}
+              </ThemedText>
+            </ThemedView>
+          ) : null}
+          {PUMP_ORDER.map((id) => {
+            const isThisPriming = primingPump === id;
+            const blocked =
+              (status && status.queueDepth > 0) ||
+              primingPump !== null;
+            return (
+              <ThemedView key={id} style={styles.pumpRow}>
+                <ThemedView style={styles.pumpInfo}>
+                  <ThemedText style={styles.pumpTitle}>{id}</ThemedText>
+                  {isThisPriming ? (
+                    <ThemedText style={styles.pumpMetric}>
+                      Running: {formatElapsed(primeElapsedMs)}
+                    </ThemedText>
+                  ) : (
+                    <ThemedText style={styles.pumpMetric}>
+                      {pumpsById.get(id)?.calibrated
+                        ? `${pumpsById.get(id)?.stepsPerMl?.toFixed(1)} steps/mL`
+                        : 'Not calibrated'}
+                    </ThemedText>
+                  )}
+                </ThemedView>
+                {isThisPriming ? (
+                  <Pressable style={styles.stopButton} onPress={handlePrimeStop}>
+                    <ThemedText style={styles.stopButtonText}>STOP</ThemedText>
+                  </Pressable>
+                ) : (
+                  <Pressable
+                    style={[
+                      styles.primeButton,
+                      blocked && styles.disabledButton,
+                    ]}
+                    onPress={() => !blocked && handlePrimeStart(id)}
+                    disabled={blocked}>
+                    <ThemedText style={styles.primeButtonText}>Prime</ThemedText>
+                  </Pressable>
+                )}
               </ThemedView>
             );
           })}
@@ -611,6 +733,17 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
   },
   calButtonText: {
+    ...Typography.body,
+    color: Colors.obsidian,
+    fontWeight: '600',
+  },
+  primeButton: {
+    backgroundColor: Colors.warning,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.sm,
+  },
+  primeButtonText: {
     ...Typography.body,
     color: Colors.obsidian,
     fontWeight: '600',

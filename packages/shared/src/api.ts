@@ -112,6 +112,24 @@ export interface DeleteScheduleResponse {
   success: boolean;
 }
 
+export interface PrimeStartRequest {
+  pumpId: PumpId;
+}
+
+export interface PrimeStartResponse {
+  started: true;
+}
+
+export interface PrimeStopRequest {
+  pumpId: PumpId;
+}
+
+export interface PrimeStopResponse {
+  pumpId: PumpId;
+  totalSteps: number;
+  approxMl: number | null;
+}
+
 export interface HistoryQuery {
   pumpId?: PumpId;
   from?: string;

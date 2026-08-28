@@ -20,7 +20,7 @@ export interface PumpState {
   containerRemainingMl: number;
 }
 
-export type DoseSource = 'manual' | 'schedule' | 'calibration';
+export type DoseSource = 'manual' | 'schedule' | 'calibration' | 'prime';
 
 export type DoseEventStatus =
   | 'queued'

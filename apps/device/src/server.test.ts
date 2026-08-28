@@ -22,6 +22,7 @@ vi.mock('../src/stepper.js', () => ({
 
 import { detectMissedDoses } from '../src/missed-doses.js';
 import { createServer } from '../src/server.js';
+import { runSteps, runWaveChunk } from '../src/stepper.js';
 
 describe('Server endpoints', () => {
   beforeEach(() => {
@@ -181,6 +182,158 @@ describe('Server endpoints', () => {
       const body = JSON.parse(response.body);
       expect(body.missedDose.status).toBe('confirmed');
       expect(body.jobId).toBeDefined();
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/prime/start and /api/prime/stop returns steps and null approxMl on an uncalibrated pump', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      vi.mocked(runWaveChunk).mockImplementation(
+        async () => new Promise((resolve) => setTimeout(resolve, 5)),
+      );
+
+      const start = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/prime/start',
+        payload: { pumpId: 'alk' },
+      });
+      expect(start.statusCode).toBe(202);
+
+      const stopPromise = server.fastify.inject({
+        method: 'POST',
+        url: '/api/prime/stop',
+        payload: { pumpId: 'alk' },
+      });
+      await vi.advanceTimersByTimeAsync(20);
+      const response = await stopPromise;
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.pumpId).toBe('alk');
+      expect(body.totalSteps).toBeGreaterThan(0);
+      expect(body.approxMl).toBeNull();
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/prime/stop returns approxMl when the pump is calibrated', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.updatePumpCalibration('alk', 100);
+      vi.mocked(runWaveChunk).mockImplementation(
+        async () => new Promise((resolve) => setTimeout(resolve, 5)),
+      );
+
+      await server.fastify.inject({
+        method: 'POST',
+        url: '/api/prime/start',
+        payload: { pumpId: 'alk' },
+      });
+
+      const stopPromise = server.fastify.inject({
+        method: 'POST',
+        url: '/api/prime/stop',
+        payload: { pumpId: 'alk' },
+      });
+      await vi.advanceTimersByTimeAsync(20);
+      const response = await stopPromise;
+
+      const body = JSON.parse(response.body);
+      expect(body.approxMl).not.toBeNull();
+      expect(body.totalSteps / body.approxMl).toBeCloseTo(100, 5);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('Prime does not count toward daily dose totals or appear in history', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.updatePumpCalibration('alk', 100);
+      vi.mocked(runWaveChunk).mockImplementation(
+        async () => new Promise((resolve) => setTimeout(resolve, 5)),
+      );
+
+      await server.fastify.inject({
+        method: 'POST',
+        url: '/api/prime/start',
+        payload: { pumpId: 'alk' },
+      });
+
+      const stopPromise = server.fastify.inject({
+        method: 'POST',
+        url: '/api/prime/stop',
+        payload: { pumpId: 'alk' },
+      });
+      await vi.advanceTimersByTimeAsync(20);
+      await stopPromise;
+
+      expect(db.getTodayDoseMl('alk')).toBe(0);
+
+      const history = db.getHistory();
+      expect(history.events).toHaveLength(0);
+      expect(history.total).toBe(0);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/dose is refused while priming', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      // Make runWaveChunk hang so the prime session stays active.
+      vi.mocked(runWaveChunk).mockImplementation(
+        () => new Promise(() => {}),
+      );
+
+      await server.fastify.inject({
+        method: 'POST',
+        url: '/api/prime/start',
+        payload: { pumpId: 'alk' },
+      });
+
+      const response = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/dose',
+        payload: { pumpId: 'alk', volumeMl: 1 },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error).toMatch(/busy/i);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/prime/start is refused while a dose is running', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.updatePumpCalibration('alk', 100);
+      // Make runSteps hang so the dose stays in the running state.
+      vi.mocked(runSteps).mockImplementation(() => new Promise(() => {}));
+
+      await server.fastify.inject({
+        method: 'POST',
+        url: '/api/dose',
+        payload: { pumpId: 'alk', volumeMl: 1 },
+      });
+
+      const response = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/prime/start',
+        payload: { pumpId: 'alk' },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error).toMatch(/busy/i);
     } finally {
       scheduler.stop();
       db.close();

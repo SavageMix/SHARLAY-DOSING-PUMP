@@ -177,6 +177,7 @@ export class ReefDatabase
          FROM dose_events
          WHERE pump_id = ?
            AND status = 'completed'
+           AND source IN ('manual', 'schedule')
            AND date(started_at) = date('now')`,
       )
       .get(pumpId) as { total: number };
@@ -601,6 +602,8 @@ export class ReefDatabase
     const offset = options.offset ?? 0;
     const params: (string | number)[] = [];
     const conditions: string[] = [];
+    // Prime events are logged for audit but never shown in dose history.
+    conditions.push("source != 'prime'");
 
     if (options.pumpId) {
       conditions.push('pump_id = ?');

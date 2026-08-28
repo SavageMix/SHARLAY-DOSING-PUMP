@@ -18,6 +18,10 @@ import type {
   LimitsResponse,
   ListMissedDosesResponse,
   MissedDose,
+  PrimeStartRequest,
+  PrimeStartResponse,
+  PrimeStopRequest,
+  PrimeStopResponse,
   PumpState,
   RefillContainerRequest,
   RefillContainerResponse,
@@ -112,6 +116,20 @@ export async function stopCalibration(
     '/api/calibrate/stop',
     body,
   );
+}
+
+export async function startPrime(
+  baseUrl: string,
+  body: PrimeStartRequest,
+): Promise<PrimeStartResponse> {
+  return request<PrimeStartResponse>(baseUrl, 'POST', '/api/prime/start', body);
+}
+
+export async function stopPrime(
+  baseUrl: string,
+  body: PrimeStopRequest,
+): Promise<PrimeStopResponse> {
+  return request<PrimeStopResponse>(baseUrl, 'POST', '/api/prime/stop', body);
 }
 
 export async function saveCalibration(

@@ -1,8 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { z } from 'zod';
 import { computeDoseLimits, LIMITS } from '@reef/shared';
-import type { ContainerInfo, PumpState } from '@reef/shared';
+import type { ContainerInfo, PumpId, PumpState } from '@reef/shared';
 import type { ReefDatabase } from './db.js';
 import type { Engine } from './engine.js';
 import {
@@ -11,6 +12,7 @@ import {
   stopCalibration,
 } from './calibrator.js';
 import { confirmMissedDose, dismissMissedDose } from './missed-doses.js';
+import { isPriming, startPrime, stopPrime } from './primer.js';
 
 const pumpIdSchema = z.enum(['alk', 'ca', 'no3', 'po4']);
 
@@ -32,6 +34,14 @@ const calibrateSaveBodySchema = z.object({
   pumpId: pumpIdSchema,
   measuredMl: z.number().positive(),
   totalSteps: z.number().positive(),
+});
+
+const primeStartBodySchema = z.object({
+  pumpId: pumpIdSchema,
+});
+
+const primeStopBodySchema = z.object({
+  pumpId: pumpIdSchema,
 });
 
 const scheduleCreateBodySchema = z.object({
@@ -96,6 +106,15 @@ function buildContainerInfo(db: ReefDatabase): ContainerInfo[] {
 
 function firstZodMessage(error: z.ZodError<unknown>): string {
   return error.issues[0]?.message ?? 'Invalid request';
+}
+
+/**
+ * Check if any pump is currently being calibrated.
+ */
+function isAnyPumpCalibrating(): boolean {
+  return (['alk', 'ca', 'no3', 'po4'] as PumpId[]).some((id) =>
+    isCalibrating(id),
+  );
 }
 
 const TEST_PAGE_HTML = `<!DOCTYPE html>
@@ -407,6 +426,12 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
       return reply.status(400).send({ error: firstZodMessage(body.error) });
     }
 
+    if (isPriming() || isCalibrating(body.data.pumpId)) {
+      return reply.status(409).send({
+        error: `Pump ${body.data.pumpId} is busy with another routine`,
+      });
+    }
+
     const jobId = await engine.submitDose(
       body.data.pumpId,
       body.data.volumeMl,
@@ -421,10 +446,10 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
       return reply.status(400).send({ error: firstZodMessage(body.error) });
     }
 
-    if (isCalibrating(body.data.pumpId)) {
+    if (engine.getQueueDepth() > 0 || isPriming() || isCalibrating(body.data.pumpId)) {
       return reply
         .status(409)
-        .send({ error: `Calibration already running for ${body.data.pumpId}` });
+        .send({ error: `Pump ${body.data.pumpId} is busy with another routine` });
     }
 
     startCalibration(body.data.pumpId, {
@@ -464,6 +489,63 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
     return {
       pumpId: body.data.pumpId,
       stepsPerMl,
+    };
+  });
+
+  fastify.post('/api/prime/start', async (request, reply) => {
+    const body = primeStartBodySchema.safeParse(request.body);
+    if (!body.success) {
+      return reply.status(400).send({ error: firstZodMessage(body.error) });
+    }
+
+    if (engine.getQueueDepth() > 0 || isPriming() || isAnyPumpCalibrating()) {
+      return reply.status(409).send({
+        error: `Pump ${body.data.pumpId} is busy with another routine`,
+      });
+    }
+
+    startPrime(body.data.pumpId);
+    return reply.status(202).send({ started: true });
+  });
+
+  fastify.post('/api/prime/stop', async (request, reply) => {
+    const body = primeStopBodySchema.safeParse(request.body);
+    if (!body.success) {
+      return reply.status(400).send({ error: firstZodMessage(body.error) });
+    }
+
+    if (!isPriming(body.data.pumpId)) {
+      return reply
+        .status(409)
+        .send({ error: `No prime running for ${body.data.pumpId}` });
+    }
+
+    const totalSteps = await stopPrime(body.data.pumpId);
+
+    const calibration = db.getPumpCalibration(body.data.pumpId);
+    const approxMl =
+      calibration.stepsPerMl && calibration.stepsPerMl > 0
+        ? totalSteps / calibration.stepsPerMl
+        : null;
+
+    // Log the prime run for audit, but keep it out of dose totals/history.
+    db.saveDoseEvent({
+      id: randomUUID(),
+      pumpId: body.data.pumpId,
+      requestedMl: 0,
+      actualMl: approxMl,
+      status: 'completed',
+      source: 'prime',
+      scheduleId: null,
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      error: null,
+    });
+
+    return {
+      pumpId: body.data.pumpId,
+      totalSteps,
+      approxMl,
     };
   });
 
