@@ -145,6 +145,29 @@ export function getPreviousDueDate(
 }
 
 /**
+ * Compute all scheduled occurrences between `lastRunAt` and `now` (inclusive of
+ * `now` if it lands exactly on a due time). Uses `getNextDueDate` so it respects
+ * `repeatEveryNDays` relative to the anchor date.
+ */
+export function getMissedDueDates(
+  schedule: Pick<DoseSchedule, 'timesPerDay' | 'startTime' | 'repeatEveryNDays'>,
+  lastRunAt: Date,
+  now: Date,
+): Date[] {
+  const missed: Date[] = [];
+  let cursor = new Date(lastRunAt);
+
+  while (true) {
+    const nextDue = getNextDueDate(schedule, cursor);
+    if (!nextDue || nextDue > now) break;
+    missed.push(nextDue);
+    cursor = nextDue;
+  }
+
+  return missed;
+}
+
+/**
  * Compute the next scheduled occurrence after `now` for a schedule.
  */
 export function getNextDueDate(

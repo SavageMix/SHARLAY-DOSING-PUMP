@@ -3,6 +3,7 @@ import type {
   ContainerInfo,
   DoseEvent,
   DoseSchedule,
+  MissedDose,
   PumpId,
   PumpState,
 } from './types.js';
@@ -122,4 +123,17 @@ export interface HistoryQuery {
 export interface HistoryResponse {
   events: DoseEvent[];
   total: number;
+}
+
+export interface ListMissedDosesResponse {
+  missedDoses: MissedDose[];
+}
+
+export interface ConfirmMissedDoseResponse {
+  missedDose: MissedDose;
+  jobId: string;
+}
+
+export interface DismissMissedDoseResponse {
+  missedDose: MissedDose;
 }

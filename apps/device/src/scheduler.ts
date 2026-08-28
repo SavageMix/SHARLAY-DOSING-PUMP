@@ -1,5 +1,10 @@
 import { getPreviousDueDate } from '@reef/shared';
 import type { DoseEvent, DoseSchedule, PumpId } from '@reef/shared';
+import {
+  detectMissedDoses,
+  expireStaleMissedDoses,
+  type MissedDosesRepository,
+} from './missed-doses.js';
 
 export interface SchedulerRepository {
   getEnabledSchedules(): DoseSchedule[];
@@ -22,13 +27,17 @@ export class Scheduler {
   private timer: NodeJS.Timeout | null = null;
 
   constructor(
-    private repository: SchedulerRepository,
+    private repository: SchedulerRepository & MissedDosesRepository,
     private engine: SchedulerEngine,
     private intervalMs: number = DEFAULT_INTERVAL_MS,
   ) {}
 
   start(): void {
     if (this.timer) return;
+    // Find doses missed while the engine was offline and surface them as
+    // pending confirmations. This must happen before the scheduler begins firing
+    // future doses so we never auto-fire a missed slot.
+    detectMissedDoses(this.repository, new Date());
     this.timer = setInterval(() => this.tick(), this.intervalMs);
     // Run an immediate first check so we don't wait up to 30s after startup.
     void this.tick();
@@ -43,6 +52,11 @@ export class Scheduler {
 
   tick(): void {
     const now = new Date();
+
+    // Expire stale missed-dose confirmations. Pending confirmations never block
+    // the schedule; the scheduler continues to fire every future due dose.
+    expireStaleMissedDoses(this.repository, now);
+
     const schedules = this.repository.getEnabledSchedules();
 
     for (const schedule of schedules) {
@@ -89,7 +103,7 @@ export class Scheduler {
 }
 
 export function createScheduler(
-  repository: SchedulerRepository,
+  repository: SchedulerRepository & MissedDosesRepository,
   engine: SchedulerEngine,
   intervalMs?: number,
 ): Scheduler {

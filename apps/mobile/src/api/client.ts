@@ -6,14 +6,18 @@ import type {
   CalibrateStartResponse,
   CalibrateStopRequest,
   CalibrateStopResponse,
+  ConfirmMissedDoseResponse,
   ContainerInfo,
   CreateScheduleRequest,
   CreateScheduleResponse,
+  DismissMissedDoseResponse,
   DoseRequest,
   DoseResponse,
   DoseSchedule,
   HistoryResponse,
   LimitsResponse,
+  ListMissedDosesResponse,
+  MissedDose,
   PumpState,
   RefillContainerRequest,
   RefillContainerResponse,
@@ -200,9 +204,43 @@ export async function getLimits(
   return request<LimitsResponse>(baseUrl, 'GET', '/api/limits');
 }
 
+export async function getMissedDoses(
+  baseUrl: string,
+): Promise<MissedDose[]> {
+  const data = await request<ListMissedDosesResponse>(
+    baseUrl,
+    'GET',
+    '/api/missed-doses',
+  );
+  return data.missedDoses;
+}
+
+export async function confirmMissedDose(
+  baseUrl: string,
+  id: string,
+): Promise<ConfirmMissedDoseResponse> {
+  return request<ConfirmMissedDoseResponse>(
+    baseUrl,
+    'POST',
+    `/api/missed-doses/${id}/confirm`,
+  );
+}
+
+export async function dismissMissedDose(
+  baseUrl: string,
+  id: string,
+): Promise<DismissMissedDoseResponse> {
+  return request<DismissMissedDoseResponse>(
+    baseUrl,
+    'POST',
+    `/api/missed-doses/${id}/dismiss`,
+  );
+}
+
 export type {
   ContainerInfo,
   DoseSchedule,
+  MissedDose,
   PumpState,
   StatusResponse,
 };

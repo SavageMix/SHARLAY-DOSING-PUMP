@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LIMITS } from '@reef/shared';
 import { ReefDatabase } from '../src/db.js';
 import { createEngine } from '../src/engine.js';
+import { createScheduler } from '../src/scheduler.js';
 
 vi.mock('../src/gpio.js', () => ({
   driversDisable: vi.fn(),
@@ -19,18 +20,24 @@ vi.mock('../src/stepper.js', () => ({
   MAX_STEPS_PER_WAVE: 1000,
 }));
 
+import { detectMissedDoses } from '../src/missed-doses.js';
 import { createServer } from '../src/server.js';
 
 describe('Server endpoints', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
   async function buildServer() {
     const db = new ReefDatabase(':memory:');
     const engine = createEngine(db);
+    const scheduler = createScheduler(db, engine);
     const server = await createServer(db, engine);
-    return { db, server };
+    scheduler.start();
+    return { db, server, scheduler };
   }
 
   it('GET /api/limits returns static LIMITS and effective volume-based caps', async () => {
-    const { db, server } = await buildServer();
+    const { db, server, scheduler } = await buildServer();
     try {
       const response = await server.fastify.inject({
         method: 'GET',
@@ -46,12 +53,13 @@ describe('Server endpoints', () => {
       expect(body.effective.rates).toBeDefined();
       expect(body.effective.hardLimits).toBeDefined();
     } finally {
+      scheduler.stop();
       db.close();
     }
   });
 
   it('GET /api/limits reflects a changed system volume', async () => {
-    const { db, server } = await buildServer();
+    const { db, server, scheduler } = await buildServer();
     try {
       db.setSystemVolumeLitres(200);
 
@@ -66,12 +74,121 @@ describe('Server endpoints', () => {
       expect(body.effective.maxSingleDoseMl).toBe(2.6);
       expect(body.effective.maxDailyDoseMlPerPump).toBe(13);
     } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('GET /api/missed-doses lists pending missed doses', async () => {
+    vi.setSystemTime(new Date('2026-08-24T09:30:00Z'));
+    const { db, server, scheduler } = await buildServer();
+    try {
+      const schedule = db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 1.5,
+        timesPerDay: 1,
+        startTime: '09:00',
+        repeatEveryNDays: 1,
+        enabled: true,
+        lastRunAt: '2026-08-23T09:00:00.000Z',
+      });
+      detectMissedDoses(db, new Date());
+
+      const response = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/missed-doses',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.missedDoses).toHaveLength(1);
+      expect(body.missedDoses[0]).toMatchObject({
+        scheduleId: schedule.id,
+        pumpId: 'alk',
+        volumeMl: 1.5,
+        status: 'pending',
+      });
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/missed-doses/:id/dismiss marks a missed dose dismissed', async () => {
+    vi.setSystemTime(new Date('2026-08-24T09:30:00Z'));
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 1.5,
+        timesPerDay: 1,
+        startTime: '09:00',
+        repeatEveryNDays: 1,
+        enabled: true,
+        lastRunAt: '2026-08-23T09:00:00.000Z',
+      });
+      detectMissedDoses(db, new Date());
+
+      const list = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/missed-doses',
+      });
+      const { missedDoses } = JSON.parse(list.body);
+      expect(missedDoses).toHaveLength(1);
+
+      const response = await server.fastify.inject({
+        method: 'POST',
+        url: `/api/missed-doses/${missedDoses[0].id}/dismiss`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.missedDose.status).toBe('dismissed');
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/missed-doses/:id/confirm queues the missed dose through the engine', async () => {
+    vi.setSystemTime(new Date('2026-08-24T09:30:00Z'));
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.updatePumpCalibration('alk', 100);
+      db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 1.5,
+        timesPerDay: 1,
+        startTime: '09:00',
+        repeatEveryNDays: 1,
+        enabled: true,
+        lastRunAt: '2026-08-23T09:00:00.000Z',
+      });
+      detectMissedDoses(db, new Date());
+
+      const list = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/missed-doses',
+      });
+      const { missedDoses } = JSON.parse(list.body);
+
+      const response = await server.fastify.inject({
+        method: 'POST',
+        url: `/api/missed-doses/${missedDoses[0].id}/confirm`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.missedDose.status).toBe('confirmed');
+      expect(body.jobId).toBeDefined();
+    } finally {
+      scheduler.stop();
       db.close();
     }
   });
 
   it('includes CORS headers reflecting the request origin', async () => {
-    const { db, server } = await buildServer();
+    const { db, server, scheduler } = await buildServer();
     try {
       const response = await server.fastify.inject({
         method: 'GET',
@@ -84,6 +201,7 @@ describe('Server endpoints', () => {
         'http://192.168.0.123:8081',
       );
     } finally {
+      scheduler.stop();
       db.close();
     }
   });

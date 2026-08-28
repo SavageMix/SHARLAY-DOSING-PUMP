@@ -13,12 +13,16 @@ import { useFocusEffect } from 'expo-router';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedTextInput, ThemedView } from '@/components/Themed';
 import {
+  confirmMissedDose,
+  dismissMissedDose,
   getDeviceBaseUrl,
   getLimits,
+  getMissedDoses,
   getSchedules,
   getStatus,
   postDose,
   type DoseResponse,
+  type MissedDose,
   type StatusResponse,
 } from '@/src/api/client';
 import { Theme } from '@/constants/Theme';
@@ -38,6 +42,7 @@ interface DashboardData {
   status: StatusResponse;
   schedules: DoseSchedule[];
   limits: LimitsResponse;
+  missedDoses: MissedDose[];
 }
 
 interface DoseState {
@@ -264,6 +269,98 @@ function DoseModal({
   );
 }
 
+const PUMP_DISPLAY_NAMES: Record<PumpId, string> = {
+  alk: 'Alkalinity',
+  ca: 'Calcium',
+  no3: 'Nitrate',
+  po4: 'Phosphate',
+};
+
+function formatLateness(scheduledFor: string): string {
+  const diffMs = Date.now() - new Date(scheduledFor).getTime();
+  if (diffMs < 0) return 'due now';
+  const diffMins = Math.round(diffMs / 60_000);
+  if (diffMins < 60) return `${diffMins} min late`;
+  const diffHours = Math.round(diffMins / 60);
+  if (diffHours < 24) return `${diffHours} hr late`;
+  const diffDays = Math.round(diffHours / 24);
+  return `${diffDays} day late`;
+}
+
+function MissedDosesModal({
+  missedDoses,
+  loadingId,
+  onConfirm,
+  onDismiss,
+}: {
+  missedDoses: MissedDose[];
+  loadingId: string | null;
+  onConfirm: (id: string) => void;
+  onDismiss: (id: string) => void;
+}) {
+  return (
+    <Modal visible={missedDoses.length > 0} transparent animationType="fade">
+      <ThemedView style={styles.modalOverlay}>
+        <ThemedView style={[styles.modalContent, styles.missedContent]}>
+          <ThemedText style={styles.modalHeader}>Power interrupted</ThemedText>
+          <ThemedText style={styles.missedSubheader}>
+            {missedDoses.length} scheduled dose
+            {missedDoses.length === 1 ? ' was' : 's were'} missed. Confirm to
+            dose now, or skip to ignore.
+          </ThemedText>
+
+          <ScrollView style={styles.missedList}>
+            {missedDoses.map((missed) => (
+              <ThemedView key={missed.id} style={styles.missedItem}>
+                <ThemedView style={styles.missedRow}>
+                  <ThemedText style={styles.missedPump}>
+                    {PUMP_DISPLAY_NAMES[missed.pumpId] ?? missed.pumpId}
+                  </ThemedText>
+                  <ThemedText style={styles.missedVolume}>
+                    {missed.volumeMl.toFixed(2)} mL
+                  </ThemedText>
+                </ThemedView>
+                <ThemedText style={styles.missedTime}>
+                  {formatDateTime(new Date(missed.scheduledFor))} ·{' '}
+                  {formatLateness(missed.scheduledFor)}
+                </ThemedText>
+
+                <ThemedView style={styles.missedActions}>
+                  <Pressable
+                    style={[styles.modalButton, styles.skipButton]}
+                    onPress={() => onDismiss(missed.id)}
+                    disabled={loadingId === missed.id}>
+                    <ThemedText
+                      style={[styles.cancelButtonText, styles.missedButtonText]}>
+                      Skip
+                    </ThemedText>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.modalButton, styles.confirmButton]}
+                    onPress={() => onConfirm(missed.id)}
+                    disabled={loadingId === missed.id}>
+                    {loadingId === missed.id ? (
+                      <ActivityIndicator color={T.colors.background} />
+                    ) : (
+                      <ThemedText
+                        style={[
+                          styles.confirmButtonText,
+                          styles.missedButtonText,
+                        ]}>
+                        Confirm dose
+                      </ThemedText>
+                    )}
+                  </Pressable>
+                </ThemedView>
+              </ThemedView>
+            ))}
+          </ScrollView>
+        </ThemedView>
+      </ThemedView>
+    </Modal>
+  );
+}
+
 export default function DashboardScreen() {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [data, setData] = useState<DashboardData | null>(null);
@@ -272,6 +369,8 @@ export default function DashboardScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [modalPumpId, setModalPumpId] = useState<PumpId | null>(null);
   const [doseStates, setDoseStates] = useState<Record<string, DoseState>>({});
+  const [missedDoses, setMissedDoses] = useState<MissedDose[]>([]);
+  const [missedDoseLoading, setMissedDoseLoading] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -290,12 +389,14 @@ export default function DashboardScreen() {
     try {
       setLoading(true);
       setOffline(false);
-      const [status, schedules, limits] = await Promise.all([
+      const [status, schedules, limits, missed] = await Promise.all([
         getStatus(baseUrl),
         getSchedules(baseUrl),
         getLimits(baseUrl),
+        getMissedDoses(baseUrl),
       ]);
-      setData({ status, schedules, limits });
+      setData({ status, schedules, limits, missedDoses: missed });
+      setMissedDoses(missed);
     } catch {
       setOffline(true);
     } finally {
@@ -414,6 +515,36 @@ export default function DashboardScreen() {
     return map;
   }, [data?.schedules]);
 
+  const handleMissedConfirm = async (id: string) => {
+    if (!baseUrl) return;
+    setMissedDoseLoading(id);
+    try {
+      await confirmMissedDose(baseUrl, id);
+      setMissedDoses((prev) => prev.filter((m) => m.id !== id));
+    } catch (err) {
+      // Keep the modal open so the user can retry; the device will return a
+      // descriptive limit error.
+      alert(err instanceof Error ? err.message : 'Failed to confirm dose');
+    } finally {
+      setMissedDoseLoading(null);
+      load();
+    }
+  };
+
+  const handleMissedDismiss = async (id: string) => {
+    if (!baseUrl) return;
+    setMissedDoseLoading(id);
+    try {
+      await dismissMissedDose(baseUrl, id);
+      setMissedDoses((prev) => prev.filter((m) => m.id !== id));
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to skip dose');
+    } finally {
+      setMissedDoseLoading(null);
+      load();
+    }
+  };
+
   const handleDoseConfirm = async (pumpId: PumpId, volumeMl: number) => {
     if (!baseUrl) return;
     setModalPumpId(null);
@@ -514,6 +645,13 @@ export default function DashboardScreen() {
         maxSingleDoseMl={data?.limits.effective.maxSingleDoseMl ?? 5}
         onClose={() => setModalPumpId(null)}
         onConfirm={handleDoseConfirm}
+      />
+
+      <MissedDosesModal
+        missedDoses={missedDoses}
+        loadingId={missedDoseLoading}
+        onConfirm={handleMissedConfirm}
+        onDismiss={handleMissedDismiss}
       />
     </ThemedView>
   );
@@ -765,5 +903,60 @@ const styles = StyleSheet.create({
     ...T.typography.title,
     color: T.colors.background,
     fontFamily: T.typography.fontFamily.semiBold,
+  },
+  missedContent: {
+    maxHeight: '80%',
+    borderColor: T.colors.warning,
+    ...T.shadows.elevated,
+  },
+  missedSubheader: {
+    ...T.typography.small,
+    color: T.colors.textSecondary,
+    marginBottom: T.spacing.lg,
+  },
+  missedList: {
+    maxHeight: 400,
+  },
+  missedItem: {
+    backgroundColor: T.colors.surfaceElevated,
+    borderRadius: T.radius.sm,
+    padding: T.spacing.lg,
+    marginBottom: T.spacing.md,
+    borderLeftWidth: 4,
+    borderLeftColor: T.colors.warning,
+  },
+  missedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: T.spacing.xs,
+  },
+  missedPump: {
+    ...T.typography.title,
+    color: T.colors.textPrimary,
+    textTransform: 'uppercase',
+  },
+  missedVolume: {
+    ...T.typography.body,
+    color: T.colors.warning,
+    fontFamily: T.typography.fontFamily.semiBold,
+  },
+  missedTime: {
+    ...T.typography.small,
+    color: T.colors.textMuted,
+    marginBottom: T.spacing.md,
+  },
+  missedActions: {
+    flexDirection: 'row',
+    gap: T.spacing.md,
+  },
+  skipButton: {
+    flex: 1,
+    backgroundColor: T.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: T.colors.border,
+  },
+  missedButtonText: {
+    ...T.typography.body,
   },
 });

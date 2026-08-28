@@ -10,6 +10,7 @@ import {
   startCalibration,
   stopCalibration,
 } from './calibrator.js';
+import { confirmMissedDose, dismissMissedDose } from './missed-doses.js';
 
 const pumpIdSchema = z.enum(['alk', 'ca', 'no3', 'po4']);
 
@@ -53,6 +54,10 @@ const scheduleUpdateBodySchema = z.object({
 });
 
 const scheduleParamsSchema = z.object({
+  id: z.string().uuid(),
+});
+
+const missedDoseParamsSchema = z.object({
   id: z.string().uuid(),
 });
 
@@ -538,6 +543,44 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
       remainingMl: remaining,
       capacityMl: capacity,
     };
+  });
+
+  fastify.get('/api/missed-doses', async () => {
+    return { missedDoses: db.getPendingMissedDoses() };
+  });
+
+  fastify.post('/api/missed-doses/:id/confirm', async (request, reply) => {
+    const params = missedDoseParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.status(400).send({ error: firstZodMessage(params.error) });
+    }
+
+    try {
+      const jobId = await confirmMissedDose(db, engine, params.data.id);
+      const missedDose = db.getMissedDoseById(params.data.id);
+      return { missedDose, jobId };
+    } catch (error) {
+      return reply.status(409).send({
+        error: error instanceof Error ? error.message : 'Failed to confirm',
+      });
+    }
+  });
+
+  fastify.post('/api/missed-doses/:id/dismiss', async (request, reply) => {
+    const params = missedDoseParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.status(400).send({ error: firstZodMessage(params.error) });
+    }
+
+    try {
+      dismissMissedDose(db, params.data.id);
+      const missedDose = db.getMissedDoseById(params.data.id);
+      return { missedDose };
+    } catch (error) {
+      return reply.status(409).send({
+        error: error instanceof Error ? error.message : 'Failed to dismiss',
+      });
+    }
   });
 
   return {

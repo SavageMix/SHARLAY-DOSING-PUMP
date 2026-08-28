@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DoseEvent, DoseSchedule, PumpId } from '@reef/shared';
+import type { DoseEvent, DoseSchedule, MissedDose, MissedDoseStatus, PumpId } from '@reef/shared';
 import { Scheduler, type SchedulerEngine, type SchedulerRepository } from '../src/scheduler.js';
+import type { MissedDosesRepository } from '../src/missed-doses.js';
 
-class FakeSchedulerRepository implements SchedulerRepository {
+class FakeSchedulerRepository implements SchedulerRepository, MissedDosesRepository {
   schedules: DoseSchedule[] = [];
   events: DoseEvent[] = [];
+  missedDoses: MissedDose[] = [];
 
   getEnabledSchedules(): DoseSchedule[] {
     return this.schedules.filter((s) => s.enabled);
@@ -19,6 +21,54 @@ class FakeSchedulerRepository implements SchedulerRepository {
     return this.events.filter(
       (event) =>
         event.scheduleId === scheduleId && event.startedAt > after,
+    );
+  }
+
+  getSystemVolumeLitres(): number {
+    return 380;
+  }
+
+  getTodayDoseMl(): number {
+    return 0;
+  }
+
+  createMissedDose(missed: Omit<MissedDose, 'id' | 'createdAt'>): MissedDose {
+    const entry: MissedDose = {
+      ...missed,
+      id: `missed-${this.missedDoses.length + 1}`,
+      createdAt: new Date().toISOString(),
+    };
+    this.missedDoses.push(entry);
+    return entry;
+  }
+
+  getPendingMissedDoses(): MissedDose[] {
+    return this.missedDoses.filter((m) => m.status === 'pending');
+  }
+
+  getMissedDoseById(id: string): MissedDose | undefined {
+    return this.missedDoses.find((m) => m.id === id);
+  }
+
+  updateMissedDoseStatus(id: string, status: MissedDoseStatus): void {
+    const missed = this.missedDoses.find((m) => m.id === id);
+    if (missed) missed.status = status;
+  }
+
+  expireMissedDosesBefore(threshold: string): void {
+    for (const missed of this.missedDoses) {
+      if (missed.status === 'pending' && missed.createdAt < threshold) {
+        missed.status = 'expired';
+      }
+    }
+  }
+
+  hasPendingMissedDoseForSlot(scheduleId: string, scheduledFor: string): boolean {
+    return this.missedDoses.some(
+      (m) =>
+        m.scheduleId === scheduleId &&
+        m.scheduledFor === scheduledFor &&
+        m.status === 'pending',
     );
   }
 }
@@ -157,6 +207,45 @@ describe('Scheduler', () => {
     scheduler.tick();
 
     expect(engine.submitDose).not.toHaveBeenCalled();
+  });
+
+  it('still fires the next scheduled dose while a missed-dose confirmation is pending', () => {
+    vi.setSystemTime(new Date('2026-08-24T09:30:00Z'));
+
+    const repo = new FakeSchedulerRepository();
+    repo.schedules.push(
+      makeSchedule({
+        id: 'sched-1',
+        pumpId: 'alk',
+        startTime: '09:00',
+        // Last ran on 23rd; today's 09:00 slot was missed and is pending confirmation.
+        lastRunAt: '2026-08-23T09:00:00.000Z',
+      }),
+    );
+    repo.missedDoses.push({
+      id: 'missed-1',
+      scheduleId: 'sched-1',
+      pumpId: 'alk',
+      scheduledFor: '2026-08-24T09:00:00.000Z',
+      volumeMl: 1,
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    });
+
+    const engine = createFakeEngine();
+    const scheduler = new Scheduler(repo, engine, 30_000);
+
+    scheduler.tick();
+
+    // The next scheduled dose must fire automatically despite the pending confirmation.
+    expect(engine.submitDose).toHaveBeenCalledWith(
+      'alk',
+      1,
+      'schedule',
+      'sched-1',
+    );
+    expect(repo.schedules[0].lastRunAt).toBe('2026-08-24T09:00:00.000Z');
+    expect(repo.missedDoses[0].status).toBe('pending');
   });
 
   it('advances lastRunAt to the previous due time even if no event fired', () => {

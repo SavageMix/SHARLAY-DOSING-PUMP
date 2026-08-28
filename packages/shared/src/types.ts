@@ -29,6 +29,12 @@ export type DoseEventStatus =
   | 'failed'
   | 'aborted';
 
+export type MissedDoseStatus =
+  | 'pending'
+  | 'confirmed'
+  | 'dismissed'
+  | 'expired';
+
 export interface DoseEvent {
   id: string;
   pumpId: PumpId;
@@ -47,6 +53,16 @@ export interface ContainerInfo {
   capacityMl: number;
   remainingMl: number;
   lastRefilledAt: string | null;
+}
+
+export interface MissedDose {
+  id: string;
+  scheduleId: string;
+  pumpId: PumpId;
+  scheduledFor: string;
+  volumeMl: number;
+  status: MissedDoseStatus;
+  createdAt: string;
 }
 
 export interface SystemSettings {

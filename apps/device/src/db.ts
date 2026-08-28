@@ -2,15 +2,20 @@ import Database from 'better-sqlite3';
 import type {
   DoseEvent,
   DoseSchedule,
+  MissedDose,
+  MissedDoseStatus,
   PumpId,
 } from '@reef/shared';
 import type { DoseRepository, PumpCalibration } from './engine.js';
 import type { SchedulerRepository } from './scheduler.js';
+import type { MissedDosesRepository } from './missed-doses.js';
 
 const DEFAULT_CONTAINER_CAPACITY_ML = 1000;
 const DEFAULT_SYSTEM_VOLUME_LITRES = 380;
 
-export class ReefDatabase implements DoseRepository, SchedulerRepository {
+export class ReefDatabase
+  implements DoseRepository, SchedulerRepository, MissedDosesRepository
+{
   private db: Database.Database;
 
   constructor(path: string) {
@@ -61,6 +66,21 @@ export class ReefDatabase implements DoseRepository, SchedulerRepository {
         ON dose_events(pump_id, started_at);
       CREATE INDEX IF NOT EXISTS idx_dose_events_schedule_started
         ON dose_events(schedule_id, started_at);
+
+      CREATE TABLE IF NOT EXISTS missed_doses (
+        id TEXT PRIMARY KEY,
+        schedule_id TEXT NOT NULL,
+        pump_id TEXT NOT NULL,
+        scheduled_for TEXT NOT NULL,
+        volume_ml REAL NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_missed_doses_status
+        ON missed_doses(status);
+      CREATE INDEX IF NOT EXISTS idx_missed_doses_schedule_for
+        ON missed_doses(schedule_id, scheduled_for);
 
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
@@ -368,6 +388,117 @@ export class ReefDatabase implements DoseRepository, SchedulerRepository {
       finishedAt: row.finished_at,
       error: row.error,
     }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Missed doses
+  // ---------------------------------------------------------------------------
+
+  createMissedDose(
+    missed: Omit<MissedDose, 'id' | 'createdAt'>,
+  ): MissedDose {
+    const id = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO missed_doses (
+          id, schedule_id, pump_id, scheduled_for, volume_ml, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        missed.scheduleId,
+        missed.pumpId,
+        missed.scheduledFor,
+        missed.volumeMl,
+        missed.status,
+        createdAt,
+      );
+    return { ...missed, id, createdAt };
+  }
+
+  getPendingMissedDoses(): MissedDose[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM missed_doses
+         WHERE status = 'pending'
+         ORDER BY scheduled_for ASC`,
+      )
+      .all() as Array<{
+        id: string;
+        schedule_id: string;
+        pump_id: PumpId;
+        scheduled_for: string;
+        volume_ml: number;
+        status: string;
+        created_at: string;
+      }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      scheduleId: row.schedule_id,
+      pumpId: row.pump_id,
+      scheduledFor: row.scheduled_for,
+      volumeMl: row.volume_ml,
+      status: row.status as MissedDoseStatus,
+      createdAt: row.created_at,
+    }));
+  }
+
+  getMissedDoseById(id: string): MissedDose | undefined {
+    const row = this.db
+      .prepare('SELECT * FROM missed_doses WHERE id = ?')
+      .get(id) as
+      | {
+          id: string;
+          schedule_id: string;
+          pump_id: PumpId;
+          scheduled_for: string;
+          volume_ml: number;
+          status: string;
+          created_at: string;
+        }
+      | undefined;
+
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      scheduleId: row.schedule_id,
+      pumpId: row.pump_id,
+      scheduledFor: row.scheduled_for,
+      volumeMl: row.volume_ml,
+      status: row.status as MissedDoseStatus,
+      createdAt: row.created_at,
+    };
+  }
+
+  updateMissedDoseStatus(id: string, status: MissedDoseStatus): void {
+    this.db
+      .prepare("UPDATE missed_doses SET status = ? WHERE id = ?")
+      .run(status, id);
+  }
+
+  expireMissedDosesBefore(threshold: string): void {
+    this.db
+      .prepare(
+        `UPDATE missed_doses
+         SET status = 'expired'
+         WHERE status = 'pending' AND created_at < ?`,
+      )
+      .run(threshold);
+  }
+
+  hasPendingMissedDoseForSlot(
+    scheduleId: string,
+    scheduledFor: string,
+  ): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) as count FROM missed_doses
+         WHERE schedule_id = ? AND scheduled_for = ? AND status = 'pending'`,
+      )
+      .get(scheduleId, scheduledFor) as { count: number };
+    return row.count > 0;
   }
 
   // ---------------------------------------------------------------------------
