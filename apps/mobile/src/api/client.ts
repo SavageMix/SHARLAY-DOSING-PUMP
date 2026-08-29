@@ -75,24 +75,32 @@ async function request<T>(
   body?: unknown,
 ): Promise<T> {
   const url = `${baseUrl}${path}`;
-  const response = await fetch(url, {
-    method,
-    headers: getHeaders(),
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-  const data = (await response.json().catch(() => ({}))) as Record<
-    string,
-    unknown
-  >;
+  try {
+    const response = await fetch(url, {
+      method,
+      headers: getHeaders(),
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
 
-  if (!response.ok) {
-    throw new Error(
-      typeof data.error === 'string' ? data.error : `HTTP ${response.status}`,
-    );
+    const data = (await response.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+
+    if (!response.ok) {
+      throw new Error(
+        typeof data.error === 'string' ? data.error : `HTTP ${response.status}`,
+      );
+    }
+
+    return data as T;
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  return data as T;
 }
 
 export async function getStatus(

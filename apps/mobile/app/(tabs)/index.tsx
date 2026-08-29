@@ -832,6 +832,8 @@ export default function DashboardScreen() {
       setMissedDoses(missed);
     } catch {
       setOffline(true);
+      setData(null);
+      setMissedDoses([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
