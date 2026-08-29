@@ -23,6 +23,7 @@ import {
   Svg,
 } from 'react-native-svg';
 
+import { SharlayWordmark } from '@/components/SharlayWordmark';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedTextInput, ThemedView } from '@/components/Themed';
 import {
@@ -274,7 +275,7 @@ function Header({ loading }: { loading: boolean }) {
   return (
     <View style={styles.header}>
       <View style={styles.headerTitleRow}>
-        <ThemedText style={styles.wordmark}>SHARLAY</ThemedText>
+        <SharlayWordmark width={160} />
         <View style={styles.headerIcons}>
           {loading && (
             <ActivityIndicator size="small" color={T.colors.primary} />

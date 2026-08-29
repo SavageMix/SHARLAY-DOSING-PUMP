@@ -7,6 +7,7 @@ import {
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { SharlayWordmark } from '@/components/SharlayWordmark';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
 import {
@@ -60,7 +61,7 @@ export default function SetupScreen() {
 
   return (
     <ThemedView style={styles.container}>
-      <ThemedText style={styles.title}>SHARLAY</ThemedText>
+      <SharlayWordmark width={220} color={Colors.aqua} />
       <ThemedText style={styles.subtitle}>Smart Dosing. Stable Results.</ThemedText>
 
       <View style={styles.card}>
