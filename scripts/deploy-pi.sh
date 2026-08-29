@@ -23,6 +23,9 @@ fi
 echo "==> Building TypeScript locally..."
 npm run build
 
+echo "==> Building mobile web bundle for /app..."
+npm run export:web -w apps/mobile
+
 echo "==> Syncing to ${PI_USER}@${PI_HOST}:${REMOTE_DIR}..."
 rsync -avz --delete \
   --exclude='.git' \

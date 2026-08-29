@@ -1,3 +1,5 @@
+import { writeFile, unlink } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LIMITS } from '@reef/shared';
 import { ReefDatabase } from '../src/db.js';
@@ -356,6 +358,43 @@ describe('Server endpoints', () => {
     } finally {
       scheduler.stop();
       db.close();
+    }
+  });
+
+  it('serves the mobile web bundle at /app without affecting /api routes', async () => {
+    const indexPath = fileURLToPath(new URL('../public/index.html', import.meta.url));
+    await writeFile(
+      indexPath,
+      '<!DOCTYPE html><html><body>SHARLAY Web</body></html>',
+      'utf-8',
+    );
+
+    const { db, server, scheduler } = await buildServer();
+    try {
+      const redirectResponse = await server.fastify.inject({
+        method: 'GET',
+        url: '/app',
+      });
+      expect(redirectResponse.statusCode).toBe(302);
+      expect(redirectResponse.headers.location).toBe('/app/');
+
+      const appResponse = await server.fastify.inject({
+        method: 'GET',
+        url: '/app/',
+      });
+      expect(appResponse.statusCode).toBe(200);
+      expect(appResponse.body).toContain('SHARLAY Web');
+      expect(appResponse.headers['content-type']).toContain('text/html');
+
+      const apiResponse = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/limits',
+      });
+      expect(apiResponse.statusCode).toBe(200);
+    } finally {
+      scheduler.stop();
+      db.close();
+      await unlink(indexPath);
     }
   });
 });
