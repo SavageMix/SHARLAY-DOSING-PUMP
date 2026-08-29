@@ -10,6 +10,7 @@ import {
 import { useFocusEffect } from 'expo-router';
 
 import { HistoryChart } from '@/components/HistoryChart';
+import { OfflineCard } from '@/components/OfflineCard';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/Themed';
 import {
@@ -40,6 +41,7 @@ export default function HistoryScreen() {
   const [total, setTotal] = useState(0);
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [offline, setOffline] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState<{ pumpId?: PumpId; days: number }>({
     days: 7,
@@ -51,6 +53,7 @@ export default function HistoryScreen() {
       try {
         if (showRefresh) setRefreshing(true);
         else setLoading(true);
+        setOffline(false);
 
         // Fetch the full 30-day window once; the chart always uses 30 days,
         // and the list is filtered client-side for responsiveness.
@@ -60,8 +63,10 @@ export default function HistoryScreen() {
           offset: 0,
         });
 
-        setEvents(data.events);
-        setTotal(data.total);
+        setEvents(data?.events ?? []);
+        setTotal(data?.total ?? 0);
+      } catch {
+        setOffline(true);
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -105,6 +110,7 @@ export default function HistoryScreen() {
 
   return (
     <ThemedView style={styles.container}>
+      {offline && <OfflineCard onRetry={() => load(true)} />}
       <ThemedText style={styles.header}>History</ThemedText>
 
       <FlatList

@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 
+import { OfflineCard } from '@/components/OfflineCard';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedTextInput, ThemedView } from '@/components/Themed';
 import {
@@ -335,6 +336,7 @@ export default function SettingsScreen() {
   const router = useRouter();
   const [baseUrl, setBaseUrlState] = useState('');
   const [savedUrl, setSavedUrl] = useState<string | null>(null);
+  const [offline, setOffline] = useState(false);
   const [status, setStatus] = useState<{
     pumps: { pumpId: PumpId; calibrated: boolean; stepsPerMl: number | null }[];
     queueDepth: number;
@@ -367,34 +369,31 @@ export default function SettingsScreen() {
     }, []),
   );
 
+  const load = useCallback(async () => {
+    if (!savedUrl) return;
+    try {
+      const data = await getStatus(savedUrl);
+      setOffline(false);
+      setStatus({
+        pumps: data?.pumps?.map((p) => ({
+          pumpId: p.pumpId,
+          calibrated: p.calibrated,
+          stepsPerMl: p.stepsPerMl,
+        })) ?? [],
+        queueDepth: data?.queueDepth ?? 0,
+      });
+    } catch {
+      setOffline(true);
+      setStatus(null);
+    }
+  }, [savedUrl]);
+
   useFocusEffect(
     useCallback(() => {
-      let mounted = true;
-      async function load() {
-        if (!savedUrl) return;
-        try {
-          const data = await getStatus(savedUrl);
-          if (mounted) {
-            setStatus({
-              pumps: data.pumps.map((p) => ({
-                pumpId: p.pumpId,
-                calibrated: p.calibrated,
-                stepsPerMl: p.stepsPerMl,
-              })),
-              queueDepth: data.queueDepth,
-            });
-          }
-        } catch {
-          if (mounted) setStatus(null);
-        }
-      }
       load();
       const interval = setInterval(load, 10_000);
-      return () => {
-        mounted = false;
-        clearInterval(interval);
-      };
-    }, [savedUrl]),
+      return () => clearInterval(interval);
+    }, [load]),
   );
 
   const handleSave = async () => {
@@ -474,6 +473,7 @@ export default function SettingsScreen() {
     <ThemedView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scroll}>
         <ThemedText style={styles.header}>Settings</ThemedText>
+        {offline && <OfflineCard onRetry={() => load()} />}
 
         <ThemedView style={styles.card}>
           <ThemedText style={styles.label}>Reef Doser device URL</ThemedText>

@@ -40,7 +40,12 @@ export async function getDeviceBaseUrl(): Promise<string | null> {
 
 export function resolveDeviceBaseUrl(storedUrl: string | null): string {
   if (typeof window !== 'undefined') {
-    return window.location.origin;
+    const isPiHosted =
+      window.location.port === '8000' ||
+      window.location.pathname.startsWith('/app');
+    if (isPiHosted) {
+      return window.location.origin;
+    }
   }
   return storedUrl ?? DEFAULT_DEVICE_BASE_URL;
 }

@@ -15,6 +15,7 @@ import {
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useFocusEffect } from 'expo-router';
 
+import { OfflineCard } from '@/components/OfflineCard';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedTextInput, ThemedView } from '@/components/Themed';
 import {
@@ -352,6 +353,7 @@ export default function SchedulesScreen() {
   const [schedules, setSchedules] = useState<DoseSchedule[]>([]);
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [offline, setOffline] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm());
@@ -367,22 +369,27 @@ export default function SchedulesScreen() {
     }, []),
   );
 
+  const load = useCallback(
+    async (showRefresh = false) => {
+      if (!baseUrl) return;
+      try {
+        setOffline(false);
+        if (!showRefresh) setLoading(true);
+        const data = await getSchedules(baseUrl);
+        setSchedules(data ?? []);
+      } catch {
+        setOffline(true);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [baseUrl],
+  );
+
   useFocusEffect(
     useCallback(() => {
-      let mounted = true;
-      async function load() {
-        if (!baseUrl) return;
-        try {
-          setLoading(true);
-          const schedules = await getSchedules(baseUrl);
-          if (mounted) setSchedules(schedules);
-        } finally {
-          if (mounted) setLoading(false);
-        }
-      }
       load();
-      return () => { mounted = false; };
-    }, [baseUrl]),
+    }, [load]),
   );
 
   const grouped = useMemo(() => {
@@ -470,6 +477,7 @@ export default function SchedulesScreen() {
 
   return (
     <ThemedView style={styles.container}>
+      {offline && <OfflineCard onRetry={() => load(true)} />}
       <ThemedView style={styles.headerRow}>
         <ThemedText style={styles.header}>Schedules</ThemedText>
         <Pressable style={styles.addButton} onPress={openNew}>
