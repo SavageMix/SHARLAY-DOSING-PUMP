@@ -269,4 +269,71 @@ describe('Scheduler', () => {
     expect(engine.submitDose).toHaveBeenCalledOnce();
     expect(repo.schedules[0].lastRunAt).toBe('2026-08-23T09:00:00.000Z');
   });
+
+  it('with an untrusted clock, treats intervening scheduled doses as missed instead of firing them', () => {
+    vi.setSystemTime(new Date('2026-08-29T10:00:00Z'));
+
+    const repo = new FakeSchedulerRepository();
+    repo.schedules.push(
+      makeSchedule({
+        id: 'sched-1',
+        pumpId: 'alk',
+        startTime: '09:00',
+        lastRunAt: '2026-08-28T09:00:00.000Z',
+      }),
+    );
+
+    const engine = createFakeEngine();
+    const scheduler = new Scheduler(repo, engine, 30_000);
+
+    scheduler.start({ clockTrusted: false });
+
+    // The 09:00 slot on 29 Aug appears overdue because the untrusted clock
+    // says it is 10:00. It must be surfaced as a pending confirmation, not
+    // fired automatically.
+    expect(engine.submitDose).not.toHaveBeenCalled();
+    expect(repo.missedDoses).toHaveLength(1);
+    expect(repo.missedDoses[0]).toMatchObject({
+      scheduleId: 'sched-1',
+      pumpId: 'alk',
+      scheduledFor: '2026-08-29T09:00:00.000Z',
+      status: 'pending',
+    });
+    expect(repo.schedules[0].lastRunAt).toBe('2026-08-29T09:00:00.000Z');
+  });
+
+  it('after untrusted-clock startup, future scheduled doses still fire normally', () => {
+    vi.setSystemTime(new Date('2026-08-29T10:00:00Z'));
+
+    const repo = new FakeSchedulerRepository();
+    repo.schedules.push(
+      makeSchedule({
+        id: 'sched-1',
+        pumpId: 'alk',
+        startTime: '09:00',
+        lastRunAt: '2026-08-28T09:00:00.000Z',
+      }),
+    );
+
+    const engine = createFakeEngine();
+    const scheduler = new Scheduler(repo, engine, 30_000);
+
+    // Boot with untrusted clock: the 29 Aug 09:00 slot becomes a pending
+    // confirmation and lastRunAt advances to that time.
+    scheduler.start({ clockTrusted: false });
+    expect(engine.submitDose).not.toHaveBeenCalled();
+
+    // Clock later becomes correct / NTP syncs; the next day's 09:00 slot fires
+    // exactly once.
+    vi.setSystemTime(new Date('2026-08-30T09:30:00Z'));
+    scheduler.tick();
+
+    expect(engine.submitDose).toHaveBeenCalledWith(
+      'alk',
+      1,
+      'schedule',
+      'sched-1',
+    );
+    expect(engine.submitDose).toHaveBeenCalledOnce();
+  });
 });

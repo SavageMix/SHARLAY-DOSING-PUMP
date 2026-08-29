@@ -9,6 +9,7 @@ import type {
 import {
   confirmMissedDose,
   detectMissedDoses,
+  detectMissedDosesWithUntrustedClock,
   dismissMissedDose,
   expireStaleMissedDoses,
   type MissedDosesEngine,
@@ -187,6 +188,35 @@ describe('detectMissedDoses', () => {
     // The only missed slot is 2026-08-23T09:00:00.000Z, which is older than
     // the 24-hour lookback window. It should be forgotten, not surfaced.
     expect(repo.missedDoses).toHaveLength(0);
+  });
+
+  it('untrusted-clock mode surfaces all intervening slots without a lookback cutoff', () => {
+    const now = new Date('2026-08-29T10:00:00Z');
+    vi.setSystemTime(now);
+
+    const repo = new FakeMissedDosesRepository();
+    repo.schedules.push(
+      makeSchedule({
+        id: 'sched-1',
+        pumpId: 'alk',
+        startTime: '09:00',
+        repeatEveryNDays: 1,
+        lastRunAt: '2026-08-28T09:00:00.000Z',
+      }),
+    );
+
+    // Even though the 2026-08-29 09:00 slot is more than 24h after the
+    // previous run, the untrusted-clock mode still surfaces it because we cannot
+    // trust the wall clock to know whether it actually fired.
+    detectMissedDosesWithUntrustedClock(repo, now);
+
+    expect(repo.missedDoses).toHaveLength(1);
+    expect(repo.missedDoses[0]).toMatchObject({
+      scheduleId: 'sched-1',
+      scheduledFor: '2026-08-29T09:00:00.000Z',
+      status: 'pending',
+    });
+    expect(repo.schedules[0].lastRunAt).toBe('2026-08-29T09:00:00.000Z');
   });
 
   it('does not duplicate a pending entry on restart', () => {

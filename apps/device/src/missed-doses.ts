@@ -173,3 +173,45 @@ export function expireStaleMissedDoses(
   const cutoff = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
   repository.expireMissedDosesBefore(cutoff.toISOString());
 }
+
+/**
+ * Untrusted-clock variant of missed-dose detection.
+ *
+ * When the device boots without a real-time clock and NTP has not yet
+ * synchronized, we cannot trust the wall clock. We therefore conservatively
+ * treat EVERY scheduled slot since lastRunAt as a missed confirmation rather
+ * than risk firing doses based on a fake-hwclock timestamp. lastRunAt is
+ * advanced to the current untrusted time so the scheduler only fires doses that
+ * become due from this point forward.
+ */
+export function detectMissedDosesWithUntrustedClock(
+  repository: MissedDosesRepository,
+  now: Date,
+): void {
+  const schedules = repository.getEnabledSchedules();
+
+  for (const schedule of schedules) {
+    const lastRunAt = schedule.lastRunAt ? new Date(schedule.lastRunAt) : null;
+    if (!lastRunAt) continue;
+
+    const missedDueDates = getMissedDueDates(schedule, lastRunAt, now);
+
+    for (const dueDate of missedDueDates) {
+      const exists = repository.hasPendingMissedDoseForSlot(
+        schedule.id,
+        dueDate.toISOString(),
+      );
+      if (!exists) {
+        repository.createMissedDose({
+          scheduleId: schedule.id,
+          pumpId: schedule.pumpId,
+          scheduledFor: dueDate.toISOString(),
+          volumeMl: schedule.volumeMl,
+          status: 'pending',
+        });
+      }
+
+      repository.updateScheduleLastRunAt(schedule.id, dueDate.toISOString());
+    }
+  }
+}

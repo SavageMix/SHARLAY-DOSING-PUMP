@@ -2,6 +2,7 @@ import { getPreviousDueDate } from '@reef/shared';
 import type { DoseEvent, DoseSchedule, PumpId } from '@reef/shared';
 import {
   detectMissedDoses,
+  detectMissedDosesWithUntrustedClock,
   expireStaleMissedDoses,
   type MissedDosesRepository,
 } from './missed-doses.js';
@@ -32,12 +33,24 @@ export class Scheduler {
     private intervalMs: number = DEFAULT_INTERVAL_MS,
   ) {}
 
-  start(): void {
+  start(options: { clockTrusted?: boolean } = {}): void {
     if (this.timer) return;
-    // Find doses missed while the engine was offline and surface them as
-    // pending confirmations. This must happen before the scheduler begins firing
-    // future doses so we never auto-fire a missed slot.
-    detectMissedDoses(this.repository, new Date());
+
+    const clockTrusted = options.clockTrusted ?? true;
+
+    if (clockTrusted) {
+      // Find doses missed while the engine was offline and surface them as
+      // pending confirmations. This must happen before the scheduler begins firing
+      // future doses so we never auto-fire a missed slot.
+      detectMissedDoses(this.repository, new Date());
+    } else {
+      // The clock is not trusted (e.g., no RTC and NTP not yet available).
+      // Treat every scheduled dose since lastRunAt as a missed confirmation
+      // instead of firing it; advance lastRunAt to the current (untrusted) time
+      // so future ticks only fire doses that become due from here on.
+      detectMissedDosesWithUntrustedClock(this.repository, new Date());
+    }
+
     this.timer = setInterval(() => this.tick(), this.intervalMs);
     // Run an immediate first check so we don't wait up to 30s after startup.
     void this.tick();

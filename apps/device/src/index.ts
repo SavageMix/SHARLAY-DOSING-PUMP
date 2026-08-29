@@ -2,6 +2,7 @@ import { createEngine } from './engine.js';
 import { ReefDatabase } from './db.js';
 import { createScheduler } from './scheduler.js';
 import { createServer } from './server.js';
+import { waitForClockSync } from './clock-sync.js';
 
 const DB_PATH = process.env.REEF_DB_PATH ?? './reef-doser.db';
 const PORT = Number(process.env.REEF_PORT ?? 8000);
@@ -13,8 +14,24 @@ async function main(): Promise<void> {
   const scheduler = createScheduler(db, engine);
   const server = await createServer(db, engine);
 
-  scheduler.start();
+  // Start the API server immediately so the app can connect and show status
+  // even while we wait for the system clock to become trustworthy.
   await server.listen(PORT, HOST);
+
+  // Wait for NTP synchronization before making scheduling decisions. A Pi
+  // without an RTC can boot with a fake-hwclock timestamp from shutdown, which
+  // would cause the scheduler to fire doses that were actually missed while
+  // the device was off.
+  const clockTrusted = await waitForClockSync();
+  if (clockTrusted) {
+    console.log('Clock synchronized, scheduler armed');
+  } else {
+    console.log(
+      'Clock NOT synchronized after 120s — treating intervening doses as missed',
+    );
+  }
+
+  scheduler.start({ clockTrusted });
 
   const shutdown = async () => {
     console.log('Shutting down...');
