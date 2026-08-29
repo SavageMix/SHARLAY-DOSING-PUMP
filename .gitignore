@@ -6,3 +6,7 @@ dist/
 .env
 .env.local
 .DS_Store
+
+# Generated web bundle served by the device server; rebuilt on each deploy.
+apps/device/public/*
+!apps/device/public/.gitkeep
