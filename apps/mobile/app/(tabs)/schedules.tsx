@@ -22,6 +22,7 @@ import {
   deleteSchedule,
   getDeviceBaseUrl,
   getSchedules,
+  resolveDeviceBaseUrl,
   updateSchedule,
   type DoseSchedule,
 } from '@/src/api/client';
@@ -360,7 +361,7 @@ export default function SchedulesScreen() {
     useCallback(() => {
       let mounted = true;
       getDeviceBaseUrl().then((url) => {
-        if (mounted) setBaseUrl(url);
+        if (mounted) setBaseUrl(resolveDeviceBaseUrl(url));
       });
       return () => { mounted = false; };
     }, []),

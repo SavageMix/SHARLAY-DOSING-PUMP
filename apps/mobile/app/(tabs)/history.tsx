@@ -12,7 +12,11 @@ import { useFocusEffect } from 'expo-router';
 import { HistoryChart } from '@/components/HistoryChart';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/Themed';
-import { getDeviceBaseUrl, getHistory } from '@/src/api/client';
+import {
+  getDeviceBaseUrl,
+  getHistory,
+  resolveDeviceBaseUrl,
+} from '@/src/api/client';
 import type { DoseEvent, PumpId } from '@reef/shared';
 import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
 
@@ -70,7 +74,7 @@ export default function HistoryScreen() {
     useCallback(() => {
       let mounted = true;
       getDeviceBaseUrl().then((url) => {
-        if (mounted) setBaseUrl(url);
+        if (mounted) setBaseUrl(resolveDeviceBaseUrl(url));
       });
       return () => {
         mounted = false;

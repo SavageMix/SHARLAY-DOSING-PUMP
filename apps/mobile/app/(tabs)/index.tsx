@@ -21,6 +21,7 @@ import {
   getSchedules,
   getStatus,
   postDose,
+  resolveDeviceBaseUrl,
   type DoseResponse,
   type MissedDose,
   type StatusResponse,
@@ -376,7 +377,7 @@ export default function DashboardScreen() {
     useCallback(() => {
       let mounted = true;
       getDeviceBaseUrl().then((url) => {
-        if (mounted) setBaseUrl(url);
+        if (mounted) setBaseUrl(resolveDeviceBaseUrl(url));
       });
       return () => {
         mounted = false;

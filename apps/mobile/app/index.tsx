@@ -9,10 +9,13 @@ import {
 import { useRouter } from 'expo-router';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
-import { getDeviceBaseUrl, setDeviceBaseUrl } from '@/src/api/client';
+import {
+  DEFAULT_DEVICE_BASE_URL,
+  getDeviceBaseUrl,
+  resolveDeviceBaseUrl,
+  setDeviceBaseUrl,
+} from '@/src/api/client';
 import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
-
-const DEFAULT_URL = 'http://192.168.0.33:8000';
 
 export default function SetupScreen() {
   const router = useRouter();
@@ -22,10 +25,13 @@ export default function SetupScreen() {
 
   useEffect(() => {
     getDeviceBaseUrl().then((stored) => {
-      if (stored) {
+      if (typeof window !== 'undefined') {
+        // Web bundle is served from the same origin as the API, so auto-connect.
+        router.replace('/(tabs)');
+      } else if (stored) {
         router.replace('/(tabs)');
       } else {
-        setUrl(DEFAULT_URL);
+        setUrl(DEFAULT_DEVICE_BASE_URL);
         setLoading(false);
       }
     });
@@ -63,7 +69,7 @@ export default function SetupScreen() {
           style={styles.input}
           value={url}
           onChangeText={setUrl}
-          placeholder="http://192.168.0.33:8000"
+          placeholder={DEFAULT_DEVICE_BASE_URL}
           placeholderTextColor={Colors.slate}
           autoCapitalize="none"
           autoCorrect={false}

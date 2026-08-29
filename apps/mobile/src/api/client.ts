@@ -32,8 +32,17 @@ import type {
 
 const BASE_URL_KEY = '@reef:deviceBaseUrl';
 
+export const DEFAULT_DEVICE_BASE_URL = 'http://192.168.0.33:8000';
+
 export async function getDeviceBaseUrl(): Promise<string | null> {
   return AsyncStorage.getItem(BASE_URL_KEY);
+}
+
+export function resolveDeviceBaseUrl(storedUrl: string | null): string {
+  if (typeof window !== 'undefined') {
+    return window.location.origin;
+  }
+  return storedUrl ?? DEFAULT_DEVICE_BASE_URL;
 }
 
 export async function setDeviceBaseUrl(url: string): Promise<void> {

@@ -16,6 +16,7 @@ import {
   clearDeviceBaseUrl,
   getDeviceBaseUrl,
   getStatus,
+  resolveDeviceBaseUrl,
   saveCalibration,
   setDeviceBaseUrl,
   startCalibration,
@@ -64,7 +65,7 @@ function CalibrationWizard({
     useCallback(() => {
       let mounted = true;
       getDeviceBaseUrl().then((url) => {
-        if (mounted) setBaseUrl(url);
+        if (mounted) setBaseUrl(resolveDeviceBaseUrl(url));
       });
       return () => {
         mounted = false;
@@ -355,8 +356,9 @@ export default function SettingsScreen() {
       let mounted = true;
       getDeviceBaseUrl().then((url) => {
         if (mounted) {
-          setSavedUrl(url);
-          setBaseUrlState(url ?? '');
+          const effective = resolveDeviceBaseUrl(url);
+          setSavedUrl(effective);
+          setBaseUrlState(effective);
         }
       });
       return () => {
