@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
@@ -385,9 +387,36 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
   await fastify.register(fastifyStatic, {
     root: publicDir,
     prefix: '/app/',
+    wildcard: false,
     index: ['index.html'],
   });
   fastify.get('/app', async (_request, reply) => reply.redirect('/app/'));
+
+  // SPA fallback: any unmatched /app path serves the exported per-route HTML
+  // file if it exists, otherwise index.html. This lets expo-router handle
+  // client-side navigation when a route is loaded directly.
+  fastify.setNotFoundHandler(async (request, reply) => {
+    const pathname = new URL(request.url, 'http://localhost').pathname;
+    if (pathname.startsWith('/app')) {
+      let rel = pathname.replace(/^\/app\/?/, '').replace(/\/$/, '');
+      if (rel) {
+        try {
+          const info = await stat(join(publicDir, rel));
+          if (info.isFile()) {
+            return reply.sendFile(rel);
+          }
+        } catch {}
+        try {
+          const info = await stat(join(publicDir, `${rel}.html`));
+          if (info.isFile()) {
+            return reply.sendFile(`${rel}.html`);
+          }
+        } catch {}
+      }
+      return reply.sendFile('index.html');
+    }
+    reply.code(404).send({ error: 'Not found' });
+  });
 
   // Catch Fastify validation errors and reply with clean 4xx JSON,
   // never stack traces.

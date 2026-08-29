@@ -1,4 +1,5 @@
 import { writeFile, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LIMITS } from '@reef/shared';
@@ -395,6 +396,56 @@ describe('Server endpoints', () => {
       scheduler.stop();
       db.close();
       await unlink(indexPath);
+    }
+  });
+
+  it('falls back to index.html for unmatched /app routes so client routing works', async () => {
+    const publicDir = fileURLToPath(new URL('../public', import.meta.url));
+    const indexPath = join(publicDir, 'index.html');
+    const settingsPath = join(publicDir, 'settings.html');
+    const assetPath = join(publicDir, 'spa-asset.txt');
+    await writeFile(indexPath, '<html>SHARLAY index</html>', 'utf-8');
+    await writeFile(settingsPath, '<html>SHARLAY settings</html>', 'utf-8');
+    await writeFile(assetPath, 'real file', 'utf-8');
+
+    const { db, server, scheduler } = await buildServer();
+    try {
+      const settingsResponse = await server.fastify.inject({
+        method: 'GET',
+        url: '/app/settings',
+      });
+      expect(settingsResponse.statusCode).toBe(200);
+      expect(settingsResponse.body).toContain('SHARLAY settings');
+      expect(settingsResponse.headers['content-type']).toContain('text/html');
+
+      const assetResponse = await server.fastify.inject({
+        method: 'GET',
+        url: '/app/spa-asset.txt',
+      });
+      expect(assetResponse.statusCode).toBe(200);
+      expect(assetResponse.body).toBe('real file');
+      expect(assetResponse.headers['content-type']).toContain('text/plain');
+
+      const fallbackResponse = await server.fastify.inject({
+        method: 'GET',
+        url: '/app/this-route-does-not-exist',
+      });
+      expect(fallbackResponse.statusCode).toBe(200);
+      expect(fallbackResponse.body).toContain('SHARLAY index');
+      expect(fallbackResponse.headers['content-type']).toContain('text/html');
+
+      const apiResponse = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/nonexistent-endpoint',
+      });
+      expect(apiResponse.statusCode).toBe(404);
+      expect(JSON.parse(apiResponse.body)).toHaveProperty('error');
+    } finally {
+      scheduler.stop();
+      db.close();
+      await unlink(indexPath);
+      await unlink(settingsPath);
+      await unlink(assetPath);
     }
   });
 });
