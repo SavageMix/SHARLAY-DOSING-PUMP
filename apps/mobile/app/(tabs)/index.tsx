@@ -338,20 +338,6 @@ function SystemStatusCard({ offline }: { offline: boolean }) {
   );
 }
 
-function gaugeGradientStops(rating: string): [string, string] {
-  switch (rating) {
-    case 'Poor':
-      return [T.colors.danger, T.colors.danger];
-    case 'Fair':
-      return [T.colors.warning, T.colors.warning];
-    case 'Good':
-      return [T.colors.primary, T.colors.primary];
-    case 'Excellent':
-    default:
-      return [T.colors.primary, T.colors.accent];
-  }
-}
-
 function gaugeLabelColor(rating: string): string {
   switch (rating) {
     case 'Poor':
@@ -362,8 +348,71 @@ function gaugeLabelColor(rating: string): string {
       return T.colors.primary;
     case 'Excellent':
     default:
-      return T.colors.accent;
+      return T.colors.primary;
   }
+}
+
+function CardBackdrop({ width, height }: { width: number; height: number }) {
+  return (
+    <Svg
+      width={width}
+      height={height}
+      viewBox="0 0 300 180"
+      preserveAspectRatio="none"
+      style={StyleSheet.absoluteFillObject}>
+      <Defs>
+        <LinearGradient id="bgGlow" x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0" stopColor={T.colors.surface} stopOpacity="1" />
+          <Stop offset="0.6" stopColor={T.colors.surface} stopOpacity="0.85" />
+          <Stop offset="1" stopColor={T.colors.primary} stopOpacity="0.12" />
+        </LinearGradient>
+        <LinearGradient id="ridgeGlow" x1="0" y1="0" x2="1" y2="0">
+          <Stop offset="0" stopColor={T.colors.primary} />
+          <Stop offset="0.5" stopColor={T.colors.sapphire} />
+          <Stop offset="1" stopColor={T.colors.accent} />
+        </LinearGradient>
+      </Defs>
+
+      <Path d="M 0 0 H 300 V 180 H 0 Z" fill="url(#bgGlow)" />
+
+      {/* Flowing wave ridges */}
+      <Path
+        d="M -10 135 C 70 150, 140 110, 310 140"
+        fill="none"
+        stroke="url(#ridgeGlow)"
+        strokeWidth="1.5"
+        strokeOpacity="0.10"
+      />
+      <Path
+        d="M -10 150 C 60 170, 160 120, 310 160"
+        fill="none"
+        stroke="url(#ridgeGlow)"
+        strokeWidth="2"
+        strokeOpacity="0.14"
+      />
+      <Path
+        d="M -10 165 C 80 180, 170 140, 310 175"
+        fill="none"
+        stroke="url(#ridgeGlow)"
+        strokeWidth="2.5"
+        strokeOpacity="0.20"
+      />
+      <Path
+        d="M -10 180 C 50 190, 200 160, 310 185"
+        fill="none"
+        stroke="url(#ridgeGlow)"
+        strokeWidth="3"
+        strokeOpacity="0.26"
+      />
+      <Path
+        d="M -10 200 C 90 210, 210 175, 310 205"
+        fill="none"
+        stroke="url(#ridgeGlow)"
+        strokeWidth="3.5"
+        strokeOpacity="0.18"
+      />
+    </Svg>
+  );
 }
 
 function ArcGauge({
@@ -375,96 +424,102 @@ function ArcGauge({
   label: string;
   rating: string;
 }) {
-  const size = 240;
-  const stroke = 16;
+  const size = 260;
+  const stroke = 18;
   const cx = size / 2;
-  const cy = size / 2;
-  const r = (size - stroke) / 2;
+  const cy = size / 2 + 4;
+  const r = (size - stroke) / 2 - 8;
   const start = 135;
   const sweep = 270;
   const pct = score === null ? 0 : score / 100;
   const end = start + sweep * pct;
-  const [stopA, stopB] = gaugeGradientStops(rating);
   const labelColor = gaugeLabelColor(rating);
   const gradientId = `gaugeGradient-${rating.replace(/\s+/g, '')}`;
+
+  const gradientStops =
+    rating === 'Excellent' || rating === 'No data yet'
+      ? [
+          { offset: '0', color: T.colors.primary },
+          { offset: '0.5', color: T.colors.sapphire },
+          { offset: '1', color: T.colors.accent },
+        ]
+      : rating === 'Good'
+      ? [
+          { offset: '0', color: T.colors.primary },
+          { offset: '1', color: T.colors.primary },
+        ]
+      : rating === 'Fair'
+      ? [
+          { offset: '0', color: T.colors.warning },
+          { offset: '1', color: T.colors.warning },
+        ]
+      : rating === 'Poor'
+      ? [
+          { offset: '0', color: T.colors.danger },
+          { offset: '1', color: T.colors.danger },
+        ]
+      : [
+          { offset: '0', color: T.colors.primary },
+          { offset: '0.5', color: T.colors.sapphire },
+          { offset: '1', color: T.colors.accent },
+        ];
+
+  const endPoint = polarToCartesian(cx, cy, r, end);
 
   return (
     <View style={styles.gaugeContainer}>
       <Svg width={size} height={size * 0.72} viewBox={`0 0 ${size} ${size * 0.72}`}>
         <Defs>
           <LinearGradient id={gradientId} x1="0" y1="0" x2="1" y2="0">
-            <Stop offset="0" stopColor={stopA} />
-            <Stop offset="1" stopColor={stopB} />
+            {gradientStops.map((s) => (
+              <Stop key={s.offset} offset={s.offset} stopColor={s.color} />
+            ))}
           </LinearGradient>
-          <LinearGradient id="waveGradient" x1="0" y1="0" x2="1" y2="0">
-            <Stop offset="0" stopColor={T.colors.primary} stopOpacity="0.10" />
-            <Stop offset="0.35" stopColor={T.colors.accent} stopOpacity="0.06" />
-            <Stop offset="0.65" stopColor={T.colors.primary} stopOpacity="0.04" />
-            <Stop offset="1" stopColor={T.colors.accent} stopOpacity="0.02" />
-          </LinearGradient>
-          <LinearGradient id="waveGradientB" x1="0" y1="0" x2="0" y2="1">
-            <Stop offset="0" stopColor={T.colors.primary} stopOpacity="0.14" />
-            <Stop offset="1" stopColor={T.colors.accent} stopOpacity="0.02" />
-          </LinearGradient>
-          <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-            <feGaussianBlur stdDeviation="5" result="coloredBlur" />
-            <feMerge>
-              <feMergeNode in="coloredBlur" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
         </Defs>
 
-        {/* Ocean wave backdrop */}
-        <Path
-          d="M -40 170 C 20 130, 80 190, 140 170 S 260 130, 320 170 V 260 H -40 Z"
-          fill="url(#waveGradient)"
-        />
-        <Path
-          d="M -40 195 C 40 155, 120 215, 200 195 S 300 155, 360 195 V 260 H -40 Z"
-          fill="url(#waveGradientB)"
-        />
-        <Path
-          d="M -40 215 C 60 185, 140 235, 240 215 S 340 185, 400 215 V 260 H -40 Z"
-          fill="url(#waveGradient)"
-          opacity="0.6"
-        />
-
-        {/* Background arc */}
+        {/* Background track */}
         <Path
           d={describeArc(cx, cy, r, start, start + sweep)}
           fill="none"
           stroke={T.colors.border}
           strokeWidth={stroke}
           strokeLinecap="round"
+          strokeOpacity={0.6}
         />
 
-        {/* Glow layer */}
+        {/* Outer bloom */}
         <Path
           d={describeArc(cx, cy, r, start, end)}
           fill="none"
           stroke={`url(#${gradientId})`}
-          strokeWidth={stroke + 10}
+          strokeWidth={stroke * 3}
           strokeLinecap="round"
-          strokeOpacity={0.28}
+          strokeOpacity={0.12}
         />
 
-        {/* Filled arc */}
+        {/* Mid bloom */}
+        <Path
+          d={describeArc(cx, cy, r, start, end)}
+          fill="none"
+          stroke={`url(#${gradientId})`}
+          strokeWidth={stroke * 2}
+          strokeLinecap="round"
+          strokeOpacity={0.25}
+        />
+
+        {/* Crisp filled arc */}
         <Path
           d={describeArc(cx, cy, r, start, end)}
           fill="none"
           stroke={`url(#${gradientId})`}
           strokeWidth={stroke}
           strokeLinecap="round"
-          filter="url(#glow)"
         />
 
-        <Circle
-          cx={polarToCartesian(cx, cy, r, end).x}
-          cy={polarToCartesian(cx, cy, r, end).y}
-          r={6}
-          fill={T.colors.textPrimary}
-        />
+        {/* End dot halo */}
+        <Circle cx={endPoint.x} cy={endPoint.y} r={12} fill={labelColor} opacity={0.18} />
+        <Circle cx={endPoint.x} cy={endPoint.y} r={8} fill={labelColor} opacity={0.45} />
+        <Circle cx={endPoint.x} cy={endPoint.y} r={4} fill={T.colors.textPrimary} />
       </Svg>
       <View style={styles.gaugeText}>
         <ThemedText style={styles.gaugeScore}>
@@ -474,8 +529,8 @@ function ArcGauge({
           {label}
         </ThemedText>
         <Ionicons
-          name="water-outline"
-          size={20}
+          name="leaf-outline"
+          size={22}
           color={labelColor}
           style={styles.gaugeIcon}
         />
@@ -502,31 +557,45 @@ function ReefStabilityCard({
   onPumpPress: (pumpId: PumpId) => void;
 }) {
   const { width } = useWindowDimensions();
-  const isWide = width >= 600;
-  const tileWidth = isWide
-    ? (width - T.spacing.lg * 2 - T.spacing.md * 3) / 4
-    : width - T.spacing.lg * 2;
+  const cardWidth = width - T.spacing.lg * 2;
+  const backdropHeight = cardWidth * 0.55;
 
   return (
-    <View style={styles.glassCard}>
+    <View style={styles.consistencyCard}>
+      <View
+        style={{
+          ...StyleSheet.absoluteFillObject,
+          borderRadius: T.radius.lg,
+          overflow: 'hidden',
+        }}>
+        <CardBackdrop width={cardWidth} height={backdropHeight} />
+      </View>
+
       <ThemedText style={styles.cardOverline}>DOSING CONSISTENCY</ThemedText>
       <ArcGauge score={score} label={label} rating={rating} />
+
       <View style={styles.miniStatsGrid}>
-        {pumpStats.map((stat) => (
+        {pumpStats.map((stat, index) => (
           <Pressable
             key={stat.pumpId}
-            style={[styles.miniStatTile, { minWidth: tileWidth }]}
+            style={[
+              styles.miniStatTile,
+              index < pumpStats.length - 1 && styles.miniStatTileDivider,
+            ]}
             onPress={() => onPumpPress(stat.pumpId)}>
-            <ThemedText style={styles.miniStatName}>
+            <ThemedText
+              style={[styles.miniStatName, { color: PUMP_COLORS[stat.pumpId] }]}>
               {PUMP_DISPLAY_NAMES[stat.pumpId]}
             </ThemedText>
-            <ThemedText
-              style={[styles.miniStatValue, { color: PUMP_COLORS[stat.pumpId] }]}>
+            <ThemedText style={styles.miniStatValue}>
               {stat.today.toFixed(1)}
               <ThemedText style={styles.miniStatUnit}> mL</ThemedText>
             </ThemedText>
             <View style={styles.miniStatSparkline}>
-              <Sparkline data={stat.sparkline} color={PUMP_COLORS[stat.pumpId]} />
+              <Sparkline
+                data={stat.sparkline}
+                color={PUMP_COLORS[stat.pumpId]}
+              />
             </View>
           </Pressable>
         ))}
@@ -1138,6 +1207,16 @@ const styles = StyleSheet.create({
     color: T.colors.textPrimary,
   },
   glassCard: glassBase,
+  consistencyCard: {
+    backgroundColor: T.colors.surface,
+    borderRadius: T.radius.lg,
+    borderWidth: 1,
+    borderColor: T.colors.border,
+    padding: T.spacing.lg,
+    marginBottom: T.spacing.lg,
+    overflow: 'hidden',
+    ...T.shadows.card,
+  },
   statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1181,14 +1260,16 @@ const styles = StyleSheet.create({
   },
   cardOverline: {
     ...T.typography.caption,
-    color: T.colors.textMuted,
+    color: T.colors.textSecondary,
+    letterSpacing: 1.2,
     marginBottom: T.spacing.md,
+    zIndex: 1,
   },
   gaugeContainer: {
     alignSelf: 'center',
     alignItems: 'center',
     justifyContent: 'center',
-    marginVertical: T.spacing.md,
+    marginVertical: T.spacing.sm,
   },
   gaugeText: {
     position: 'absolute',
@@ -1198,42 +1279,46 @@ const styles = StyleSheet.create({
     bottom: 0,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingTop: T.spacing.md,
+    paddingTop: T.spacing.lg,
   },
   gaugeScore: {
-    fontSize: 56,
-    lineHeight: 64,
+    fontSize: 64,
+    lineHeight: 72,
     color: T.colors.textPrimary,
-    fontFamily: T.typography.fontFamily.semiBold,
+    fontFamily: T.typography.fontFamily.light,
   },
   gaugeLabel: {
-    ...T.typography.small,
-    color: T.colors.primary,
-    marginTop: 2,
+    ...T.typography.title,
+    marginTop: -2,
   },
   gaugeIcon: {
     marginTop: T.spacing.sm,
   },
   miniStatsGrid: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: T.spacing.md,
+    marginTop: T.spacing.md,
+    zIndex: 1,
   },
   miniStatTile: {
     flex: 1,
-    minWidth: (SCREEN_WIDTH - T.spacing.lg * 2 - T.spacing.md) / 2 - 2,
-    backgroundColor: 'rgba(7, 10, 18, 0.35)',
-    borderRadius: T.radius.md,
-    padding: T.spacing.md,
+    alignItems: 'center',
+    paddingVertical: T.spacing.sm,
+    paddingHorizontal: 2,
+  },
+  miniStatTileDivider: {
+    borderRightWidth: 1,
+    borderRightColor: T.colors.border,
   },
   miniStatName: {
     ...T.typography.caption,
-    color: T.colors.textSecondary,
     marginBottom: 2,
+    letterSpacing: 0.5,
   },
   miniStatValue: {
-    ...T.typography.h3,
-    color: T.colors.primary,
+    fontSize: 24,
+    lineHeight: 32,
+    color: T.colors.textPrimary,
+    fontFamily: T.typography.fontFamily.semiBold,
   },
   miniStatUnit: {
     ...T.typography.caption,

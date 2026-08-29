@@ -24,6 +24,7 @@ export const Palette = {
   deepOcean: '#0D1B2A',
 
   electricAqua: '#20E3DB',
+  sapphire: '#2F80FF',
   reefViolet: '#8A5CFF',
   coralBloom: '#FF5FA2',
 
@@ -48,6 +49,7 @@ export const Theme = {
     surfaceOverlay: 'rgba(7, 10, 18, 0.85)',
 
     primary: Palette.electricAqua,
+    sapphire: Palette.sapphire,
     accent: Palette.reefViolet,
     danger: Palette.coralBloom,
     success: Palette.success,
