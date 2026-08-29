@@ -7,6 +7,7 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
+  useWindowDimensions,
   View,
   type ViewStyle,
 } from 'react-native';
@@ -336,7 +337,43 @@ function SystemStatusCard({ offline }: { offline: boolean }) {
   );
 }
 
-function ArcGauge({ score, label }: { score: number | null; label: string }) {
+function gaugeGradientStops(rating: string): [string, string] {
+  switch (rating) {
+    case 'Poor':
+      return [T.colors.danger, T.colors.danger];
+    case 'Fair':
+      return [T.colors.warning, T.colors.warning];
+    case 'Good':
+      return [T.colors.primary, T.colors.primary];
+    case 'Excellent':
+    default:
+      return [T.colors.primary, T.colors.accent];
+  }
+}
+
+function gaugeLabelColor(rating: string): string {
+  switch (rating) {
+    case 'Poor':
+      return T.colors.danger;
+    case 'Fair':
+      return T.colors.warning;
+    case 'Good':
+      return T.colors.primary;
+    case 'Excellent':
+    default:
+      return T.colors.accent;
+  }
+}
+
+function ArcGauge({
+  score,
+  label,
+  rating,
+}: {
+  score: number | null;
+  label: string;
+  rating: string;
+}) {
   const size = 240;
   const stroke = 16;
   const cx = size / 2;
@@ -346,29 +383,53 @@ function ArcGauge({ score, label }: { score: number | null; label: string }) {
   const sweep = 270;
   const pct = score === null ? 0 : score / 100;
   const end = start + sweep * pct;
+  const [stopA, stopB] = gaugeGradientStops(rating);
+  const labelColor = gaugeLabelColor(rating);
+  const gradientId = `gaugeGradient-${rating.replace(/\s+/g, '')}`;
 
   return (
     <View style={styles.gaugeContainer}>
       <Svg width={size} height={size * 0.72} viewBox={`0 0 ${size} ${size * 0.72}`}>
         <Defs>
-          <LinearGradient id="gaugeGradient" x1="0" y1="0" x2="1" y2="0">
-            <Stop offset="0" stopColor={T.colors.primary} />
-            <Stop offset="1" stopColor={T.colors.accent} />
+          <LinearGradient id={gradientId} x1="0" y1="0" x2="1" y2="0">
+            <Stop offset="0" stopColor={stopA} />
+            <Stop offset="1" stopColor={stopB} />
           </LinearGradient>
           <LinearGradient id="waveGradient" x1="0" y1="0" x2="1" y2="0">
-            <Stop offset="0" stopColor={T.colors.primary} stopOpacity="0.12" />
-            <Stop offset="0.5" stopColor={T.colors.accent} stopOpacity="0.08" />
-            <Stop offset="1" stopColor={T.colors.primary} stopOpacity="0.02" />
+            <Stop offset="0" stopColor={T.colors.primary} stopOpacity="0.10" />
+            <Stop offset="0.35" stopColor={T.colors.accent} stopOpacity="0.06" />
+            <Stop offset="0.65" stopColor={T.colors.primary} stopOpacity="0.04" />
+            <Stop offset="1" stopColor={T.colors.accent} stopOpacity="0.02" />
           </LinearGradient>
+          <LinearGradient id="waveGradientB" x1="0" y1="0" x2="0" y2="1">
+            <Stop offset="0" stopColor={T.colors.primary} stopOpacity="0.14" />
+            <Stop offset="1" stopColor={T.colors.accent} stopOpacity="0.02" />
+          </LinearGradient>
+          <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="5" result="coloredBlur" />
+            <feMerge>
+              <feMergeNode in="coloredBlur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
         </Defs>
+
+        {/* Ocean wave backdrop */}
         <Path
-          d="M -20 180 Q 60 140 120 180 T 260 180 V 260 H -20 Z"
+          d="M -40 170 C 20 130, 80 190, 140 170 S 260 130, 320 170 V 260 H -40 Z"
           fill="url(#waveGradient)"
         />
         <Path
-          d="M -20 200 Q 80 150 160 200 T 300 200 V 260 H -20 Z"
-          fill="url(#waveGradient)"
+          d="M -40 195 C 40 155, 120 215, 200 195 S 300 155, 360 195 V 260 H -40 Z"
+          fill="url(#waveGradientB)"
         />
+        <Path
+          d="M -40 215 C 60 185, 140 235, 240 215 S 340 185, 400 215 V 260 H -40 Z"
+          fill="url(#waveGradient)"
+          opacity="0.6"
+        />
+
+        {/* Background arc */}
         <Path
           d={describeArc(cx, cy, r, start, start + sweep)}
           fill="none"
@@ -376,13 +437,27 @@ function ArcGauge({ score, label }: { score: number | null; label: string }) {
           strokeWidth={stroke}
           strokeLinecap="round"
         />
+
+        {/* Glow layer */}
         <Path
           d={describeArc(cx, cy, r, start, end)}
           fill="none"
-          stroke="url(#gaugeGradient)"
+          stroke={`url(#${gradientId})`}
+          strokeWidth={stroke + 10}
+          strokeLinecap="round"
+          strokeOpacity={0.28}
+        />
+
+        {/* Filled arc */}
+        <Path
+          d={describeArc(cx, cy, r, start, end)}
+          fill="none"
+          stroke={`url(#${gradientId})`}
           strokeWidth={stroke}
           strokeLinecap="round"
+          filter="url(#glow)"
         />
+
         <Circle
           cx={polarToCartesian(cx, cy, r, end).x}
           cy={polarToCartesian(cx, cy, r, end).y}
@@ -394,11 +469,13 @@ function ArcGauge({ score, label }: { score: number | null; label: string }) {
         <ThemedText style={styles.gaugeScore}>
           {score === null ? '—' : score}
         </ThemedText>
-        <ThemedText style={styles.gaugeLabel}>{label}</ThemedText>
+        <ThemedText style={[styles.gaugeLabel, { color: labelColor }]}>
+          {label}
+        </ThemedText>
         <Ionicons
           name="water-outline"
           size={20}
-          color={T.colors.primary}
+          color={labelColor}
           style={styles.gaugeIcon}
         />
       </View>
@@ -409,11 +486,13 @@ function ArcGauge({ score, label }: { score: number | null; label: string }) {
 function ReefStabilityCard({
   score,
   label,
+  rating,
   pumpStats,
   onPumpPress,
 }: {
   score: number | null;
   label: string;
+  rating: string;
   pumpStats: {
     pumpId: PumpId;
     today: number;
@@ -421,15 +500,21 @@ function ReefStabilityCard({
   }[];
   onPumpPress: (pumpId: PumpId) => void;
 }) {
+  const { width } = useWindowDimensions();
+  const isWide = width >= 600;
+  const tileWidth = isWide
+    ? (width - T.spacing.lg * 2 - T.spacing.md * 3) / 4
+    : width - T.spacing.lg * 2;
+
   return (
     <View style={styles.glassCard}>
       <ThemedText style={styles.cardOverline}>DOSING CONSISTENCY</ThemedText>
-      <ArcGauge score={score} label={label} />
+      <ArcGauge score={score} label={label} rating={rating} />
       <View style={styles.miniStatsGrid}>
         {pumpStats.map((stat) => (
           <Pressable
             key={stat.pumpId}
-            style={styles.miniStatTile}
+            style={[styles.miniStatTile, { minWidth: tileWidth }]}
             onPress={() => onPumpPress(stat.pumpId)}>
             <ThemedText style={styles.miniStatName}>
               {PUMP_DISPLAY_NAMES[stat.pumpId]}
@@ -936,6 +1021,7 @@ export default function DashboardScreen() {
         <ReefStabilityCard
           score={consistency.score}
           label={consistency.label}
+          rating={consistency.label}
           pumpStats={pumpStats}
           onPumpPress={setModalPumpId}
         />
