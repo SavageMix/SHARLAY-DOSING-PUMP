@@ -7,13 +7,14 @@ const PRIME_CHUNK_STEPS = MAX_STEPS_PER_WAVE;
 const CHUNK_INTERVAL_MS = 0;
 
 /**
- * Watchdog backstop: 15 minutes of runtime at the configured step rate.
+ * Watchdog backstop: 9 minutes of runtime at the configured step rate.
  *
- * 15 min = 720,000 steps at 800 Hz ≈ 51 mL at ~14k steps/mL. Priming rarely
- * needs more than a few mL, so this is far beyond any sane prime run, while
- * still capping runaway sessions (stuck client, forgotten stop, etc.).
+ * Sized for a maximum 30 mL run: 30 mL × ~14k steps/mL ≈ 421k steps ≈ 527 s
+ * at 800 Hz, rounded up to 540 s (432,000 steps ≈ 30.7 mL). Far beyond any
+ * sane prime run, while still capping runaway sessions (stuck client,
+ * forgotten stop, etc.).
  */
-export const WATCHDOG_TIMEOUT_S = 900;
+export const WATCHDOG_TIMEOUT_S = 540;
 
 interface PrimeSession {
   pumpId: PumpId;
@@ -74,7 +75,7 @@ async function runPrimeLoop(session: PrimeSession): Promise<void> {
  *
  * The pump runs in MAX_STEPS_PER_WAVE chunks until either:
  *   - stopPrime() is called, or
- *   - the 15-minute step backstop is reached.
+ *   - the 9-minute step backstop is reached.
  *
  * Safety invariant: drivers are enabled when the loop starts and disabled in a
  * finally block on every exit path, including errors and watchdog expiry.

@@ -7,8 +7,8 @@ import {
   WATCHDOG_TIMEOUT_S,
 } from '../src/primer.js';
 
-// Mock a low step rate so the default 900 s backstop (90,000 steps) completes
-// in ~90 mocked chunks instead of 720, keeping the watchdog test fast.
+// Mock a low step rate so the default 540 s backstop (54,000 steps) completes
+// in ~54 mocked chunks instead of 432, keeping the watchdog test fast.
 vi.mock('@reef/shared', () => ({
   LIMITS: { stepRateHz: 100 },
 }));
@@ -88,7 +88,7 @@ describe('Primer', () => {
     startPrime('alk');
 
     // Poll until the watchdog backstop finishes the session.
-    // 90 chunks at 5 ms per chunk = ~450 ms, plus scheduling overhead.
+    // 54 chunks at 5 ms per chunk = ~270 ms, plus scheduling overhead.
     const deadline = Date.now() + 3000;
     while (isPriming('alk') && Date.now() < deadline) {
       await sleep(CHUNK_DURATION_MS);
@@ -100,7 +100,7 @@ describe('Primer', () => {
       (STEP_RATE_HZ * WATCHDOG_TIMEOUT_S) / 1000,
     );
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[primer] WATCHDOG fired after 900s'),
+      expect.stringContaining('[primer] WATCHDOG fired after 540s'),
     );
 
     warnSpy.mockRestore();

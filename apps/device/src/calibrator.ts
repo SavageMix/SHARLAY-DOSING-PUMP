@@ -7,16 +7,17 @@ const CALIBRATION_CHUNK_STEPS = MAX_STEPS_PER_WAVE;
 const CHUNK_INTERVAL_MS = 0;
 
 /**
- * Watchdog backstop: 15 minutes of runtime at the configured step rate.
+ * Watchdog backstop: 9 minutes of runtime at the configured step rate.
  *
- * 15 min = 720,000 steps at 800 Hz ≈ 51 mL at ~14k steps/mL. A full 20 mL
- * calibration run needs only ~5.9 min, so this covers it with margin, while
- * still capping runaway sessions (stuck client, forgotten stop, etc.).
+ * Sized for a maximum 30 mL run: 30 mL × ~14k steps/mL ≈ 421k steps ≈ 527 s
+ * at 800 Hz, rounded up to 540 s (432,000 steps ≈ 30.7 mL). Covers full
+ * 30 mL calibration runs with a small margin, while still capping runaway
+ * sessions (stuck client, forgotten stop, etc.).
  *
  * The caller can pass a lower maxSteps in startCalibration(); this is only
  * used when no explicit backstop is supplied.
  */
-export const WATCHDOG_TIMEOUT_S = 900;
+export const WATCHDOG_TIMEOUT_S = 540;
 
 interface CalibrationSession {
   pumpId: PumpId;
@@ -77,7 +78,7 @@ async function runCalibrationLoop(session: CalibrationSession): Promise<void> {
  *
  * The pump runs in MAX_STEPS_PER_WAVE chunks until either:
  *   - stopCalibration() is called, or
- *   - the step backstop is reached (default: 15-minute watchdog).
+ *   - the step backstop is reached (default: 9-minute watchdog).
  *
  * Safety invariant: drivers are enabled when the loop starts and disabled in a
  * finally block on every exit path, including errors and watchdog expiry.

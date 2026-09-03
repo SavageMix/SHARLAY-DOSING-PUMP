@@ -107,7 +107,7 @@ describe('Calibrator', () => {
     warnSpy.mockRestore();
   });
 
-  it('uses the default 15-minute watchdog backstop when maxSteps is omitted', async () => {
+  it('uses the default 9-minute watchdog backstop when maxSteps is omitted', async () => {
     startCalibration('po4');
     await sleep(CHUNK_DURATION_MS * 3);
 
