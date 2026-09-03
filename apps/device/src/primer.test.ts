@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   __resetSessions,
+  getLastPrimeResult,
   isPriming,
   startPrime,
   stopPrime,
@@ -71,8 +72,14 @@ describe('Primer', () => {
     await sleep(100);
     expect((runWaveChunk as any).__getChunks()).toBeGreaterThanOrEqual(2);
 
-    const totalSteps = await stopPrime('alk');
-    expect(totalSteps).toBe((runWaveChunk as any).__getChunks() * 1000);
+    const result = await stopPrime('alk');
+    expect(result.totalSteps).toBe((runWaveChunk as any).__getChunks() * 1000);
+    expect(result.stoppedBy).toBe('user');
+    expect(getLastPrimeResult()).toMatchObject({
+      pumpId: 'alk',
+      stoppedBy: 'user',
+      totalSteps: result.totalSteps,
+    });
     expect(isPriming('alk')).toBe(false);
     expect(driversDisable).toHaveBeenCalled();
   });
@@ -99,6 +106,11 @@ describe('Primer', () => {
     expect((runWaveChunk as any).__getChunks()).toBe(
       (STEP_RATE_HZ * WATCHDOG_TIMEOUT_S) / 1000,
     );
+    expect(getLastPrimeResult()).toMatchObject({
+      pumpId: 'alk',
+      stoppedBy: 'watchdog',
+      totalSteps: STEP_RATE_HZ * WATCHDOG_TIMEOUT_S,
+    });
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('[primer] WATCHDOG fired after 540s'),
     );

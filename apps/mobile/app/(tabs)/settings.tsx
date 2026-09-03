@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -26,7 +26,7 @@ import {
   stopPrime,
 } from '@/src/api/client';
 import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
-import { type PumpId } from '@reef/shared';
+import { type PrimeResult, type PumpId } from '@reef/shared';
 
 const PUMP_ORDER: PumpId[] = ['alk', 'ca', 'no3', 'po4'];
 
@@ -352,6 +352,13 @@ export default function SettingsScreen() {
     approxMl: number | null;
   } | null>(null);
   const [primeError, setPrimeError] = useState('');
+  const [primeState, setPrimeState] = useState<{
+    priming: boolean;
+    lastResult: PrimeResult | null;
+  } | null>(null);
+  const [primeWatchdogResult, setPrimeWatchdogResult] =
+    useState<PrimeResult | null>(null);
+  const [seenWatchdogKey, setSeenWatchdogKey] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -382,6 +389,7 @@ export default function SettingsScreen() {
         })) ?? [],
         queueDepth: data?.queueDepth ?? 0,
       });
+      setPrimeState(data?.prime ?? null);
     } catch {
       setOffline(true);
       setStatus(null);
@@ -460,6 +468,44 @@ export default function SettingsScreen() {
       setPrimeStartTime(null);
       setPrimeError(err instanceof Error ? err.message : 'Failed to stop prime');
     }
+  };
+
+  // Reconcile local prime state with the device. Only act on a true→false
+  // transition of the device's priming flag, so a stale poll taken before
+  // the user tapped Prime can't clear a run we just started.
+  const prevPrimingRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const priming = primeState?.priming ?? null;
+    const wentIdle = prevPrimingRef.current === true && priming === false;
+    prevPrimingRef.current = priming;
+    if (wentIdle && primingPump) {
+      setPrimingPump(null);
+      setPrimeStartTime(null);
+    }
+  }, [primeState, primingPump]);
+
+  // Surface a watchdog stop once per completed run. A watchdog stop is a
+  // normal outcome (long lines may need several runs), never an error.
+  useEffect(() => {
+    if (!primeState || primeState.priming) return;
+    const last = primeState.lastResult;
+    if (!last || last.stoppedBy !== 'watchdog') return;
+    const key = `${last.pumpId}:${last.totalSteps}`;
+    if (seenWatchdogKey === key) return;
+    setSeenWatchdogKey(key);
+    setPrimeWatchdogResult(last);
+  }, [primeState, seenWatchdogKey]);
+
+  const handlePrimeAgain = async () => {
+    const result = primeWatchdogResult;
+    setPrimeWatchdogResult(null);
+    if (result) {
+      await handlePrimeStart(result.pumpId);
+    }
+  };
+
+  const handlePrimeWatchdogDone = () => {
+    setPrimeWatchdogResult(null);
   };
 
   const formatElapsed = (ms: number): string => {
@@ -619,6 +665,40 @@ export default function SettingsScreen() {
           onClose={() => setWizardPump(null)}
         />
       )}
+
+      <Modal
+        visible={primeWatchdogResult !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={handlePrimeWatchdogDone}>
+        <ThemedView style={styles.watchdogOverlay}>
+          <ThemedView style={styles.watchdogCard}>
+            <ThemedText style={styles.wizardTitle}>Priming paused</ThemedText>
+            <ThemedText style={styles.bodyText}>
+              The pump ran for its full time limit and stopped automatically as
+              a safety measure. It moved approx.{' '}
+              {primeWatchdogResult?.approxMl != null
+                ? `${primeWatchdogResult.approxMl.toFixed(1)} mL`
+                : '— (pump uncalibrated)'}
+              . If the tube isn't fully primed yet, you can run it again.
+            </ThemedText>
+            <ThemedView style={styles.buttonRow}>
+              <Pressable
+                style={styles.secondaryButton}
+                onPress={handlePrimeWatchdogDone}>
+                <ThemedText style={styles.secondaryButtonText}>Done</ThemedText>
+              </Pressable>
+              <Pressable
+                style={styles.primeAgainButton}
+                onPress={handlePrimeAgain}>
+                <ThemedText style={styles.primeAgainButtonText}>
+                  Prime again
+                </ThemedText>
+              </Pressable>
+            </ThemedView>
+          </ThemedView>
+        </ThemedView>
+      </Modal>
     </ThemedView>
   );
 }
@@ -848,6 +928,36 @@ const styles = StyleSheet.create({
   secondaryButtonText: {
     ...Typography.title,
     color: Colors.pearl,
+  },
+  primeAgainButton: {
+    flex: 1,
+    height: 56,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.aqua,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primeAgainButtonText: {
+    ...Typography.title,
+    color: Colors.obsidian,
+    fontWeight: '600',
+  },
+  watchdogOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(7, 10, 18, 0.8)',
+    padding: Spacing.lg,
+  },
+  watchdogCard: {
+    width: '100%',
+    maxWidth: 400,
+    backgroundColor: 'rgba(17, 24, 39, 0.92)',
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(32, 227, 219, 0.15)',
+    padding: Spacing.lg,
+    gap: Spacing.md,
   },
   buttonRow: {
     flexDirection: 'row',

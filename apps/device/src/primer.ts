@@ -1,4 +1,4 @@
-import type { PumpId } from '@reef/shared';
+import type { PrimeStoppedBy, PumpId } from '@reef/shared';
 import { LIMITS } from '@reef/shared';
 import { driversDisable, driversEnable } from './gpio.js';
 import { MAX_STEPS_PER_WAVE, runWaveChunk } from './stepper.js';
@@ -16,15 +16,48 @@ const CHUNK_INTERVAL_MS = 0;
  */
 export const WATCHDOG_TIMEOUT_S = 540;
 
+/**
+ * Outcome of a completed prime run, without approxMl (which needs pump
+ * calibration data owned by the server layer).
+ */
+export interface PrimeCompletion {
+  pumpId: PumpId;
+  totalSteps: number;
+  stoppedBy: PrimeStoppedBy;
+}
+
 interface PrimeSession {
   pumpId: PumpId;
   stop: boolean;
   totalSteps: number;
   maxSteps: number;
+  stoppedBy: PrimeStoppedBy;
   promise: Promise<void>;
 }
 
 const sessions = new Map<PumpId, PrimeSession>();
+
+/**
+ * Most recent completed run, kept after the session is removed so the app
+ * can learn about a watchdog stop even if it never called stopPrime().
+ */
+let lastResult: PrimeCompletion | null = null;
+
+type PrimeCompleteHandler = (result: PrimeCompletion) => void;
+let completeHandler: PrimeCompleteHandler | null = null;
+
+/**
+ * Register a callback fired exactly once per completed prime run (user stop
+ * or watchdog). Used by the server for audit logging; never called twice
+ * for the same run.
+ */
+export function setPrimeCompleteHandler(handler: PrimeCompleteHandler | null): void {
+  completeHandler = handler;
+}
+
+export function getLastPrimeResult(): PrimeCompletion | null {
+  return lastResult;
+}
 
 function defaultMaxSteps(): number {
   return LIMITS.stepRateHz * WATCHDOG_TIMEOUT_S;
@@ -54,8 +87,11 @@ async function runPrimeLoop(session: PrimeSession): Promise<void> {
     }
 
     // Log watchdog expiry distinctly from a clean stop so a backstop stop is
-    // visible in the service log instead of looking like a glitch.
+    // visible in the service log instead of looking like a glitch. A
+    // watchdog stop is a normal outcome (long lines may need several runs),
+    // not an error.
     if (!session.stop && session.totalSteps >= session.maxSteps) {
+      session.stoppedBy = 'watchdog';
       const backstopS = Math.round(session.maxSteps / LIMITS.stepRateHz);
       console.warn(
         `[primer] WATCHDOG fired after ${backstopS}s — auto-stopping ${session.pumpId}`,
@@ -65,6 +101,18 @@ async function runPrimeLoop(session: PrimeSession): Promise<void> {
     // Watchdog expiry, clean stop, or error: always remove the session and
     // disable the drivers.
     session.stop = true;
+    lastResult = {
+      pumpId: session.pumpId,
+      totalSteps: session.totalSteps,
+      stoppedBy: session.stoppedBy,
+    };
+    // Audit hook (server-side). Guarded so a handler bug can never prevent
+    // driversDisable().
+    try {
+      completeHandler?.(lastResult);
+    } catch (error) {
+      console.error('[primer] prime complete handler failed:', error);
+    }
     removeSession(session.pumpId);
     driversDisable();
   }
@@ -90,6 +138,7 @@ export function startPrime(pumpId: PumpId): void {
     stop: false,
     totalSteps: 0,
     maxSteps: defaultMaxSteps(),
+    stoppedBy: 'user',
     promise: Promise.resolve(),
   };
 
@@ -102,10 +151,10 @@ export function startPrime(pumpId: PumpId): void {
 }
 
 /**
- * Stop the prime loop for a pump and return the total steps run.
- * Safe to call multiple times; subsequent calls return the final step count.
+ * Stop the prime loop for a pump and return the run outcome.
+ * Safe to call multiple times; subsequent calls return the final outcome.
  */
-export async function stopPrime(pumpId: PumpId): Promise<number> {
+export async function stopPrime(pumpId: PumpId): Promise<PrimeCompletion> {
   const session = sessions.get(pumpId);
   if (!session) {
     throw new Error(`No prime running for ${pumpId}`);
@@ -117,7 +166,11 @@ export async function stopPrime(pumpId: PumpId): Promise<number> {
   // The loop's finally block may have already removed the session.
   sessions.delete(pumpId);
 
-  return session.totalSteps;
+  return {
+    pumpId: session.pumpId,
+    totalSteps: session.totalSteps,
+    stoppedBy: session.stoppedBy,
+  };
 }
 
 export function isPriming(pumpId?: PumpId): boolean {
@@ -128,9 +181,10 @@ export function isPriming(pumpId?: PumpId): boolean {
 }
 
 /**
- * Test-only helper: clear all sessions without touching drivers.
- * Do not use in production code.
+ * Test-only helper: clear all sessions and the last result without touching
+ * drivers. Do not use in production code.
  */
 export function __resetSessions(): void {
   sessions.clear();
+  lastResult = null;
 }

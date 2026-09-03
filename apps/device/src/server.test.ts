@@ -24,12 +24,14 @@ vi.mock('../src/stepper.js', () => ({
 }));
 
 import { detectMissedDoses } from '../src/missed-doses.js';
+import { __resetSessions } from '../src/primer.js';
 import { createServer } from '../src/server.js';
 import { runSteps, runWaveChunk } from '../src/stepper.js';
 
 describe('Server endpoints', () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    __resetSessions();
   });
   async function buildServer() {
     const db = new ReefDatabase(':memory:');
@@ -218,6 +220,7 @@ describe('Server endpoints', () => {
       expect(body.pumpId).toBe('alk');
       expect(body.totalSteps).toBeGreaterThan(0);
       expect(body.approxMl).toBeNull();
+      expect(body.stoppedBy).toBe('user');
     } finally {
       scheduler.stop();
       db.close();
@@ -249,6 +252,58 @@ describe('Server endpoints', () => {
       const body = JSON.parse(response.body);
       expect(body.approxMl).not.toBeNull();
       expect(body.totalSteps / body.approxMl).toBeCloseTo(100, 5);
+      expect(body.stoppedBy).toBe('user');
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('reports a watchdog-stopped prime via /api/status with stoppedBy watchdog', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.updatePumpCalibration('alk', 100);
+      vi.mocked(runWaveChunk).mockImplementation(
+        async () => new Promise((resolve) => setTimeout(resolve, 5)),
+      );
+
+      const start = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/prime/start',
+        payload: { pumpId: 'alk' },
+      });
+      expect(start.statusCode).toBe(202);
+
+      // Let the default 540 s backstop elapse under fake timers
+      // (432 chunks x 5 ms), ending the run via the watchdog.
+      await vi.advanceTimersByTimeAsync(2500);
+
+      const response = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.prime.priming).toBe(false);
+      expect(body.prime.lastResult).toMatchObject({
+        pumpId: 'alk',
+        stoppedBy: 'watchdog',
+        totalSteps: 432_000,
+      });
+      expect(body.prime.lastResult.approxMl).toBeCloseTo(4320, 5);
+
+      // The run is over: stopping now is a 409, not an error dose.
+      const lateStop = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/prime/stop',
+        payload: { pumpId: 'alk' },
+      });
+      expect(lateStop.statusCode).toBe(409);
+
+      // Watchdog-stopped runs stay out of dose totals and history.
+      expect(db.getTodayDoseMl('alk')).toBe(0);
+      expect(db.getHistory().events).toHaveLength(0);
     } finally {
       scheduler.stop();
       db.close();

@@ -16,7 +16,14 @@ import {
   stopCalibration,
 } from './calibrator.js';
 import { confirmMissedDose, dismissMissedDose } from './missed-doses.js';
-import { isPriming, startPrime, stopPrime } from './primer.js';
+import {
+  getLastPrimeResult,
+  isPriming,
+  setPrimeCompleteHandler,
+  startPrime,
+  stopPrime,
+  type PrimeCompletion,
+} from './primer.js';
 
 const pumpIdSchema = z.enum(['alk', 'ca', 'no3', 'po4']);
 
@@ -106,6 +113,19 @@ function buildContainerInfo(db: ReefDatabase): ContainerInfo[] {
     remainingMl: pump.containerRemainingMl,
     lastRefilledAt: null, // could be persisted later
   }));
+}
+
+/**
+ * Enrich a prime completion with approxMl from the pump's calibration.
+ * The primer module is calibration-agnostic by design.
+ */
+function buildPrimeResult(db: ReefDatabase, result: PrimeCompletion) {
+  const calibration = db.getPumpCalibration(result.pumpId);
+  const approxMl =
+    calibration.stepsPerMl && calibration.stepsPerMl > 0
+      ? result.totalSteps / calibration.stepsPerMl
+      : null;
+  return { ...result, approxMl };
 }
 
 function firstZodMessage(error: z.ZodError<unknown>): string {
@@ -372,6 +392,25 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
     logger: false,
   });
 
+  // Audit every completed prime run (user stop or watchdog backstop) as a
+  // source 'prime' event. Prime stays excluded from dose totals and history;
+  // this handler exists so an unattended watchdog stop is audited too, not
+  // only runs stopped via /api/prime/stop.
+  setPrimeCompleteHandler((result) => {
+    db.saveDoseEvent({
+      id: randomUUID(),
+      pumpId: result.pumpId,
+      requestedMl: 0,
+      actualMl: buildPrimeResult(db, result).approxMl,
+      status: 'completed',
+      source: 'prime',
+      scheduleId: null,
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      error: null,
+    });
+  });
+
   // Reflect the request origin. The device is LAN-only, so this lets the
   // Expo web bundle and any local phone browser talk to the Pi without a
   // hard-coded allowed-origin list.
@@ -445,6 +484,7 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
 
   fastify.get('/api/status', async () => {
     const status = engine.getStatus();
+    const primeLast = getLastPrimeResult();
     return {
       pumps: buildPumpState(db),
       containers: buildContainerInfo(db),
@@ -452,6 +492,10 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
       queue: status.current ? [status.current] : [],
       queueDepth: status.queueDepth,
       systemVolumeLitres: db.getSystemVolumeLitres(),
+      prime: {
+        priming: isPriming(),
+        lastResult: primeLast ? buildPrimeResult(db, primeLast) : null,
+      },
     };
   });
 
@@ -562,33 +606,11 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
         .send({ error: `No prime running for ${body.data.pumpId}` });
     }
 
-    const totalSteps = await stopPrime(body.data.pumpId);
+    const completion = await stopPrime(body.data.pumpId);
 
-    const calibration = db.getPumpCalibration(body.data.pumpId);
-    const approxMl =
-      calibration.stepsPerMl && calibration.stepsPerMl > 0
-        ? totalSteps / calibration.stepsPerMl
-        : null;
-
-    // Log the prime run for audit, but keep it out of dose totals/history.
-    db.saveDoseEvent({
-      id: randomUUID(),
-      pumpId: body.data.pumpId,
-      requestedMl: 0,
-      actualMl: approxMl,
-      status: 'completed',
-      source: 'prime',
-      scheduleId: null,
-      startedAt: new Date().toISOString(),
-      finishedAt: new Date().toISOString(),
-      error: null,
-    });
-
-    return {
-      pumpId: body.data.pumpId,
-      totalSteps,
-      approxMl,
-    };
+    // Audit logging happens in the prime complete handler registered at
+    // server creation, so watchdog-ended runs are covered too.
+    return buildPrimeResult(db, completion);
   });
 
   fastify.get('/api/schedules', async () => {

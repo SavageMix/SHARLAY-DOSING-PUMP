@@ -21,7 +21,7 @@ export interface CalibrateStartRequest {
   pumpId: PumpId;
   /**
    * Optional hard backstop in steps. If omitted, calibration is capped at
-   * a generous 2-minute runtime worth of steps (~96k at 800 Hz).
+   * a generous 9-minute runtime worth of steps (~432k at 800 Hz).
    */
   maxSteps?: number;
 }
@@ -57,6 +57,10 @@ export interface StatusResponse {
   queue: DoseEvent[];
   queueDepth: number;
   systemVolumeLitres: number;
+  prime: {
+    priming: boolean;
+    lastResult: PrimeResult | null;
+  };
 }
 
 export interface RefillContainerRequest {
@@ -124,11 +128,21 @@ export interface PrimeStopRequest {
   pumpId: PumpId;
 }
 
-export interface PrimeStopResponse {
+/** Why a prime run ended: the user pressed Stop, or the watchdog backstop fired. */
+export type PrimeStoppedBy = 'user' | 'watchdog';
+
+/**
+ * Result of a completed prime run, however it ended. A watchdog stop is a
+ * normal, expected outcome (long lines may need several runs), NOT an error.
+ */
+export interface PrimeResult {
   pumpId: PumpId;
   totalSteps: number;
   approxMl: number | null;
+  stoppedBy: PrimeStoppedBy;
 }
+
+export type PrimeStopResponse = PrimeResult;
 
 export interface HistoryQuery {
   pumpId?: PumpId;
