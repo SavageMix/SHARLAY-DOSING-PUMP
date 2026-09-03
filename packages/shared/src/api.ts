@@ -37,6 +37,8 @@ export interface CalibrateStopRequest {
 export interface CalibrateStopResponse {
   pumpId: PumpId;
   totalSteps: number;
+  /** Additive: why the run ended — user stop or the watchdog backstop. */
+  stoppedBy: CalibrateStoppedBy;
 }
 
 export interface CalibrateSaveRequest {
@@ -60,6 +62,10 @@ export interface StatusResponse {
   prime: {
     priming: boolean;
     lastResult: PrimeResult | null;
+  };
+  calibration: {
+    calibrating: boolean;
+    lastResult: CalibrationResult | null;
   };
 }
 
@@ -128,8 +134,22 @@ export interface PrimeStopRequest {
   pumpId: PumpId;
 }
 
-/** Why a prime run ended: the user pressed Stop, or the watchdog backstop fired. */
-export type PrimeStoppedBy = 'user' | 'watchdog';
+/** Why a routine run ended: the user pressed Stop, or the watchdog backstop fired. */
+export type RoutineStoppedBy = 'user' | 'watchdog';
+
+export type PrimeStoppedBy = RoutineStoppedBy;
+export type CalibrateStoppedBy = RoutineStoppedBy;
+
+/**
+ * Result of a completed calibration run, however it ended. A watchdog stop
+ * is not a failure — the dispensed volume is still measurable, so the run
+ * can be folded straight into the save step.
+ */
+export interface CalibrationResult {
+  pumpId: PumpId;
+  totalSteps: number;
+  stoppedBy: CalibrateStoppedBy;
+}
 
 /**
  * Result of a completed prime run, however it ended. A watchdog stop is a

@@ -24,6 +24,7 @@ vi.mock('../src/stepper.js', () => ({
 }));
 
 import { detectMissedDoses } from '../src/missed-doses.js';
+import { __resetSessions as __resetCalibrationSessions } from '../src/calibrator.js';
 import { __resetSessions } from '../src/primer.js';
 import { createServer } from '../src/server.js';
 import { runSteps, runWaveChunk } from '../src/stepper.js';
@@ -32,6 +33,7 @@ describe('Server endpoints', () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     __resetSessions();
+    __resetCalibrationSessions();
   });
   async function buildServer() {
     const db = new ReefDatabase(':memory:');
@@ -304,6 +306,87 @@ describe('Server endpoints', () => {
       // Watchdog-stopped runs stay out of dose totals and history.
       expect(db.getTodayDoseMl('alk')).toBe(0);
       expect(db.getHistory().events).toHaveLength(0);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/calibrate/start and /api/calibrate/stop returns steps with stoppedBy user', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      vi.mocked(runWaveChunk).mockImplementation(
+        async () => new Promise((resolve) => setTimeout(resolve, 5)),
+      );
+
+      const start = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/calibrate/start',
+        payload: { pumpId: 'ca' },
+      });
+      expect(start.statusCode).toBe(202);
+
+      const stopPromise = server.fastify.inject({
+        method: 'POST',
+        url: '/api/calibrate/stop',
+        payload: { pumpId: 'ca' },
+      });
+      await vi.advanceTimersByTimeAsync(20);
+      const response = await stopPromise;
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.pumpId).toBe('ca');
+      expect(body.totalSteps).toBeGreaterThan(0);
+      expect(body.stoppedBy).toBe('user');
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('reports a watchdog-stopped calibration via /api/status with stoppedBy watchdog', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      vi.mocked(runWaveChunk).mockImplementation(
+        async () => new Promise((resolve) => setTimeout(resolve, 5)),
+      );
+
+      const start = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/calibrate/start',
+        payload: { pumpId: 'ca' },
+      });
+      expect(start.statusCode).toBe(202);
+
+      // Let the default 540 s backstop elapse under fake timers
+      // (432 chunks x 5 ms), ending the run via the watchdog.
+      await vi.advanceTimersByTimeAsync(2500);
+
+      const response = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.calibration.calibrating).toBe(false);
+      expect(body.calibration.lastResult).toMatchObject({
+        pumpId: 'ca',
+        stoppedBy: 'watchdog',
+        totalSteps: 432_000,
+      });
+
+      // The run is over: stopping now is a 409, not an error.
+      const lateStop = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/calibrate/stop',
+        payload: { pumpId: 'ca' },
+      });
+      expect(lateStop.statusCode).toBe(409);
+      expect(JSON.parse(lateStop.body).error).toMatch(
+        /no calibration running/i,
+      );
     } finally {
       scheduler.stop();
       db.close();

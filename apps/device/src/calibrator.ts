@@ -1,4 +1,4 @@
-import type { PumpId } from '@reef/shared';
+import type { CalibrateStoppedBy, PumpId } from '@reef/shared';
 import { LIMITS } from '@reef/shared';
 import { driversDisable, driversEnable } from './gpio.js';
 import { MAX_STEPS_PER_WAVE, runWaveChunk } from './stepper.js';
@@ -24,10 +24,32 @@ interface CalibrationSession {
   stop: boolean;
   totalSteps: number;
   maxSteps: number;
+  stoppedBy: CalibrateStoppedBy;
   promise: Promise<void>;
 }
 
 const sessions = new Map<PumpId, CalibrationSession>();
+
+/**
+ * Outcome of a completed calibration run. Kept after the session is removed
+ * so the app can fold the run into its save step even when the watchdog
+ * ended it and no stop was requested.
+ */
+export interface CalibrationCompletion {
+  pumpId: PumpId;
+  totalSteps: number;
+  stoppedBy: CalibrateStoppedBy;
+}
+
+/**
+ * Most recent completed run, kept after the session is removed so the app
+ * can learn about a watchdog stop even if it never called stopCalibration().
+ */
+let lastResult: CalibrationCompletion | null = null;
+
+export function getLastCalibrationResult(): CalibrationCompletion | null {
+  return lastResult;
+}
 
 function defaultMaxSteps(): number {
   return LIMITS.stepRateHz * WATCHDOG_TIMEOUT_S;
@@ -57,8 +79,11 @@ async function runCalibrationLoop(session: CalibrationSession): Promise<void> {
     }
 
     // Log watchdog expiry distinctly from a clean stop so a backstop stop is
-    // visible in the service log instead of looking like a glitch.
+    // visible in the service log instead of looking like a glitch. A
+    // watchdog stop is not a failure — the dispensed volume is still
+    // measurable, so the run can continue to the save step.
     if (!session.stop && session.totalSteps >= session.maxSteps) {
+      session.stoppedBy = 'watchdog';
       const backstopS = Math.round(session.maxSteps / LIMITS.stepRateHz);
       console.warn(
         `[calibrator] WATCHDOG fired after ${backstopS}s — auto-stopping ${session.pumpId}`,
@@ -68,6 +93,11 @@ async function runCalibrationLoop(session: CalibrationSession): Promise<void> {
     // Watchdog expiry, clean stop, or error: always remove the session and
     // disable the drivers.
     session.stop = true;
+    lastResult = {
+      pumpId: session.pumpId,
+      totalSteps: session.totalSteps,
+      stoppedBy: session.stoppedBy,
+    };
     removeSession(session.pumpId);
     driversDisable();
   }
@@ -101,6 +131,7 @@ export function startCalibration(
     stop: false,
     totalSteps: 0,
     maxSteps,
+    stoppedBy: 'user',
     promise: Promise.resolve(),
   };
 
@@ -113,10 +144,10 @@ export function startCalibration(
 }
 
 /**
- * Stop the calibration loop for a pump and return the total steps dispensed.
- * Safe to call multiple times; subsequent calls return the final step count.
+ * Stop the calibration loop for a pump and return the run outcome.
+ * Safe to call multiple times; subsequent calls return the final outcome.
  */
-export async function stopCalibration(pumpId: PumpId): Promise<number> {
+export async function stopCalibration(pumpId: PumpId): Promise<CalibrationCompletion> {
   const session = sessions.get(pumpId);
   if (!session) {
     throw new Error(`No calibration running for ${pumpId}`);
@@ -128,7 +159,11 @@ export async function stopCalibration(pumpId: PumpId): Promise<number> {
   // The loop's finally block may have already removed the session.
   sessions.delete(pumpId);
 
-  return session.totalSteps;
+  return {
+    pumpId: session.pumpId,
+    totalSteps: session.totalSteps,
+    stoppedBy: session.stoppedBy,
+  };
 }
 
 export function isCalibrating(pumpId: PumpId): boolean {
@@ -136,9 +171,10 @@ export function isCalibrating(pumpId: PumpId): boolean {
 }
 
 /**
- * Test-only helper: clear all sessions without touching drivers.
- * Do not use in production code.
+ * Test-only helper: clear all sessions and the last result without touching
+ * drivers. Do not use in production code.
  */
 export function __resetSessions(): void {
   sessions.clear();
+  lastResult = null;
 }

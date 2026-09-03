@@ -11,6 +11,7 @@ import type { ContainerInfo, PumpId, PumpState } from '@reef/shared';
 import type { ReefDatabase } from './db.js';
 import type { Engine } from './engine.js';
 import {
+  getLastCalibrationResult,
   isCalibrating,
   startCalibration,
   stopCalibration,
@@ -496,6 +497,10 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
         priming: isPriming(),
         lastResult: primeLast ? buildPrimeResult(db, primeLast) : null,
       },
+      calibration: {
+        calibrating: isAnyPumpCalibrating(),
+        lastResult: getLastCalibrationResult(),
+      },
     };
   });
 
@@ -556,11 +561,8 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
         .send({ error: `No calibration running for ${body.data.pumpId}` });
     }
 
-    const totalSteps = await stopCalibration(body.data.pumpId);
-    return {
-      pumpId: body.data.pumpId,
-      totalSteps,
-    };
+    const completion = await stopCalibration(body.data.pumpId);
+    return completion;
   });
 
   fastify.post('/api/calibrate/save', async (request, reply) => {

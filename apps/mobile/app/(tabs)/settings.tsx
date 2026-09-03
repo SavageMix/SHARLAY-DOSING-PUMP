@@ -27,17 +27,26 @@ import {
 } from '@/src/api/client';
 import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
 import {
+  isCalibrationGoneError,
+  reconcileAfterCalibrationGone,
+  reconcileCalibration,
+} from '@/src/calibrate/reconcile';
+import {
   isPrimeGoneError,
   reconcileAfterPrimeGone,
   reconcilePrime,
 } from '@/src/prime/reconcile';
-import { type PrimeResult, type PumpId } from '@reef/shared';
+import {
+  type CalibrationResult,
+  type PrimeResult,
+  type PumpId,
+} from '@reef/shared';
 
 const PUMP_ORDER: PumpId[] = ['alk', 'ca', 'no3', 'po4'];
 
 type WizardStep = 1 | 2 | 3 | 4;
 
-interface CalibrationResult {
+interface CalibrationSaveResult {
   pumpId: PumpId;
   oldStepsPerMl: number | null;
   newStepsPerMl: number;
@@ -63,9 +72,15 @@ function CalibrationWizard({
   const [isRunning, setIsRunning] = useState(false);
   const [totalSteps, setTotalSteps] = useState(0);
   const [measuredMl, setMeasuredMl] = useState('');
-  const [result, setResult] = useState<CalibrationResult | null>(null);
+  const [result, setResult] = useState<CalibrationSaveResult | null>(null);
   const [error, setError] = useState('');
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
+  const [endedByWatchdog, setEndedByWatchdog] = useState(false);
+  // Reconciliation refs: a poll in flight before START can report a stale
+  // "not calibrating", so runs are only trusted once a poll confirms them;
+  // each completed run is folded into the save step exactly once.
+  const awaitingConfirmationRef = useRef(false);
+  const handledRunKeysRef = useRef<ReadonlySet<string>>(new Set());
 
   useFocusEffect(
     useCallback(() => {
@@ -94,11 +109,92 @@ function CalibrationWizard({
     onClose();
   };
 
+  const applyReconcileOutcome = (outcome: {
+    clearLocalCalibration: boolean;
+    foldInResult: CalibrationResult | null;
+    handledKeys: Set<string>;
+    awaitingConfirmation: boolean;
+  }) => {
+    awaitingConfirmationRef.current = outcome.awaitingConfirmation;
+    handledRunKeysRef.current = outcome.handledKeys;
+    if (outcome.clearLocalCalibration) {
+      setIsRunning(false);
+    }
+    if (outcome.foldInResult) {
+      setTotalSteps(outcome.foldInResult.totalSteps);
+      setEndedByWatchdog(outcome.foldInResult.stoppedBy === 'watchdog');
+      setStep(3);
+    }
+  };
+
+  // /api/status is the source of truth for the run on every poll and on app
+  // resume/foreground (the first poll after waking reconciles whatever was
+  // missed while suspended). Local wizard state and timers never decide when
+  // a run ends — the device owns all stopping.
+  useEffect(() => {
+    if (!baseUrl || !visible) return;
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const data = await getStatus(baseUrl);
+        if (cancelled) return;
+        const cal = data?.calibration ?? null;
+        applyReconcileOutcome(
+          reconcileCalibration({
+            localCalibrating: isRunning,
+            deviceCalibrating: cal ? cal.calibrating : null,
+            lastResult:
+              cal?.lastResult?.pumpId === pumpId ? cal.lastResult : null,
+            handledKeys: handledRunKeysRef.current,
+            awaitingConfirmation: awaitingConfirmationRef.current,
+          }),
+        );
+      } catch {
+        // Device unreachable — the next poll reconciles.
+      }
+    };
+
+    poll();
+    const interval = setInterval(poll, 4_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseUrl, visible, pumpId, isRunning]);
+
+  const reconcileCalibrationFromDevice = async () => {
+    if (!baseUrl) return;
+    try {
+      const data = await getStatus(baseUrl);
+      const cal = data?.calibration ?? null;
+      if (!cal) {
+        setIsRunning(false);
+        return;
+      }
+      applyReconcileOutcome(
+        reconcileAfterCalibrationGone({
+          localCalibrating: true,
+          lastResult:
+            cal.lastResult?.pumpId === pumpId ? cal.lastResult : null,
+          handledKeys: handledRunKeysRef.current,
+        }),
+      );
+    } catch {
+      // Device unreachable — clear local state; the next poll reconciles.
+      setIsRunning(false);
+    }
+  };
+
   const handleStart = async () => {
     if (!baseUrl) return;
     setError('');
     try {
       await startCalibration(baseUrl, { pumpId });
+      // Ignore pre-start polls until one confirms the device sees the run.
+      awaitingConfirmationRef.current = true;
+      setEndedByWatchdog(false);
       setIsRunning(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start');
@@ -110,10 +206,21 @@ function CalibrationWizard({
     setError('');
     try {
       const res = await stopCalibration(baseUrl, { pumpId });
+      awaitingConfirmationRef.current = false;
       setIsRunning(false);
       setTotalSteps(res.totalSteps);
+      setEndedByWatchdog(res.stoppedBy === 'watchdog');
       setStep(3);
     } catch (err) {
+      if (isCalibrationGoneError(err)) {
+        // The session already ended on the device (watchdog or restart).
+        // The device owns all stopping — reconcile from its state and show
+        // the result, never a raw "No calibration running" error.
+        awaitingConfirmationRef.current = false;
+        await reconcileCalibrationFromDevice();
+        return;
+      }
+      setIsRunning(false);
       setError(err instanceof Error ? err.message : 'Failed to stop');
     }
   };
@@ -251,6 +358,19 @@ function CalibrationWizard({
             <ThemedText style={styles.bodyText}>
               Pump ran {totalSteps.toLocaleString()} steps. Enter the volume that actually dispensed into the cup.
             </ThemedText>
+
+            {endedByWatchdog ? (
+              <ThemedView style={styles.warningCard}>
+                <ThemedText style={styles.warningHeading}>
+                  Run ended on the safety limit
+                </ThemedText>
+                <ThemedText style={styles.bodyText}>
+                  The pump stopped automatically after reaching its time limit.
+                  Measure whatever was dispensed — you can still save the
+                  calibration from this run.
+                </ThemedText>
+              </ThemedView>
+            ) : null}
 
             <ThemedText style={styles.label}>Measured volume (mL)</ThemedText>
             <ThemedTextInput

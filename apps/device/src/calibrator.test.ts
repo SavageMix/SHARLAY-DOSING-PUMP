@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   __resetSessions,
+  getLastCalibrationResult,
   isCalibrating,
   startCalibration,
   stopCalibration,
@@ -63,8 +64,14 @@ describe('Calibrator', () => {
     await sleep(100);
     expect((runWaveChunk as any).__getChunks()).toBeGreaterThanOrEqual(2);
 
-    const totalSteps = await stopCalibration('alk');
-    expect(totalSteps).toBe((runWaveChunk as any).__getChunks() * 1000);
+    const result = await stopCalibration('alk');
+    expect(result.totalSteps).toBe((runWaveChunk as any).__getChunks() * 1000);
+    expect(result.stoppedBy).toBe('user');
+    expect(getLastCalibrationResult()).toMatchObject({
+      pumpId: 'alk',
+      stoppedBy: 'user',
+      totalSteps: result.totalSteps,
+    });
     expect(isCalibrating('alk')).toBe(false);
     expect(driversDisable).toHaveBeenCalled();
   });
@@ -79,8 +86,9 @@ describe('Calibrator', () => {
     const stopPromise = stopCalibration('ca');
     await sleep(CHUNK_DURATION_MS);
 
-    const totalSteps = await stopPromise;
-    expect(totalSteps).toBe(1000);
+    const result = await stopPromise;
+    expect(result.totalSteps).toBe(1000);
+    expect(result.stoppedBy).toBe('user');
     expect(driversDisable).toHaveBeenCalled();
     expect(isCalibrating('ca')).toBe(false);
   });
@@ -100,6 +108,11 @@ describe('Calibrator', () => {
     expect(isCalibrating('no3')).toBe(false);
     expect((runWaveChunk as any).__getChunks()).toBe(4);
     expect(driversDisable).toHaveBeenCalled();
+    expect(getLastCalibrationResult()).toMatchObject({
+      pumpId: 'no3',
+      stoppedBy: 'watchdog',
+      totalSteps: 3500,
+    });
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('[calibrator] WATCHDOG fired after 4s'),
     );
