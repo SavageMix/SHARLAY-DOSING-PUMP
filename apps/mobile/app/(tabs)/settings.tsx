@@ -26,6 +26,11 @@ import {
   stopPrime,
 } from '@/src/api/client';
 import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
+import {
+  isPrimeGoneError,
+  reconcileAfterPrimeGone,
+  reconcilePrime,
+} from '@/src/prime/reconcile';
 import { type PrimeResult, type PumpId } from '@reef/shared';
 
 const PUMP_ORDER: PumpId[] = ['alk', 'ca', 'no3', 'po4'];
@@ -358,7 +363,11 @@ export default function SettingsScreen() {
   } | null>(null);
   const [primeWatchdogResult, setPrimeWatchdogResult] =
     useState<PrimeResult | null>(null);
-  const [seenWatchdogKey, setSeenWatchdogKey] = useState<string | null>(null);
+  // Watchdog stops already surfaced (primeRunKey values) and start-confirmation
+  // state live in refs: the reconciliation effect must read the latest values
+  // without re-running on every local state change.
+  const handledWatchdogKeysRef = useRef<ReadonlySet<string>>(new Set());
+  const awaitingPrimeRef = useRef(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -447,6 +456,9 @@ export default function SettingsScreen() {
     setPrimeResult(null);
     try {
       await startPrime(savedUrl, { pumpId });
+      // Ignore pre-start polls until a poll confirms the device sees the
+      // run — they can report a stale "not priming".
+      awaitingPrimeRef.current = true;
       setPrimingPump(pumpId);
       setPrimeStartTime(Date.now());
       setPrimeElapsedMs(0);
@@ -460,41 +472,85 @@ export default function SettingsScreen() {
     setPrimeError('');
     try {
       const res = await stopPrime(savedUrl, { pumpId: primingPump });
+      awaitingPrimeRef.current = false;
       setPrimingPump(null);
       setPrimeStartTime(null);
       setPrimeResult(res);
     } catch (err) {
+      if (isPrimeGoneError(err)) {
+        // The session already ended on the device (watchdog or restart).
+        // The device owns all stopping — reconcile from its state instead
+        // of showing "No prime running" as an error.
+        awaitingPrimeRef.current = false;
+        await reconcilePrimeFromDevice();
+        return;
+      }
+      awaitingPrimeRef.current = false;
       setPrimingPump(null);
       setPrimeStartTime(null);
       setPrimeError(err instanceof Error ? err.message : 'Failed to stop prime');
     }
   };
 
-  // Reconcile local prime state with the device. Only act on a true→false
-  // transition of the device's priming flag, so a stale poll taken before
-  // the user tapped Prime can't clear a run we just started.
-  const prevPrimingRef = useRef<boolean | null>(null);
-  useEffect(() => {
-    const priming = primeState?.priming ?? null;
-    const wentIdle = prevPrimingRef.current === true && priming === false;
-    prevPrimingRef.current = priming;
-    if (wentIdle && primingPump) {
+  // Fetch the device's prime state and fold it into reconciliation. Used
+  // after a 409 from stopPrime; the regular status poll funnels through the
+  // same effect below, so both paths share one dedupe guard.
+  const reconcilePrimeFromDevice = async () => {
+    if (!savedUrl) return;
+    try {
+      const data = await getStatus(savedUrl);
+      setOffline(false);
+      const prime = data?.prime ?? null;
+      setPrimeState(prime);
+      if (!prime) {
+        setPrimingPump(null);
+        setPrimeStartTime(null);
+        return;
+      }
+      const outcome = reconcileAfterPrimeGone({
+        localPriming: true,
+        lastResult: prime.lastResult,
+        handledKeys: handledWatchdogKeysRef.current,
+      });
+      handledWatchdogKeysRef.current = outcome.handledKeys;
+      if (outcome.clearLocalPrime) {
+        setPrimingPump(null);
+        setPrimeStartTime(null);
+      }
+      if (outcome.showWatchdogModal) {
+        setPrimeWatchdogResult(outcome.showWatchdogModal);
+      }
+    } catch {
+      setOffline(true);
       setPrimingPump(null);
       setPrimeStartTime(null);
     }
-  }, [primeState, primingPump]);
+  };
 
-  // Surface a watchdog stop once per completed run. A watchdog stop is a
-  // normal outcome (long lines may need several runs), never an error.
+  // The 10 s status poll is the single source of truth for prime state while
+  // a prime is active. On any "device reports no prime" (even detected late
+  // after the phone was asleep), clear the local countdown — the local
+  // timer never initiates a stop — and surface the paused modal when the
+  // run ended on the watchdog.
   useEffect(() => {
-    if (!primeState || primeState.priming) return;
-    const last = primeState.lastResult;
-    if (!last || last.stoppedBy !== 'watchdog') return;
-    const key = `${last.pumpId}:${last.totalSteps}`;
-    if (seenWatchdogKey === key) return;
-    setSeenWatchdogKey(key);
-    setPrimeWatchdogResult(last);
-  }, [primeState, seenWatchdogKey]);
+    if (!primeState) return;
+    const outcome = reconcilePrime({
+      localPriming: primingPump !== null,
+      devicePriming: primeState.priming,
+      lastResult: primeState.lastResult,
+      handledKeys: handledWatchdogKeysRef.current,
+      awaitingConfirmation: awaitingPrimeRef.current,
+    });
+    awaitingPrimeRef.current = outcome.awaitingConfirmation;
+    handledWatchdogKeysRef.current = outcome.handledKeys;
+    if (outcome.clearLocalPrime) {
+      setPrimingPump(null);
+      setPrimeStartTime(null);
+    }
+    if (outcome.showWatchdogModal) {
+      setPrimeWatchdogResult(outcome.showWatchdogModal);
+    }
+  }, [primeState, primingPump]);
 
   const handlePrimeAgain = async () => {
     const result = primeWatchdogResult;

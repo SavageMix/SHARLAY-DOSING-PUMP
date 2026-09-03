@@ -10,7 +10,8 @@
   "scripts": {
     "dev:device": "npm run dev -w apps/device",
     "build": "npm run build --workspaces --if-present",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "test": "npm run test -w apps/device && npm run test -w apps/mobile"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

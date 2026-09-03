@@ -92,9 +92,13 @@ async function request<T>(
     >;
 
     if (!response.ok) {
-      throw new Error(
-        typeof data.error === 'string' ? data.error : `HTTP ${response.status}`,
-      );
+      const message =
+        typeof data.error === 'string' ? data.error : `HTTP ${response.status}`;
+      // Attach the status so callers can classify errors (e.g. a 409
+      // "No prime running" means the session already ended, not a failure).
+      const error = new Error(message) as Error & { status?: number };
+      error.status = response.status;
+      throw error;
     }
 
     return data as T;
