@@ -14,7 +14,11 @@ export interface DoseRequest {
 }
 
 export interface DoseResponse {
-  event: DoseEvent;
+  /**
+   * Id of the queued dose job. Once the engine starts executing the dose,
+   * this same id is the DoseEvent id surfaced in /api/status.
+   */
+  jobId: string;
 }
 
 export interface CalibrateStartRequest {

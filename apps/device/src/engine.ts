@@ -82,7 +82,9 @@ export class Engine {
 
   private async execute(item: QueueItem): Promise<void> {
     const event: DoseEvent = {
-      id: randomUUID(),
+      // Reuse the queue item id so the jobId returned by POST /api/dose
+      // matches the event id later surfaced in /api/status.
+      id: item.id,
       pumpId: item.pumpId,
       requestedMl: item.amountMl,
       actualMl: null,

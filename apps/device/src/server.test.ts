@@ -454,6 +454,33 @@ describe('Server endpoints', () => {
     }
   });
 
+  it('POST /api/dose returns { jobId } matching the running event id in /api/status', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.updatePumpCalibration('alk', 100);
+      // Keep the dose in the running state so it is visible in /api/status.
+      vi.mocked(runSteps).mockImplementation(() => new Promise(() => {}));
+
+      const response = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/dose',
+        payload: { pumpId: 'alk', volumeMl: 1 },
+      });
+
+      expect(response.statusCode).toBe(202);
+      const body = JSON.parse(response.body);
+      expect(typeof body.jobId).toBe('string');
+      expect(body.event).toBeUndefined();
+
+      const status = await server.fastify.inject({ method: 'GET', url: '/api/status' });
+      const statusBody = JSON.parse(status.body);
+      expect(statusBody.currentDose?.id).toBe(body.jobId);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
   it('POST /api/prime/start is refused while a dose is running', async () => {
     const { db, server, scheduler } = await buildServer();
     try {

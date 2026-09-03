@@ -819,12 +819,13 @@ function MissedDosesModal({
                     {PUMP_SHORT_NAMES[missed.pumpId] ?? missed.pumpId}
                   </ThemedText>
                   <ThemedText style={styles.missedVolume}>
-                    {missed.volumeMl.toFixed(2)} mL
+                    {missed.volumeMl != null ? `${missed.volumeMl.toFixed(2)} mL` : '—'}
                   </ThemedText>
                 </ThemedView>
                 <ThemedText style={styles.missedTime}>
-                  {formatDateTime(new Date(missed.scheduledFor))} ·{' '}
-                  {formatLateness(missed.scheduledFor)}
+                  {missed.scheduledFor
+                    ? `${formatDateTime(new Date(missed.scheduledFor))} · ${formatLateness(missed.scheduledFor)}`
+                    : '—'}
                 </ThemedText>
 
                 <ThemedView style={styles.missedActions}>
@@ -946,7 +947,7 @@ export default function DashboardScreen() {
         const event =
           data.status.currentDose?.id === state.eventId
             ? data.status.currentDose
-            : data.status.queue.find((e) => e.id === state.eventId);
+            : data.status.queue?.find((e) => e.id === state.eventId);
         if (!event) {
           next[pumpId] = {
             status: 'done',
@@ -961,7 +962,8 @@ export default function DashboardScreen() {
           };
         } else if (event.status === 'queued') {
           const position =
-            data.status.queue.findIndex((e) => e.id === state.eventId) + 1;
+            (data.status.queue?.findIndex((e) => e.id === state.eventId) ??
+              -1) + 1;
           next[pumpId] = {
             status: 'queued',
             message: `Queued #${position}`,
@@ -1047,12 +1049,14 @@ export default function DashboardScreen() {
 
     try {
       const res = await postDose(baseUrl, { pumpId, volumeMl });
-      const eventId = res.event.id;
+      // The engine starts the dose asynchronously; the 2s status sync
+      // resolves the real running/queued state via the event id.
+      const eventId = res.jobId;
       setDoseStates((s) => ({
         ...s,
         [pumpId]: {
-          status: res.event.status === 'running' ? 'running' : 'queued',
-          message: res.event.status === 'running' ? 'Dosing…' : 'Queued',
+          status: 'queued',
+          message: 'Queued',
           eventId,
         },
       }));
