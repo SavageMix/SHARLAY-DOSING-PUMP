@@ -7,11 +7,16 @@ const CALIBRATION_CHUNK_STEPS = MAX_STEPS_PER_WAVE;
 const CHUNK_INTERVAL_MS = 0;
 
 /**
- * Default backstop: 2 minutes of runtime at the configured step rate.
+ * Watchdog backstop: 15 minutes of runtime at the configured step rate.
+ *
+ * 15 min = 720,000 steps at 800 Hz ≈ 51 mL at ~14k steps/mL. A full 20 mL
+ * calibration run needs only ~5.9 min, so this covers it with margin, while
+ * still capping runaway sessions (stuck client, forgotten stop, etc.).
+ *
  * The caller can pass a lower maxSteps in startCalibration(); this is only
  * used when no explicit backstop is supplied.
  */
-const DEFAULT_CALIBRATION_SECONDS = 120;
+export const WATCHDOG_TIMEOUT_S = 900;
 
 interface CalibrationSession {
   pumpId: PumpId;
@@ -24,7 +29,7 @@ interface CalibrationSession {
 const sessions = new Map<PumpId, CalibrationSession>();
 
 function defaultMaxSteps(): number {
-  return LIMITS.stepRateHz * DEFAULT_CALIBRATION_SECONDS;
+  return LIMITS.stepRateHz * WATCHDOG_TIMEOUT_S;
 }
 
 function removeSession(pumpId: PumpId): void {
@@ -49,6 +54,15 @@ async function runCalibrationLoop(session: CalibrationSession): Promise<void> {
         await new Promise((resolve) => setTimeout(resolve, CHUNK_INTERVAL_MS));
       }
     }
+
+    // Log watchdog expiry distinctly from a clean stop so a backstop stop is
+    // visible in the service log instead of looking like a glitch.
+    if (!session.stop && session.totalSteps >= session.maxSteps) {
+      const backstopS = Math.round(session.maxSteps / LIMITS.stepRateHz);
+      console.warn(
+        `[calibrator] WATCHDOG fired after ${backstopS}s — auto-stopping ${session.pumpId}`,
+      );
+    }
   } finally {
     // Watchdog expiry, clean stop, or error: always remove the session and
     // disable the drivers.
@@ -63,7 +77,7 @@ async function runCalibrationLoop(session: CalibrationSession): Promise<void> {
  *
  * The pump runs in MAX_STEPS_PER_WAVE chunks until either:
  *   - stopCalibration() is called, or
- *   - the step backstop is reached (default: 2 minutes of runtime).
+ *   - the step backstop is reached (default: 15-minute watchdog).
  *
  * Safety invariant: drivers are enabled when the loop starts and disabled in a
  * finally block on every exit path, including errors and watchdog expiry.

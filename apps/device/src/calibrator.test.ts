@@ -86,6 +86,8 @@ describe('Calibrator', () => {
   });
 
   it('auto-stops via the watchdog step backstop and disables drivers', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
     // 3500 steps => 3 full 1000-step chunks plus a 500-step final chunk.
     startCalibration('no3', { maxSteps: 3500 });
 
@@ -98,9 +100,14 @@ describe('Calibrator', () => {
     expect(isCalibrating('no3')).toBe(false);
     expect((runWaveChunk as any).__getChunks()).toBe(4);
     expect(driversDisable).toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[calibrator] WATCHDOG fired after 4s'),
+    );
+
+    warnSpy.mockRestore();
   });
 
-  it('uses the default 2-minute backstop when maxSteps is omitted', async () => {
+  it('uses the default 15-minute watchdog backstop when maxSteps is omitted', async () => {
     startCalibration('po4');
     await sleep(CHUNK_DURATION_MS * 3);
 

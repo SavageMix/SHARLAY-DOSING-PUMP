@@ -7,10 +7,13 @@ const PRIME_CHUNK_STEPS = MAX_STEPS_PER_WAVE;
 const CHUNK_INTERVAL_MS = 0;
 
 /**
- * Hard backstop: 2 minutes of runtime at the configured step rate.
- * Priming is maintenance, not dosing, so it is always capped.
+ * Watchdog backstop: 15 minutes of runtime at the configured step rate.
+ *
+ * 15 min = 720,000 steps at 800 Hz ≈ 51 mL at ~14k steps/mL. Priming rarely
+ * needs more than a few mL, so this is far beyond any sane prime run, while
+ * still capping runaway sessions (stuck client, forgotten stop, etc.).
  */
-const DEFAULT_PRIME_SECONDS = 120;
+export const WATCHDOG_TIMEOUT_S = 900;
 
 interface PrimeSession {
   pumpId: PumpId;
@@ -23,7 +26,7 @@ interface PrimeSession {
 const sessions = new Map<PumpId, PrimeSession>();
 
 function defaultMaxSteps(): number {
-  return LIMITS.stepRateHz * DEFAULT_PRIME_SECONDS;
+  return LIMITS.stepRateHz * WATCHDOG_TIMEOUT_S;
 }
 
 function removeSession(pumpId: PumpId): void {
@@ -48,6 +51,15 @@ async function runPrimeLoop(session: PrimeSession): Promise<void> {
         await new Promise((resolve) => setTimeout(resolve, CHUNK_INTERVAL_MS));
       }
     }
+
+    // Log watchdog expiry distinctly from a clean stop so a backstop stop is
+    // visible in the service log instead of looking like a glitch.
+    if (!session.stop && session.totalSteps >= session.maxSteps) {
+      const backstopS = Math.round(session.maxSteps / LIMITS.stepRateHz);
+      console.warn(
+        `[primer] WATCHDOG fired after ${backstopS}s — auto-stopping ${session.pumpId}`,
+      );
+    }
   } finally {
     // Watchdog expiry, clean stop, or error: always remove the session and
     // disable the drivers.
@@ -62,7 +74,7 @@ async function runPrimeLoop(session: PrimeSession): Promise<void> {
  *
  * The pump runs in MAX_STEPS_PER_WAVE chunks until either:
  *   - stopPrime() is called, or
- *   - the 2-minute step backstop is reached.
+ *   - the 15-minute step backstop is reached.
  *
  * Safety invariant: drivers are enabled when the loop starts and disabled in a
  * finally block on every exit path, including errors and watchdog expiry.

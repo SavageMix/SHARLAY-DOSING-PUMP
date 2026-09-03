@@ -4,7 +4,14 @@ import {
   isPriming,
   startPrime,
   stopPrime,
+  WATCHDOG_TIMEOUT_S,
 } from '../src/primer.js';
+
+// Mock a low step rate so the default 900 s backstop (90,000 steps) completes
+// in ~90 mocked chunks instead of 720, keeping the watchdog test fast.
+vi.mock('@reef/shared', () => ({
+  LIMITS: { stepRateHz: 100 },
+}));
 
 vi.mock('../src/gpio.js', () => ({
   driversDisable: vi.fn(),
@@ -25,8 +32,7 @@ import { driversDisable, driversEnable } from '../src/gpio.js';
 import { runWaveChunk } from '../src/stepper.js';
 
 const CHUNK_DURATION_MS = 5;
-const STEP_RATE_HZ = 800;
-const DEFAULT_PRIME_SECONDS = 120;
+const STEP_RATE_HZ = 100;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -76,11 +82,13 @@ describe('Primer', () => {
     expect(() => startPrime('alk')).toThrow(/already running/i);
   });
 
-  it('stops automatically at the watchdog backstop', async () => {
+  it('stops automatically at the watchdog backstop and logs it', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
     startPrime('alk');
 
     // Poll until the watchdog backstop finishes the session.
-    // 96 chunks at 5 ms per chunk = ~480 ms, plus scheduling overhead.
+    // 90 chunks at 5 ms per chunk = ~450 ms, plus scheduling overhead.
     const deadline = Date.now() + 3000;
     while (isPriming('alk') && Date.now() < deadline) {
       await sleep(CHUNK_DURATION_MS);
@@ -89,8 +97,13 @@ describe('Primer', () => {
     expect(isPriming('alk')).toBe(false);
     expect(driversDisable).toHaveBeenCalled();
     expect((runWaveChunk as any).__getChunks()).toBe(
-      (STEP_RATE_HZ * DEFAULT_PRIME_SECONDS) / 1000,
+      (STEP_RATE_HZ * WATCHDOG_TIMEOUT_S) / 1000,
     );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[primer] WATCHDOG fired after 900s'),
+    );
+
+    warnSpy.mockRestore();
   });
 
   it('throws when stopping a pump that is not priming', async () => {
