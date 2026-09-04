@@ -1,3 +1,9 @@
+// These fixtures use absolute UTC timestamps (e.g. setSystemTime with a "Z"
+// string) and assert absolute UTC outcomes. Schedule times are interpreted as
+// device-local wall clock, so pin the process TZ to UTC to keep local == UTC
+// and the fixtures unambiguous on any machine.
+process.env.TZ = 'UTC';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DoseEvent, DoseSchedule, MissedDose, MissedDoseStatus, PumpId } from '@reef/shared';
 import { Scheduler, type SchedulerEngine, type SchedulerRepository } from '../src/scheduler.js';

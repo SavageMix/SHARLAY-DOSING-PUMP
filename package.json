@@ -11,7 +11,7 @@
     "dev:device": "npm run dev -w apps/device",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "tsc -b",
-    "test": "npm run test -w apps/device && npm run test -w apps/mobile"
+    "test": "npm run test -w apps/device && npm run test -w apps/mobile && npm run test -w packages/shared"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

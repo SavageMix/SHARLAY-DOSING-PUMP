@@ -87,6 +87,11 @@ export function formatScheduleSummary(
 /**
  * Compute the previous scheduled occurrence before or at `now` for a schedule.
  * Returns `null` if the schedule does not have any daily occurrences.
+ *
+ * Schedule times are wall-clock "HH:MM" in the device-local timezone: "10:32"
+ * means 10:32 local, whatever the UTC offset is today. Target dates are built
+ * via the local Date constructor so they land on exact wall-clock times even
+ * across DST transitions.
  */
 export function getPreviousDueDate(
   schedule: Pick<DoseSchedule, 'timesPerDay' | 'startTime' | 'repeatEveryNDays'>,
@@ -95,19 +100,12 @@ export function getPreviousDueDate(
   const times = computeScheduleTimes(schedule);
   if (times.length === 0) return null;
 
-  const nowUtc = new Date(now.toISOString());
-  const currentMinutes = nowUtc.getUTCHours() * 60 + nowUtc.getUTCMinutes();
-  const currentSeconds = nowUtc.getUTCSeconds();
-  const currentMs = nowUtc.getUTCMilliseconds();
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const currentSeconds = now.getSeconds();
+  const currentMs = now.getMilliseconds();
 
   // Find the most recent time-of-day that is <= now's time-of-day.
   // If none, the previous occurrence was the last time of the previous eligible day.
-  const todayMidnight = Date.UTC(
-    nowUtc.getUTCFullYear(),
-    nowUtc.getUTCMonth(),
-    nowUtc.getUTCDate(),
-  );
-
   let dayOffset = 0;
   let selectedTime: ScheduleTime | null = null;
 
@@ -140,8 +138,15 @@ export function getPreviousDueDate(
     targetDay--;
   }
 
-  const targetMs = todayMidnight + targetDay * 24 * 60 * 60 * 1000 + selectedTime.hour * 60 * 60 * 1000 + selectedTime.minute * 60 * 1000;
-  return new Date(targetMs);
+  return new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() + targetDay,
+    selectedTime.hour,
+    selectedTime.minute,
+    0,
+    0,
+  );
 }
 
 /**
@@ -169,6 +174,9 @@ export function getMissedDueDates(
 
 /**
  * Compute the next scheduled occurrence after `now` for a schedule.
+ * Schedule times are wall-clock "HH:MM" in the device-local timezone; the
+ * target is built via the local Date constructor so DST transitions never
+ * shift a dose off its wall-clock time.
  */
 export function getNextDueDate(
   schedule: Pick<DoseSchedule, 'timesPerDay' | 'startTime' | 'repeatEveryNDays'>,
@@ -177,14 +185,7 @@ export function getNextDueDate(
   const times = computeScheduleTimes(schedule);
   if (times.length === 0) return null;
 
-  const nowUtc = new Date(now.toISOString());
-  const currentMinutes = nowUtc.getUTCHours() * 60 + nowUtc.getUTCMinutes();
-
-  const todayMidnight = Date.UTC(
-    nowUtc.getUTCFullYear(),
-    nowUtc.getUTCMonth(),
-    nowUtc.getUTCDate(),
-  );
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
   const sortedTimes = [...times].sort((a, b) => a.hour * 60 + a.minute - (b.hour * 60 + b.minute));
 
@@ -211,10 +212,13 @@ export function getNextDueDate(
     targetDay++;
   }
 
-  const targetMs =
-    todayMidnight +
-    targetDay * 24 * 60 * 60 * 1000 +
-    selectedTime.hour * 60 * 60 * 1000 +
-    selectedTime.minute * 60 * 1000;
-  return new Date(targetMs);
+  return new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() + targetDay,
+    selectedTime.hour,
+    selectedTime.minute,
+    0,
+    0,
+  );
 }
