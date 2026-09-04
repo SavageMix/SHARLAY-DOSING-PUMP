@@ -6,6 +6,7 @@ import {
   FlatList,
   Modal,
   PanResponder,
+  Platform,
   Pressable,
   StyleSheet,
   Switch,
@@ -29,6 +30,7 @@ import {
 } from '@/src/api/client';
 import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
 import {
+  computeScheduleTimes,
   formatScheduleSummary,
   type PumpId,
 } from '@reef/shared';
@@ -195,6 +197,35 @@ function ScheduleItem({ schedule, onEdit, onDelete }: ScheduleItemProps) {
   );
 }
 
+/**
+ * Web fallback for the start-time picker. @react-native-community/datetimepicker
+ * ships no web implementation, so on RN Web we use a masked HH:MM text field
+ * styled with the same design tokens as the native picker button.
+ */
+function WebTimeField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (time: string) => void;
+}) {
+  const handleChange = (raw: string) => {
+    const digits = raw.replace(/\D/g, '').slice(0, 4);
+    onChange(digits.length > 2 ? `${digits.slice(0, 2)}:${digits.slice(2)}` : digits);
+  };
+  return (
+    <ThemedTextInput
+      style={styles.input}
+      keyboardType="number-pad"
+      placeholder="HH:MM"
+      placeholderTextColor={Colors.slate}
+      value={value}
+      maxLength={5}
+      onChangeText={handleChange}
+    />
+  );
+}
+
 interface EditorModalProps {
   visible: boolean;
   editingId: string | null;
@@ -238,6 +269,24 @@ function EditorModal({
       onChange({ ...form, [field]: text } as FormState);
     }
   };
+
+  // Computed dose times preview, e.g. "Fires at 16:45" or
+  // "Fires at 08:00, 14:00, 20:00".
+  const fireTimesPreview = useMemo(() => {
+    const parsed = parseForm(form);
+    if (!parsed.valid) return null;
+    const times = computeScheduleTimes(parsed.data);
+    if (times.length === 0) return null;
+    const list = times
+      .map(
+        (t) =>
+          `${t.hour.toString().padStart(2, '0')}:${t.minute
+            .toString()
+            .padStart(2, '0')}`,
+      )
+      .join(', ');
+    return `Fires at ${list}`;
+  }, [form]);
 
   return (
     <Modal
@@ -293,20 +342,32 @@ function EditorModal({
           />
 
           <ThemedText style={styles.label}>Start time</ThemedText>
-          <Pressable
-            style={styles.timeButton}
-            onPress={() => setShowTimePicker(true)}>
-            <ThemedText style={styles.timeButtonText}>{form.startTime}</ThemedText>
-          </Pressable>
-          {showTimePicker && (
-            <DateTimePicker
-              value={startDate}
-              mode="time"
-              is24Hour
-              display="default"
-              onChange={onTimeChange}
+          {Platform.OS === 'web' ? (
+            <WebTimeField
+              value={form.startTime}
+              onChange={(time) => onChange({ ...form, startTime: time })}
             />
+          ) : (
+            <>
+              <Pressable
+                style={styles.timeButton}
+                onPress={() => setShowTimePicker(true)}>
+                <ThemedText style={styles.timeButtonText}>{form.startTime}</ThemedText>
+              </Pressable>
+              {showTimePicker && (
+                <DateTimePicker
+                  value={startDate}
+                  mode="time"
+                  is24Hour
+                  display="default"
+                  onChange={onTimeChange}
+                />
+              )}
+            </>
           )}
+          {fireTimesPreview ? (
+            <ThemedText style={styles.firesAt}>{fireTimesPreview}</ThemedText>
+          ) : null}
 
           <ThemedText style={styles.label}>Repeat every N days (1–7)</ThemedText>
           <ThemedTextInput
@@ -717,6 +778,11 @@ const styles = StyleSheet.create({
   timeButtonText: {
     ...Typography.body,
     color: Colors.pearl,
+  },
+  firesAt: {
+    ...Typography.small,
+    color: Colors.aqua,
+    marginTop: Spacing.xs,
   },
   toggleRow: {
     flexDirection: 'row',
