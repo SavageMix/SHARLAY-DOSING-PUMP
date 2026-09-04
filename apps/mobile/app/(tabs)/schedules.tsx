@@ -1,7 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   FlatList,
   Modal,
@@ -121,13 +120,13 @@ function ScheduleItem({ schedule, onEdit, onDelete }: ScheduleItemProps) {
           if (gesture.dx < -60) {
             Animated.spring(translateX, {
               toValue: -100,
-              useNativeDriver: true,
+              useNativeDriver: false,
             }).start();
             setConfirming(true);
           } else {
             Animated.spring(translateX, {
               toValue: 0,
-              useNativeDriver: true,
+              useNativeDriver: false,
             }).start();
             setConfirming(false);
           }
@@ -135,18 +134,26 @@ function ScheduleItem({ schedule, onEdit, onDelete }: ScheduleItemProps) {
       }),
   )[0];
 
-  const handleConfirmDelete = () => {
+  const handleDeletePress = () => {
+    if (!confirming) {
+      // First tap arms the confirmation; the next tap actually deletes.
+      setConfirming(true);
+      return;
+    }
+    // Reset the row immediately (JS driver — works on native AND web) and
+    // dispatch the delete without gating it on an animation callback.
     Animated.timing(translateX, {
       toValue: 0,
       duration: 200,
-      useNativeDriver: true,
-    }).start(() => onDelete(schedule));
+      useNativeDriver: false,
+    }).start();
+    onDelete(schedule);
   };
 
   const handleCancelDelete = () => {
     Animated.spring(translateX, {
       toValue: 0,
-      useNativeDriver: true,
+      useNativeDriver: false,
     }).start();
     setConfirming(false);
   };
@@ -154,15 +161,11 @@ function ScheduleItem({ schedule, onEdit, onDelete }: ScheduleItemProps) {
   return (
     <View style={styles.swipeContainer}>
       <View style={styles.deleteBackground}>
-        {confirming ? (
-          <Pressable onPress={handleConfirmDelete} style={styles.deleteConfirmButton}>
-            <ThemedText style={styles.deleteConfirmText}>Tap again to delete</ThemedText>
-          </Pressable>
-        ) : (
-          <Pressable onPress={handleConfirmDelete} style={styles.deleteConfirmButton}>
-            <ThemedText style={styles.deleteConfirmText}>Delete</ThemedText>
-          </Pressable>
-        )}
+        <Pressable onPress={handleDeletePress} style={styles.deleteConfirmButton}>
+          <ThemedText style={styles.deleteConfirmText}>
+            {confirming ? 'Tap again to confirm' : 'Delete'}
+          </ThemedText>
+        </Pressable>
       </View>
       <Animated.View
         style={[styles.scheduleRow, { transform: [{ translateX }] }]}
@@ -508,27 +511,17 @@ export default function SchedulesScreen() {
     }
   };
 
-  const handleDelete = (schedule: DoseSchedule) => {
+  // Two-tap delete: the row's Delete button arms, the second tap lands here.
+  // Verified against the server — no removal without confirmation, errors loud.
+  // (No Alert.alert: it is a silent no-op on RN Web.)
+  const handleDelete = async (schedule: DoseSchedule) => {
     if (!baseUrl) return;
-    Alert.alert(
-      'Delete schedule',
-      `Delete schedule for ${schedule.pumpId}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              setSchedules(await deleteScheduleVerified(baseUrl, schedule.id));
-              setMessage('Schedule deleted');
-            } catch (err) {
-              setMessage(err instanceof Error ? err.message : 'Failed');
-            }
-          },
-        },
-      ],
-    );
+    try {
+      setSchedules(await deleteScheduleVerified(baseUrl, schedule.id));
+      setMessage('Schedule deleted');
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Failed to delete schedule');
+    }
   };
 
   if (!baseUrl) {

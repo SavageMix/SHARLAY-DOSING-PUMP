@@ -139,6 +139,130 @@ describe('Server endpoints', () => {
     }
   });
 
+  it('PATCH /api/schedules/:id updates the startTime and persists across a restart', async () => {
+    const tmpPath = join(
+      tmpdir(),
+      `reef-schedule-patch-${process.pid}-${Date.now()}.db`,
+    );
+    const boot = async () => {
+      const db = new ReefDatabase(tmpPath);
+      const engine = createEngine(db);
+      const server = await createServer(db, engine);
+      return { db, server };
+    };
+    let instance = await boot();
+    try {
+      const created = await instance.server.fastify.inject({
+        method: 'POST',
+        url: '/api/schedules',
+        payload: {
+          pumpId: 'ca',
+          volumeMl: 2,
+          timesPerDay: 2,
+          startTime: '06:00',
+          repeatEveryNDays: 1,
+          enabled: true,
+        },
+      });
+      const { schedule } = JSON.parse(created.body);
+
+      // Exact app payload shape (parseForm output, including pumpId).
+      const patched = await instance.server.fastify.inject({
+        method: 'PATCH',
+        url: `/api/schedules/${schedule.id}`,
+        payload: {
+          pumpId: 'ca',
+          volumeMl: 2,
+          timesPerDay: 2,
+          startTime: '16:00',
+          repeatEveryNDays: 1,
+          enabled: true,
+        },
+      });
+      expect(patched.statusCode).toBe(200);
+
+      // Reboot and confirm the change stuck.
+      await instance.server.close();
+      instance.db.close();
+      instance = await boot();
+      const list = await instance.server.fastify.inject({
+        method: 'GET',
+        url: '/api/schedules',
+      });
+      const body = JSON.parse(list.body);
+      expect(body.schedules).toHaveLength(1);
+      expect(body.schedules[0].startTime).toBe('16:00');
+    } finally {
+      await instance.server.close();
+      instance.db.close();
+      await unlink(tmpPath).catch(() => {});
+    }
+  });
+
+  it('PATCH /api/schedules/:id rejects an invalid startTime with 400 and leaves the row unchanged', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      const created = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/schedules',
+        payload: {
+          pumpId: 'alk',
+          volumeMl: 1,
+          timesPerDay: 1,
+          startTime: '08:00',
+          repeatEveryNDays: 1,
+          enabled: true,
+        },
+      });
+      const { schedule } = JSON.parse(created.body);
+
+      const patched = await server.fastify.inject({
+        method: 'PATCH',
+        url: `/api/schedules/${schedule.id}`,
+        payload: { startTime: '25:99' },
+      });
+      expect(patched.statusCode).toBe(400);
+
+      const list = await server.fastify.inject({ method: 'GET', url: '/api/schedules' });
+      const body = JSON.parse(list.body);
+      expect(body.schedules[0].startTime).toBe('08:00');
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('DELETE /api/schedules/:id removes the schedule', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      const created = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/schedules',
+        payload: {
+          pumpId: 'no3',
+          volumeMl: 0.5,
+          timesPerDay: 1,
+          startTime: '12:00',
+          repeatEveryNDays: 1,
+          enabled: true,
+        },
+      });
+      const { schedule } = JSON.parse(created.body);
+
+      const deleted = await server.fastify.inject({
+        method: 'DELETE',
+        url: `/api/schedules/${schedule.id}`,
+      });
+      expect(deleted.statusCode).toBe(204);
+
+      const list = await server.fastify.inject({ method: 'GET', url: '/api/schedules' });
+      expect(JSON.parse(list.body).schedules).toHaveLength(0);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
   it('GET /api/missed-doses lists pending missed doses', async () => {
     vi.setSystemTime(new Date('2026-08-24T09:30:00Z'));
     const { db, server, scheduler } = await buildServer();
