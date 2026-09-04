@@ -141,12 +141,15 @@ function ScheduleItem({ schedule, onEdit, onDelete }: ScheduleItemProps) {
       return;
     }
     // Reset the row immediately (JS driver — works on native AND web) and
-    // dispatch the delete without gating it on an animation callback.
+    // dispatch the delete without gating it on an animation callback. The
+    // armed state clears here, so a failed delete leaves the row fully idle
+    // rather than stuck mid-swipe.
     Animated.timing(translateX, {
       toValue: 0,
       duration: 200,
       useNativeDriver: false,
     }).start();
+    setConfirming(false);
     onDelete(schedule);
   };
 

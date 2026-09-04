@@ -62,12 +62,6 @@ export async function clearDeviceBaseUrl(): Promise<void> {
   await AsyncStorage.removeItem(BASE_URL_KEY);
 }
 
-function getHeaders(): Record<string, string> {
-  return {
-    'Content-Type': 'application/json',
-  };
-}
-
 async function request<T>(
   baseUrl: string,
   method: string,
@@ -81,7 +75,10 @@ async function request<T>(
   try {
     const response = await fetch(url, {
       method,
-      headers: getHeaders(),
+      // Content-Type is only set when there is a JSON body. Sending it on
+      // bodyless requests (GET/DELETE) makes Fastify reject the request:
+      // "Body cannot be empty when content-type is set to 'application/json'".
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });

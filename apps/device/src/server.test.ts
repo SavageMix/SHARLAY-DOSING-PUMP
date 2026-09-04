@@ -263,6 +263,40 @@ describe('Server endpoints', () => {
     }
   });
 
+  it('DELETE /api/schedules/:id with an explicit JSON content-type but empty body is rejected (client must not do this)', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      const created = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/schedules',
+        payload: {
+          pumpId: 'no3',
+          volumeMl: 0.5,
+          timesPerDay: 1,
+          startTime: '12:00',
+          repeatEveryNDays: 1,
+          enabled: true,
+        },
+      });
+      const { schedule } = JSON.parse(created.body);
+
+      const deleted = await server.fastify.inject({
+        method: 'DELETE',
+        url: `/api/schedules/${schedule.id}`,
+        headers: { 'content-type': 'application/json' },
+      });
+      // Fastify contract: an empty body with a JSON content-type is a 400.
+      // The client therefore omits the header on bodyless requests.
+      expect(deleted.statusCode).toBe(400);
+
+      const list = await server.fastify.inject({ method: 'GET', url: '/api/schedules' });
+      expect(JSON.parse(list.body).schedules).toHaveLength(1);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
   it('GET /api/missed-doses lists pending missed doses', async () => {
     vi.setSystemTime(new Date('2026-08-24T09:30:00Z'));
     const { db, server, scheduler } = await buildServer();
