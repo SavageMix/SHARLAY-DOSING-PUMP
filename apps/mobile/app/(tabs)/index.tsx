@@ -27,8 +27,8 @@ import { SharlayWordmark } from '@/components/SharlayWordmark';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedTextInput, ThemedView } from '@/components/Themed';
 import {
-  confirmMissedDose,
-  dismissMissedDose,
+  confirmMissedDoses,
+  dismissMissedDoses,
   getDeviceBaseUrl,
   getHistory,
   getLimits,
@@ -37,6 +37,7 @@ import {
   getStatus,
   postDose,
   resolveDeviceBaseUrl,
+  snoozeMissedDoses,
   type MissedDose,
   type StatusResponse,
 } from '@/src/api/client';
@@ -795,29 +796,46 @@ interface MissedCardState {
   loading: boolean;
   resolved?: 'dosed' | 'skipped';
   error?: string | null;
+  /** Entries the server refused to fire (cap exceeded), with the reason. */
+  dropped?: Array<{ id: string; reason: string }>;
 }
 
 function MissedDosesModal({
   missedDoses,
   cardStates,
-  onConfirm,
-  onDismiss,
+  checkedIds,
+  forced,
+  onToggle,
+  onDoseSelected,
+  onSkipAll,
   onDecideLater,
 }: {
   missedDoses: MissedDose[];
   cardStates: Record<string, MissedCardState>;
-  onConfirm: (id: string) => void;
-  onDismiss: (id: string) => void;
+  checkedIds: Record<string, boolean>;
+  /** Forced re-prompt after the snooze lapsed: every entry must be resolved. */
+  forced: boolean;
+  onToggle: (id: string, value: boolean) => void;
+  onDoseSelected: (pumpId: PumpId) => void;
+  onSkipAll: (pumpId: PumpId) => void;
   onDecideLater: () => void;
 }) {
+  const byPump = new Map<PumpId, MissedDose[]>();
+  for (const missed of missedDoses) {
+    const list = byPump.get(missed.pumpId) ?? [];
+    list.push(missed);
+    byPump.set(missed.pumpId, list);
+  }
+
   return (
     <Modal
       visible={missedDoses.length > 0}
       transparent
       animationType="fade"
-      // Android hardware back: treat as "Decide later" (the only allowed
-      // dismissal). There is no backdrop tap or swipe handler by design.
-      onRequestClose={onDecideLater}>
+      // Android hardware back. Forced re-prompt: no escape — every entry must
+      // be resolved. First prompt: back behaves like "Decide later".
+      // There is no backdrop tap or swipe handler by design.
+      onRequestClose={forced ? () => {} : onDecideLater}>
       <ThemedView style={styles.modalOverlay}>
         <ThemedView style={[styles.modalContent, styles.missedContent]}>
           <ThemedText style={styles.modalHeader}>Missed doses</ThemedText>
@@ -827,33 +845,69 @@ function MissedDosesModal({
           </ThemedText>
 
           <ScrollView style={styles.missedList}>
-            {missedDoses.map((missed) => {
-              const card = cardStates[missed.id];
+            {[...byPump.entries()].map(([pumpId, doses]) => {
+              const card = cardStates[pumpId];
               const loading = card?.loading ?? false;
               const resolved = card?.resolved;
+              const selectedCount = doses.filter(
+                (d) => checkedIds[d.id],
+              ).length;
               return (
-                <ThemedView key={missed.id} style={styles.missedItem}>
+                <ThemedView key={pumpId} style={styles.missedItem}>
                   <ThemedView style={styles.missedRow}>
                     <ThemedText
                       style={[
                         styles.missedPump,
-                        { color: PUMP_COLORS[missed.pumpId] },
+                        { color: PUMP_COLORS[pumpId] },
                       ]}>
-                      {PUMP_DISPLAY_NAMES[missed.pumpId] ?? missed.pumpId}
-                    </ThemedText>
-                    <ThemedText style={styles.missedVolume}>
-                      {missed.volumeMl != null
-                        ? `${missed.volumeMl.toFixed(2)} mL`
-                        : '—'}
+                      {(
+                        PUMP_DISPLAY_NAMES[pumpId] ?? pumpId
+                      ).toUpperCase()}{' '}
+                      — {doses.length} missed dose
+                      {doses.length === 1 ? '' : 's'}
                     </ThemedText>
                   </ThemedView>
-                  <ThemedText style={styles.missedTime}>
-                    Scheduled {formatMissedWhen(missed.scheduledFor)}
-                  </ThemedText>
+
+                  {doses.map((missed) => (
+                    <ThemedView key={missed.id} style={styles.missedDoseRow}>
+                      <Pressable
+                        style={[
+                          styles.missedCheckbox,
+                          checkedIds[missed.id] && {
+                            backgroundColor: T.colors.primary,
+                            borderColor: T.colors.primary,
+                          },
+                        ]}
+                        onPress={() => onToggle(missed.id, !checkedIds[missed.id])}
+                        disabled={loading || resolved != null}
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: !!checkedIds[missed.id] }}>
+                        {checkedIds[missed.id] ? (
+                          <ThemedText style={styles.missedCheckmark}>✓</ThemedText>
+                        ) : null}
+                      </Pressable>
+                      <ThemedText style={styles.missedTime}>
+                        Scheduled {formatMissedWhen(missed.scheduledFor)}
+                      </ThemedText>
+                      <ThemedText style={styles.missedVolume}>
+                        {missed.volumeMl != null
+                          ? `${missed.volumeMl.toFixed(2)} mL`
+                          : '—'}
+                      </ThemedText>
+                    </ThemedView>
+                  ))}
 
                   {card?.error ? (
                     <ThemedText style={styles.missedError}>
                       {card.error}
+                    </ThemedText>
+                  ) : null}
+
+                  {card?.dropped && card.dropped.length > 0 ? (
+                    <ThemedText style={styles.missedError}>
+                      {card.dropped.length} dose
+                      {card.dropped.length === 1 ? '' : 's'} not dosed:{' '}
+                      {card.dropped.map((d) => d.reason).join('; ')}
                     </ThemedText>
                   ) : null}
 
@@ -874,7 +928,7 @@ function MissedDosesModal({
                     <ThemedView style={styles.missedActions}>
                       <Pressable
                         style={[styles.modalButton, styles.skipButton]}
-                        onPress={() => onDismiss(missed.id)}
+                        onPress={() => onSkipAll(pumpId)}
                         disabled={loading}>
                         {loading ? (
                           <ActivityIndicator color={T.colors.danger} />
@@ -884,14 +938,18 @@ function MissedDosesModal({
                               styles.missedSkipText,
                               styles.missedButtonText,
                             ]}>
-                            Skip it
+                            Skip all
                           </ThemedText>
                         )}
                       </Pressable>
                       <Pressable
-                        style={[styles.modalButton, styles.confirmButton]}
-                        onPress={() => onConfirm(missed.id)}
-                        disabled={loading}>
+                        style={[
+                          styles.modalButton,
+                          styles.confirmButton,
+                          selectedCount === 0 && styles.missedButtonDisabled,
+                        ]}
+                        onPress={() => onDoseSelected(pumpId)}
+                        disabled={loading || selectedCount === 0}>
                         {loading ? (
                           <ActivityIndicator color={T.colors.background} />
                         ) : (
@@ -900,7 +958,7 @@ function MissedDosesModal({
                               styles.confirmButtonText,
                               styles.missedButtonText,
                             ]}>
-                            Dose it
+                            Dose selected ({selectedCount})
                           </ThemedText>
                         )}
                       </Pressable>
@@ -911,11 +969,13 @@ function MissedDosesModal({
             })}
           </ScrollView>
 
-          <Pressable
-            style={[styles.modalButton, styles.cancelButton, styles.decideLaterButton]}
-            onPress={onDecideLater}>
-            <ThemedText style={styles.cancelButtonText}>Decide later</ThemedText>
-          </Pressable>
+          {!forced ? (
+            <Pressable
+              style={[styles.modalButton, styles.cancelButton, styles.decideLaterButton]}
+              onPress={onDecideLater}>
+              <ThemedText style={styles.cancelButtonText}>Decide later</ThemedText>
+            </Pressable>
+          ) : null}
         </ThemedView>
       </ThemedView>
     </Modal>
@@ -931,12 +991,14 @@ export default function DashboardScreen() {
   const [modalPumpId, setModalPumpId] = useState<PumpId | null>(null);
   const [doseStates, setDoseStates] = useState<Record<string, DoseState>>({});
   const [missedDoses, setMissedDoses] = useState<MissedDose[]>([]);
+  // Keyed by pumpId — one card per pump in the modal.
   const [missedCardStates, setMissedCardStates] = useState<
     Record<string, MissedCardState>
   >({});
-  // Ids the user deferred via "Decide later". Deferred entries stay pending
-  // on the device; the modal reappears only when a NEW missed dose shows up.
-  const [missedDeferredIds, setMissedDeferredIds] = useState<string[]>([]);
+  // Per-dose opt-in checkboxes in the missed-dose modal. Never pre-checked.
+  const [missedCheckedIds, setMissedCheckedIds] = useState<
+    Record<string, boolean>
+  >({});
 
   useFocusEffect(
     useCallback(() => {
@@ -1074,17 +1136,81 @@ export default function DashboardScreen() {
     [data?.schedules],
   );
 
-  const handleMissedConfirm = async (id: string) => {
+  // "Decide later" is a 1-hour snooze stored on the device. A returned pending
+  // entry with deferredUntil set has already been snoozed and lapsed — the
+  // re-prompt is forced: no snooze button, no back/backdrop dismissal.
+  const missedForced = missedDoses.some((m) => m.deferredUntil != null);
+
+  const handleMissedToggle = (id: string, value: boolean) => {
+    setMissedCheckedIds((s) => ({ ...s, [id]: value }));
+  };
+
+  // Show the brief "Dosed ✓" / "Skipped" state, then remove the pump's cards.
+  // When no pending entries remain the modal closes itself and the Dashboard
+  // refreshes.
+  const resolveMissedPumpCard = (
+    pumpId: PumpId,
+    outcome: 'dosed' | 'skipped',
+    removedIds: string[],
+    dropped?: Array<{ id: string; reason: string }>,
+  ) => {
+    setMissedCardStates((s) => ({
+      ...s,
+      [pumpId]: { loading: false, resolved: outcome, dropped },
+    }));
+    setTimeout(() => {
+      setMissedDoses((prev) => {
+        const next = prev.filter((m) => !removedIds.includes(m.id));
+        if (next.length === 0) load();
+        return next;
+      });
+      setMissedCardStates((s) => {
+        const next = { ...s };
+        delete next[pumpId];
+        return next;
+      });
+      setMissedCheckedIds((s) => {
+        const next = { ...s };
+        for (const id of removedIds) delete next[id];
+        return next;
+      });
+    }, dropped && dropped.length > 0 ? 2000 : 900);
+  };
+
+  const handleMissedDoseSelected = async (pumpId: PumpId) => {
     if (!baseUrl) return;
-    setMissedCardStates((s) => ({ ...s, [id]: { loading: true, error: null } }));
+    const pumpMisses = missedDoses.filter((m) => m.pumpId === pumpId);
+    const selected = pumpMisses.filter((m) => missedCheckedIds[m.id]);
+    if (selected.length === 0) return;
+    // Unselected entries are treated as skipped — the user saw the full list
+    // and decided. Nothing stays behind to nag.
+    const unselected = pumpMisses.filter((m) => !missedCheckedIds[m.id]);
+    setMissedCardStates((s) => ({
+      ...s,
+      [pumpId]: { loading: true, error: null },
+    }));
     try {
-      await confirmMissedDose(baseUrl, id);
-      resolveMissedCard(id, 'dosed');
+      const result = await confirmMissedDoses(
+        baseUrl,
+        selected.map((m) => m.id),
+      );
+      if (unselected.length > 0) {
+        await dismissMissedDoses(
+          baseUrl,
+          unselected.map((m) => m.id),
+        );
+      }
+      resolveMissedPumpCard(
+        pumpId,
+        'dosed',
+        pumpMisses.map((m) => m.id),
+        result.dropped,
+      );
     } catch (err) {
       // Keep the card; surface the error inline — never swallow it.
       setMissedCardStates((s) => ({
         ...s,
-        [id]: {
+        [pumpId]: {
           loading: false,
           error: err instanceof Error ? err.message : 'Failed to dose',
         },
@@ -1092,16 +1218,28 @@ export default function DashboardScreen() {
     }
   };
 
-  const handleMissedDismiss = async (id: string) => {
+  const handleMissedSkipAll = async (pumpId: PumpId) => {
     if (!baseUrl) return;
-    setMissedCardStates((s) => ({ ...s, [id]: { loading: true, error: null } }));
+    const pumpMisses = missedDoses.filter((m) => m.pumpId === pumpId);
+    if (pumpMisses.length === 0) return;
+    setMissedCardStates((s) => ({
+      ...s,
+      [pumpId]: { loading: true, error: null },
+    }));
     try {
-      await dismissMissedDose(baseUrl, id);
-      resolveMissedCard(id, 'skipped');
+      await dismissMissedDoses(
+        baseUrl,
+        pumpMisses.map((m) => m.id),
+      );
+      resolveMissedPumpCard(
+        pumpId,
+        'skipped',
+        pumpMisses.map((m) => m.id),
+      );
     } catch (err) {
       setMissedCardStates((s) => ({
         ...s,
-        [id]: {
+        [pumpId]: {
           loading: false,
           error: err instanceof Error ? err.message : 'Failed to skip',
         },
@@ -1109,38 +1247,16 @@ export default function DashboardScreen() {
     }
   };
 
-  // Show the brief "Dosed ✓" / "Skipped" state, then remove the card. When
-  // no pending entries remain the modal closes itself and the Dashboard
-  // refreshes.
-  const resolveMissedCard = (id: string, outcome: 'dosed' | 'skipped') => {
-    setMissedCardStates((s) => ({
-      ...s,
-      [id]: { loading: false, resolved: outcome },
-    }));
-    setTimeout(() => {
-      setMissedDoses((prev) => {
-        const next = prev.filter((m) => m.id !== id);
-        if (next.length === 0) load();
-        return next;
-      });
-      setMissedCardStates((s) => {
-        const next = { ...s };
-        delete next[id];
-        return next;
-      });
-    }, 900);
+  const handleMissedDecideLater = async () => {
+    if (!baseUrl) return;
+    try {
+      await snoozeMissedDoses(baseUrl);
+    } catch {
+      // Snooze failed: keep the modal open rather than pretending it worked.
+      return;
+    }
+    setMissedDoses([]);
   };
-
-  const handleMissedDecideLater = () => {
-    setMissedDeferredIds((prev) => [
-      ...prev,
-      ...missedDoses.map((m) => m.id).filter((id) => !prev.includes(id)),
-    ]);
-  };
-
-  const visibleMissedDoses = missedDoses.filter(
-    (m) => !missedDeferredIds.includes(m.id),
-  );
 
   const handleDoseConfirm = async (pumpId: PumpId, volumeMl: number) => {
     if (!baseUrl) return;
@@ -1249,10 +1365,13 @@ export default function DashboardScreen() {
       />
 
       <MissedDosesModal
-        missedDoses={visibleMissedDoses}
+        missedDoses={missedDoses}
         cardStates={missedCardStates}
-        onConfirm={handleMissedConfirm}
-        onDismiss={handleMissedDismiss}
+        checkedIds={missedCheckedIds}
+        forced={missedForced}
+        onToggle={handleMissedToggle}
+        onDoseSelected={handleMissedDoseSelected}
+        onSkipAll={handleMissedSkipAll}
         onDecideLater={handleMissedDecideLater}
       />
     </ThemedView>
@@ -1664,6 +1783,30 @@ const styles = StyleSheet.create({
   missedActions: {
     flexDirection: 'row',
     gap: T.spacing.md,
+  },
+  missedDoseRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: T.spacing.sm,
+    marginTop: T.spacing.sm,
+  },
+  missedCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: T.colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  missedCheckmark: {
+    color: T.colors.background,
+    fontSize: 14,
+    lineHeight: 16,
+    fontWeight: '700',
+  },
+  missedButtonDisabled: {
+    opacity: 0.4,
   },
   skipButton: {
     flex: 1,

@@ -48,8 +48,12 @@ class FakeSchedulerRepository implements SchedulerRepository, MissedDosesReposit
     return entry;
   }
 
-  getPendingMissedDoses(): MissedDose[] {
-    return this.missedDoses.filter((m) => m.status === 'pending');
+  getPendingMissedDoses(now: Date): MissedDose[] {
+    return this.missedDoses.filter(
+      (m) =>
+        m.status === 'pending' &&
+        (m.deferredUntil === null || m.deferredUntil <= now.toISOString()),
+    );
   }
 
   getMissedDoseById(id: string): MissedDose | undefined {
@@ -61,6 +65,27 @@ class FakeSchedulerRepository implements SchedulerRepository, MissedDosesReposit
     if (missed) missed.status = status;
   }
 
+  snoozePendingMissedDoses(until: string): void {
+    for (const missed of this.missedDoses) {
+      if (missed.status === 'pending') missed.deferredUntil = until;
+    }
+  }
+
+  setMissedDoseConfirmAfter(id: string, confirmAfter: string | null): void {
+    const missed = this.missedDoses.find((m) => m.id === id);
+    if (missed) missed.confirmAfter = confirmAfter;
+  }
+
+  getDueScheduledConfirmations(now: Date): MissedDose[] {
+    const nowIso = now.toISOString();
+    return this.missedDoses.filter(
+      (m) =>
+        m.status === 'confirmed' &&
+        m.confirmAfter !== null &&
+        m.confirmAfter <= nowIso,
+    );
+  }
+
   expireMissedDosesBefore(threshold: string): void {
     for (const missed of this.missedDoses) {
       if (missed.status === 'pending' && missed.createdAt < threshold) {
@@ -70,11 +95,10 @@ class FakeSchedulerRepository implements SchedulerRepository, MissedDosesReposit
   }
 
   hasPendingMissedDoseForSlot(scheduleId: string, scheduledFor: string): boolean {
+    // Dedupe spans ALL statuses: a dismissed/expired/confirmed slot must never
+    // resurface as a fresh pending entry.
     return this.missedDoses.some(
-      (m) =>
-        m.scheduleId === scheduleId &&
-        m.scheduledFor === scheduledFor &&
-        m.status === 'pending',
+      (m) => m.scheduleId === scheduleId && m.scheduledFor === scheduledFor,
     );
   }
 }
@@ -235,6 +259,8 @@ describe('Scheduler', () => {
       scheduledFor: '2026-08-24T09:00:00.000Z',
       volumeMl: 1,
       status: 'pending',
+      deferredUntil: null,
+      confirmAfter: null,
       createdAt: new Date().toISOString(),
     });
 

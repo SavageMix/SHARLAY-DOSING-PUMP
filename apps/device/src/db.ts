@@ -74,13 +74,17 @@ export class ReefDatabase
         scheduled_for TEXT NOT NULL,
         volume_ml REAL NOT NULL,
         status TEXT NOT NULL,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        deferred_until TEXT,
+        confirm_after TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_missed_doses_status
         ON missed_doses(status);
       CREATE INDEX IF NOT EXISTS idx_missed_doses_schedule_for
         ON missed_doses(schedule_id, scheduled_for);
+      CREATE INDEX IF NOT EXISTS idx_missed_doses_confirm_after
+        ON missed_doses(status, confirm_after);
 
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
@@ -89,6 +93,29 @@ export class ReefDatabase
     `);
 
     this.migrateSchedulesTable();
+    this.migrateMissedDosesTable();
+  }
+
+  /**
+   * Existing databases predate the snooze (deferred_until) and delayed
+   * catch-up (confirm_after) columns. Add them if missing.
+   */
+  private migrateMissedDosesTable(): void {
+    const columns = this.db
+      .prepare("SELECT name FROM pragma_table_info('missed_doses')")
+      .all() as Array<{ name: string }>;
+    const names = new Set(columns.map((c) => c.name));
+
+    if (!names.has('deferred_until')) {
+      this.db.exec(
+        'ALTER TABLE missed_doses ADD COLUMN deferred_until TEXT',
+      );
+    }
+    if (!names.has('confirm_after')) {
+      this.db.exec(
+        'ALTER TABLE missed_doses ADD COLUMN confirm_after TEXT',
+      );
+    }
   }
 
   /**
@@ -403,8 +430,9 @@ export class ReefDatabase
     this.db
       .prepare(
         `INSERT INTO missed_doses (
-          id, schedule_id, pump_id, scheduled_for, volume_ml, status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          id, schedule_id, pump_id, scheduled_for, volume_ml, status,
+          created_at, deferred_until, confirm_after
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -414,69 +442,87 @@ export class ReefDatabase
         missed.volumeMl,
         missed.status,
         createdAt,
+        missed.deferredUntil,
+        missed.confirmAfter,
       );
     return { ...missed, id, createdAt };
   }
 
-  getPendingMissedDoses(): MissedDose[] {
+  private mapMissedDoseRow(row: Record<string, unknown>): MissedDose {
+    return {
+      id: row.id as string,
+      scheduleId: row.schedule_id as string,
+      pumpId: row.pump_id as PumpId,
+      scheduledFor: row.scheduled_for as string,
+      volumeMl: row.volume_ml as number,
+      status: row.status as MissedDoseStatus,
+      createdAt: row.created_at as string,
+      deferredUntil: (row.deferred_until as string | null) ?? null,
+      confirmAfter: (row.confirm_after as string | null) ?? null,
+    };
+  }
+
+  /**
+   * Pending entries visible to the app. Entries snoozed via "Decide later"
+   * (deferred_until in the future) are hidden until the horizon passes.
+   */
+  getPendingMissedDoses(now: Date): MissedDose[] {
     const rows = this.db
       .prepare(
         `SELECT * FROM missed_doses
          WHERE status = 'pending'
+           AND (deferred_until IS NULL OR deferred_until <= ?)
          ORDER BY scheduled_for ASC`,
       )
-      .all() as Array<{
-        id: string;
-        schedule_id: string;
-        pump_id: PumpId;
-        scheduled_for: string;
-        volume_ml: number;
-        status: string;
-        created_at: string;
-      }>;
+      .all(now.toISOString()) as Record<string, unknown>[];
 
-    return rows.map((row) => ({
-      id: row.id,
-      scheduleId: row.schedule_id,
-      pumpId: row.pump_id,
-      scheduledFor: row.scheduled_for,
-      volumeMl: row.volume_ml,
-      status: row.status as MissedDoseStatus,
-      createdAt: row.created_at,
-    }));
+    return rows.map((row) => this.mapMissedDoseRow(row));
   }
 
   getMissedDoseById(id: string): MissedDose | undefined {
     const row = this.db
       .prepare('SELECT * FROM missed_doses WHERE id = ?')
-      .get(id) as
-      | {
-          id: string;
-          schedule_id: string;
-          pump_id: PumpId;
-          scheduled_for: string;
-          volume_ml: number;
-          status: string;
-          created_at: string;
-        }
-      | undefined;
+      .get(id) as Record<string, unknown> | undefined;
 
     if (!row) return undefined;
-    return {
-      id: row.id,
-      scheduleId: row.schedule_id,
-      pumpId: row.pump_id,
-      scheduledFor: row.scheduled_for,
-      volumeMl: row.volume_ml,
-      status: row.status as MissedDoseStatus,
-      createdAt: row.created_at,
-    };
+    return this.mapMissedDoseRow(row);
   }
 
   updateMissedDoseStatus(id: string, status: MissedDoseStatus): void {
     this.db
       .prepare("UPDATE missed_doses SET status = ? WHERE id = ?")
       .run(status, id);
+  }
+
+  /** "Decide later": hide every pending entry until `until`. */
+  snoozePendingMissedDoses(until: string): void {
+    this.db
+      .prepare(
+        `UPDATE missed_doses SET deferred_until = ?
+         WHERE status = 'pending'`,
+      )
+      .run(until);
+  }
+
+  setMissedDoseConfirmAfter(id: string, confirmAfter: string | null): void {
+    this.db
+      .prepare('UPDATE missed_doses SET confirm_after = ? WHERE id = ?')
+      .run(confirmAfter, id);
+  }
+
+  /**
+   * Catch-up doses confirmed but not yet fired (delayed for per-pump spacing).
+   */
+  getDueScheduledConfirmations(now: Date): MissedDose[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM missed_doses
+         WHERE status = 'confirmed' AND confirm_after IS NOT NULL AND confirm_after <= ?
+         ORDER BY confirm_after ASC`,
+      )
+      .all(now.toISOString()) as Record<string, unknown>[];
+
+    return rows.map((row) => this.mapMissedDoseRow(row));
   }
 
   expireMissedDosesBefore(threshold: string): void {
@@ -489,6 +535,10 @@ export class ReefDatabase
       .run(threshold);
   }
 
+  /**
+   * Dedupe across ALL statuses: a slot that was already handled — dismissed,
+   * confirmed, or expired — must never resurface as a new pending entry.
+   */
   hasPendingMissedDoseForSlot(
     scheduleId: string,
     scheduledFor: string,
@@ -496,7 +546,7 @@ export class ReefDatabase
     const row = this.db
       .prepare(
         `SELECT COUNT(*) as count FROM missed_doses
-         WHERE schedule_id = ? AND scheduled_for = ? AND status = 'pending'`,
+         WHERE schedule_id = ? AND scheduled_for = ?`,
       )
       .get(scheduleId, scheduledFor) as { count: number };
     return row.count > 0;

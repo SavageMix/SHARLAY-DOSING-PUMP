@@ -7,10 +7,14 @@ import type {
   CalibrateStopRequest,
   CalibrateStopResponse,
   ConfirmMissedDoseResponse,
+  ConfirmMissedDosesRequest,
+  ConfirmMissedDosesResponse,
   ContainerInfo,
   CreateScheduleRequest,
   CreateScheduleResponse,
   DismissMissedDoseResponse,
+  DismissMissedDosesRequest,
+  DismissMissedDosesResponse,
   DoseRequest,
   DoseResponse,
   DoseSchedule,
@@ -25,6 +29,8 @@ import type {
   PumpState,
   RefillContainerRequest,
   RefillContainerResponse,
+  SnoozeMissedDosesRequest,
+  SnoozeMissedDosesResponse,
   StatusResponse,
   UpdateScheduleRequest,
   UpdateScheduleResponse,
@@ -275,6 +281,42 @@ export async function dismissMissedDose(
     baseUrl,
     'POST',
     `/api/missed-doses/${id}/dismiss`,
+  );
+}
+
+export async function snoozeMissedDoses(
+  baseUrl: string,
+  until?: string,
+): Promise<SnoozeMissedDosesResponse> {
+  return request<SnoozeMissedDosesResponse>(
+    baseUrl,
+    'POST',
+    '/api/missed-doses/snooze',
+    until ? { until } : {},
+  );
+}
+
+export async function confirmMissedDoses(
+  baseUrl: string,
+  ids: string[],
+): Promise<ConfirmMissedDosesResponse> {
+  return request<ConfirmMissedDosesResponse>(
+    baseUrl,
+    'POST',
+    '/api/missed-doses/confirm',
+    { ids } satisfies ConfirmMissedDosesRequest,
+  );
+}
+
+export async function dismissMissedDoses(
+  baseUrl: string,
+  ids: string[],
+): Promise<DismissMissedDosesResponse> {
+  return request<DismissMissedDosesResponse>(
+    baseUrl,
+    'POST',
+    '/api/missed-doses/dismiss',
+    { ids } satisfies DismissMissedDosesRequest,
   );
 }
 

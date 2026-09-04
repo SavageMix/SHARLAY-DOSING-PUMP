@@ -405,6 +405,120 @@ describe('Server endpoints', () => {
     }
   });
 
+  it('POST /api/missed-doses/snooze hides pending entries until the horizon', async () => {
+    vi.setSystemTime(new Date('2026-08-24T09:30:00Z'));
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 1.5,
+        timesPerDay: 1,
+        startTime: '09:00',
+        repeatEveryNDays: 1,
+        enabled: true,
+        lastRunAt: '2026-08-23T09:00:00.000Z',
+      });
+      detectMissedDoses(db, new Date());
+
+      const response = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/missed-doses/snooze',
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      // Server computes "now" at request time; allow fake-timer drift.
+      expect(body.deferredUntil).toMatch(/^2026-08-24T10:30:00\.\d{3}Z$/);
+
+      const list = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/missed-doses',
+      });
+      expect(JSON.parse(list.body).missedDoses).toHaveLength(0);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/missed-doses/dismiss batch-dismisses entries permanently', async () => {
+    vi.setSystemTime(new Date('2026-08-24T09:30:00Z'));
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 1.5,
+        timesPerDay: 1,
+        startTime: '09:00',
+        repeatEveryNDays: 1,
+        enabled: true,
+        lastRunAt: '2026-08-23T09:00:00.000Z',
+      });
+      detectMissedDoses(db, new Date());
+
+      const list = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/missed-doses',
+      });
+      const { missedDoses } = JSON.parse(list.body);
+
+      const response = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/missed-doses/dismiss',
+        payload: { ids: [missedDoses[0].id] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.dismissed).toEqual([missedDoses[0].id]);
+      expect(db.getMissedDoseById(missedDoses[0].id)?.status).toBe('dismissed');
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/missed-doses/confirm batch-fires selected doses through the engine', async () => {
+    vi.setSystemTime(new Date('2026-08-24T09:30:00Z'));
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.updatePumpCalibration('alk', 100);
+      db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 1.5,
+        timesPerDay: 1,
+        startTime: '09:00',
+        repeatEveryNDays: 1,
+        enabled: true,
+        lastRunAt: '2026-08-23T09:00:00.000Z',
+      });
+      detectMissedDoses(db, new Date());
+
+      const list = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/missed-doses',
+      });
+      const { missedDoses } = JSON.parse(list.body);
+
+      const response = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/missed-doses/confirm',
+        payload: { ids: [missedDoses[0].id] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.fired).toEqual([missedDoses[0].id]);
+      expect(body.scheduled).toEqual([]);
+      expect(body.dropped).toEqual([]);
+      expect(db.getMissedDoseById(missedDoses[0].id)?.status).toBe('confirmed');
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
   it('POST /api/prime/start and /api/prime/stop returns steps and null approxMl on an uncalibrated pump', async () => {
     const { db, server, scheduler } = await buildServer();
     try {

@@ -63,6 +63,18 @@ export interface MissedDose {
   volumeMl: number;
   status: MissedDoseStatus;
   createdAt: string;
+  /**
+   * Snooze horizon set by "Decide later". While in the future, the device
+   * hides this entry from GET /api/missed-doses. Its presence (in the past)
+   * on a returned entry tells the app this is a forced re-prompt.
+   */
+  deferredUntil: string | null;
+  /**
+   * Set when a catch-up dose is confirmed but deliberately delayed (per-pump
+   * minimum spacing between catch-up doses). The scheduler fires it once
+   * confirmAfter passes, then clears the field.
+   */
+  confirmAfter: string | null;
 }
 
 export interface SystemSettings {

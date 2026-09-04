@@ -4,6 +4,7 @@ import {
   detectMissedDoses,
   detectMissedDosesWithUntrustedClock,
   expireStaleMissedDoses,
+  fireScheduledConfirmations,
   type MissedDosesRepository,
 } from './missed-doses.js';
 
@@ -69,6 +70,9 @@ export class Scheduler {
     // Expire stale missed-dose confirmations. Pending confirmations never block
     // the schedule; the scheduler continues to fire every future due dose.
     expireStaleMissedDoses(this.repository, now);
+
+    // Fire confirmed catch-up doses whose per-pump spacing delay has passed.
+    void fireScheduledConfirmations(this.repository, this.engine, now);
 
     const schedules = this.repository.getEnabledSchedules();
 

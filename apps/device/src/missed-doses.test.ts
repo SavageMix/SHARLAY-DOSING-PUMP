@@ -14,10 +14,13 @@ import type {
 } from '@reef/shared';
 import {
   confirmMissedDose,
+  confirmMissedDoses,
   detectMissedDoses,
   detectMissedDosesWithUntrustedClock,
   dismissMissedDose,
   expireStaleMissedDoses,
+  fireScheduledConfirmations,
+  snoozeMissedDoses,
   type MissedDosesEngine,
   type MissedDosesRepository,
 } from '../src/missed-doses.js';
@@ -70,8 +73,12 @@ class FakeMissedDosesRepository
     return entry;
   }
 
-  getPendingMissedDoses(): MissedDose[] {
-    return this.missedDoses.filter((m) => m.status === 'pending');
+  getPendingMissedDoses(now: Date): MissedDose[] {
+    return this.missedDoses.filter(
+      (m) =>
+        m.status === 'pending' &&
+        (m.deferredUntil === null || m.deferredUntil <= now.toISOString()),
+    );
   }
 
   getMissedDoseById(id: string): MissedDose | undefined {
@@ -81,6 +88,27 @@ class FakeMissedDosesRepository
   updateMissedDoseStatus(id: string, status: MissedDoseStatus): void {
     const missed = this.missedDoses.find((m) => m.id === id);
     if (missed) missed.status = status;
+  }
+
+  snoozePendingMissedDoses(until: string): void {
+    for (const missed of this.missedDoses) {
+      if (missed.status === 'pending') missed.deferredUntil = until;
+    }
+  }
+
+  setMissedDoseConfirmAfter(id: string, confirmAfter: string | null): void {
+    const missed = this.missedDoses.find((m) => m.id === id);
+    if (missed) missed.confirmAfter = confirmAfter;
+  }
+
+  getDueScheduledConfirmations(now: Date): MissedDose[] {
+    const nowIso = now.toISOString();
+    return this.missedDoses.filter(
+      (m) =>
+        m.status === 'confirmed' &&
+        m.confirmAfter !== null &&
+        m.confirmAfter <= nowIso,
+    );
   }
 
   expireMissedDosesBefore(threshold: string): void {
@@ -95,11 +123,10 @@ class FakeMissedDosesRepository
     scheduleId: string,
     scheduledFor: string,
   ): boolean {
+    // Dedupe spans ALL statuses: a dismissed/expired/confirmed slot must never
+    // resurface as a fresh pending entry.
     return this.missedDoses.some(
-      (m) =>
-        m.scheduleId === scheduleId &&
-        m.scheduledFor === scheduledFor &&
-        m.status === 'pending',
+      (m) => m.scheduleId === scheduleId && m.scheduledFor === scheduledFor,
     );
   }
 }
@@ -263,6 +290,8 @@ describe('confirmMissedDose', () => {
       scheduledFor: '2026-08-23T09:00:00.000Z',
       volumeMl: 2,
       status: 'pending',
+      deferredUntil: null,
+      confirmAfter: null,
       createdAt: new Date().toISOString(),
     });
 
@@ -288,6 +317,8 @@ describe('confirmMissedDose', () => {
       scheduledFor: '2026-08-23T09:00:00.000Z',
       volumeMl: 999,
       status: 'pending',
+      deferredUntil: null,
+      confirmAfter: null,
       createdAt: new Date().toISOString(),
     });
 
@@ -310,6 +341,8 @@ describe('confirmMissedDose', () => {
       scheduledFor: '2026-08-23T09:00:00.000Z',
       volumeMl: 2,
       status: 'pending',
+      deferredUntil: null,
+      confirmAfter: null,
       createdAt: new Date().toISOString(),
     });
 
@@ -333,6 +366,8 @@ describe('dismissMissedDose', () => {
       scheduledFor: '2026-08-23T09:00:00.000Z',
       volumeMl: 1,
       status: 'pending',
+      deferredUntil: null,
+      confirmAfter: null,
       createdAt: new Date().toISOString(),
     });
 
@@ -359,6 +394,8 @@ describe('expireStaleMissedDoses', () => {
       scheduledFor: '2026-08-23T09:00:00.000Z',
       volumeMl: 1,
       status: 'pending',
+      deferredUntil: null,
+      confirmAfter: null,
       createdAt: '2026-08-23T09:30:00.000Z',
     });
 
@@ -379,11 +416,212 @@ describe('expireStaleMissedDoses', () => {
       scheduledFor: '2026-08-23T09:00:00.000Z',
       volumeMl: 1,
       status: 'pending',
+      deferredUntil: null,
+      confirmAfter: null,
       createdAt: '2026-08-23T09:30:00.000Z',
     });
 
     expireStaleMissedDoses(repo, now);
 
     expect(repo.missedDoses[0].status).toBe('pending');
+  });
+});
+
+function makeMissedDose(
+  overrides: Partial<MissedDose> & { id: string },
+): MissedDose {
+  return {
+    scheduleId: 'sched-1',
+    pumpId: 'alk',
+    scheduledFor: '2026-08-23T09:00:00.000Z',
+    volumeMl: 1,
+    status: 'pending',
+    deferredUntil: null,
+    confirmAfter: null,
+    createdAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+describe('dismiss permanence', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  it('a dismissed entry never resurfaces on re-detection', () => {
+    const now = new Date('2026-08-23T09:30:00Z');
+    vi.setSystemTime(now);
+
+    const repo = new FakeMissedDosesRepository();
+    repo.schedules.push(
+      makeSchedule({
+        id: 'sched-1',
+        pumpId: 'alk',
+        startTime: '09:00',
+        lastRunAt: '2026-08-23T09:00:00.000Z',
+      }),
+    );
+    repo.missedDoses.push(
+      makeMissedDose({
+        id: 'missed-1',
+        scheduledFor: '2026-08-23T09:00:00.000Z',
+        status: 'dismissed',
+      }),
+    );
+
+    // Simulate the slot being re-scanned (e.g. lastRunAt lost and restored):
+    // rewind lastRunAt to before the slot and run detection again.
+    repo.updateScheduleLastRunAt('sched-1', '2026-08-23T08:00:00.000Z');
+    detectMissedDoses(repo, now);
+
+    expect(repo.missedDoses).toHaveLength(1);
+    expect(repo.missedDoses[0].status).toBe('dismissed');
+  });
+});
+
+describe('snoozeMissedDoses', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  it('hides pending entries until the horizon, then re-includes them', () => {
+    const now = new Date('2026-08-23T09:30:00Z');
+    vi.setSystemTime(now);
+
+    const repo = new FakeMissedDosesRepository();
+    repo.missedDoses.push(makeMissedDose({ id: 'missed-1' }));
+
+    const deferredUntil = snoozeMissedDoses(repo, now);
+
+    expect(deferredUntil).toBe('2026-08-23T10:30:00.000Z');
+    expect(repo.getPendingMissedDoses(now)).toHaveLength(0);
+
+    // After the 60-minute snooze lapses the entry reappears (forced re-prompt).
+    const later = new Date('2026-08-23T10:31:00Z');
+    vi.setSystemTime(later);
+    expect(repo.getPendingMissedDoses(later)).toHaveLength(1);
+  });
+});
+
+describe('confirmMissedDoses (batch)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  it('fires only the selected entries; the rest stay pending', async () => {
+    const now = new Date('2026-08-23T09:30:00Z');
+    vi.setSystemTime(now);
+
+    const repo = new FakeMissedDosesRepository();
+    repo.missedDoses.push(
+      makeMissedDose({ id: 'missed-1', scheduledFor: '2026-08-23T06:00:00.000Z' }),
+      makeMissedDose({ id: 'missed-2', scheduledFor: '2026-08-23T07:00:00.000Z' }),
+    );
+
+    const engine = createFakeEngine();
+    const result = await confirmMissedDoses(repo, engine, ['missed-1'], now);
+
+    expect(result.fired).toEqual(['missed-1']);
+    expect(result.scheduled).toEqual([]);
+    expect(result.dropped).toEqual([]);
+    expect(engine.submitDose).toHaveBeenCalledTimes(1);
+    expect(engine.submitDose).toHaveBeenCalledWith('alk', 1, 'schedule', 'sched-1');
+    expect(repo.missedDoses[0].status).toBe('confirmed');
+    expect(repo.missedDoses[1].status).toBe('pending');
+  });
+
+  it('spaces same-pump catch-up doses: first fires now, second fires after the interval', async () => {
+    const now = new Date('2026-08-23T09:30:00Z');
+    vi.setSystemTime(now);
+
+    const repo = new FakeMissedDosesRepository();
+    repo.missedDoses.push(
+      makeMissedDose({ id: 'missed-1', scheduledFor: '2026-08-23T06:00:00.000Z' }),
+      makeMissedDose({ id: 'missed-2', scheduledFor: '2026-08-23T07:00:00.000Z' }),
+    );
+
+    const engine = createFakeEngine();
+    const result = await confirmMissedDoses(
+      repo,
+      engine,
+      ['missed-1', 'missed-2'],
+      now,
+    );
+
+    // First dose fires immediately; second is confirmed but delayed 30 min.
+    expect(result.fired).toEqual(['missed-1']);
+    expect(result.scheduled).toEqual(['missed-2']);
+    expect(engine.submitDose).toHaveBeenCalledTimes(1);
+    expect(repo.missedDoses[1].status).toBe('confirmed');
+    expect(repo.missedDoses[1].confirmAfter).toBe('2026-08-23T10:00:00.000Z');
+
+    // Not due yet: the deferred dose must not fire early.
+    const early = new Date('2026-08-23T09:59:00Z');
+    vi.setSystemTime(early);
+    await fireScheduledConfirmations(repo, engine, early);
+    expect(engine.submitDose).toHaveBeenCalledTimes(1);
+
+    // Once the spacing delay passes, the scheduler tick fires it.
+    const due = new Date('2026-08-23T10:00:00Z');
+    vi.setSystemTime(due);
+    await fireScheduledConfirmations(repo, engine, due);
+    expect(engine.submitDose).toHaveBeenCalledTimes(2);
+    expect(engine.submitDose).toHaveBeenLastCalledWith('alk', 1, 'schedule', 'sched-1');
+    expect(repo.missedDoses[1].confirmAfter).toBeNull();
+  });
+
+  it('drops doses that would exceed the daily cap and reports them', async () => {
+    const now = new Date('2026-08-23T09:30:00Z');
+    vi.setSystemTime(now);
+
+    // 380 L system -> maxDailyDoseMlPerPump = 24.7. With 23 mL already dosed
+    // today, only one 1 mL catch-up fits; the second is dropped.
+    const repo = new FakeMissedDosesRepository();
+    repo.todayDoseMl = 23;
+    repo.missedDoses.push(
+      makeMissedDose({ id: 'missed-1', scheduledFor: '2026-08-23T06:00:00.000Z' }),
+      makeMissedDose({ id: 'missed-2', scheduledFor: '2026-08-23T07:00:00.000Z' }),
+    );
+
+    const engine = createFakeEngine();
+    const result = await confirmMissedDoses(
+      repo,
+      engine,
+      ['missed-1', 'missed-2'],
+      now,
+    );
+
+    expect(result.fired).toEqual(['missed-1']);
+    expect(result.dropped).toHaveLength(1);
+    expect(result.dropped[0].id).toBe('missed-2');
+    expect(result.dropped[0].reason).toMatch(/today'?s limit|limit/i);
+    // Dropped entries are dismissed permanently, never to re-nag.
+    expect(repo.missedDoses[1].status).toBe('dismissed');
+  });
+
+  it('drops a deferred dose at fire time if the cap no longer fits', async () => {
+    const now = new Date('2026-08-23T09:30:00Z');
+    vi.setSystemTime(now);
+
+    const repo = new FakeMissedDosesRepository();
+    repo.missedDoses.push(
+      makeMissedDose({
+        id: 'missed-1',
+        status: 'confirmed',
+        confirmAfter: '2026-08-23T10:00:00.000Z',
+      }),
+    );
+
+    // By fire time the daily budget is exhausted.
+    repo.todayDoseMl = 24;
+    const due = new Date('2026-08-23T10:00:00Z');
+    vi.setSystemTime(due);
+
+    const engine = createFakeEngine();
+    await fireScheduledConfirmations(repo, engine, due);
+
+    expect(engine.submitDose).not.toHaveBeenCalled();
+    expect(repo.missedDoses[0].status).toBe('dismissed');
+    expect(repo.missedDoses[0].confirmAfter).toBeNull();
   });
 });

@@ -16,7 +16,12 @@ import {
   startCalibration,
   stopCalibration,
 } from './calibrator.js';
-import { confirmMissedDose, dismissMissedDose } from './missed-doses.js';
+import {
+  confirmMissedDose,
+  confirmMissedDoses,
+  dismissMissedDose,
+  snoozeMissedDoses,
+} from './missed-doses.js';
 import {
   getLastPrimeResult,
   isPriming,
@@ -81,6 +86,14 @@ const scheduleParamsSchema = z.object({
 
 const missedDoseParamsSchema = z.object({
   id: z.string().uuid(),
+});
+
+const snoozeMissedDosesSchema = z.object({
+  until: z.string().datetime().optional(),
+});
+
+const batchMissedDosesSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1),
 });
 
 const historyQuerySchema = z.object({
@@ -694,7 +707,52 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
   });
 
   fastify.get('/api/missed-doses', async () => {
-    return { missedDoses: db.getPendingMissedDoses() };
+    return { missedDoses: db.getPendingMissedDoses(new Date()) };
+  });
+
+  fastify.post('/api/missed-doses/snooze', async (request, reply) => {
+    const body = snoozeMissedDosesSchema.safeParse(request.body ?? {});
+    if (!body.success) {
+      return reply.status(400).send({ error: firstZodMessage(body.error) });
+    }
+    const deferredUntil = snoozeMissedDoses(
+      db,
+      new Date(),
+      body.data.until ? new Date(body.data.until) : undefined,
+    );
+    return { deferredUntil };
+  });
+
+  fastify.post('/api/missed-doses/confirm', async (request, reply) => {
+    const body = batchMissedDosesSchema.safeParse(request.body);
+    if (!body.success) {
+      return reply.status(400).send({ error: firstZodMessage(body.error) });
+    }
+    try {
+      return await confirmMissedDoses(db, engine, body.data.ids, new Date());
+    } catch (error) {
+      return reply.status(409).send({
+        error: error instanceof Error ? error.message : 'Failed to confirm',
+      });
+    }
+  });
+
+  fastify.post('/api/missed-doses/dismiss', async (request, reply) => {
+    const body = batchMissedDosesSchema.safeParse(request.body);
+    if (!body.success) {
+      return reply.status(400).send({ error: firstZodMessage(body.error) });
+    }
+    try {
+      const dismissed = body.data.ids.map((id) => {
+        dismissMissedDose(db, id);
+        return id;
+      });
+      return { dismissed };
+    } catch (error) {
+      return reply.status(409).send({
+        error: error instanceof Error ? error.message : 'Failed to dismiss',
+      });
+    }
   });
 
   fastify.post('/api/missed-doses/:id/confirm', async (request, reply) => {

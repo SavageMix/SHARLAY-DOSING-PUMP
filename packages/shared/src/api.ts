@@ -193,3 +193,35 @@ export interface ConfirmMissedDoseResponse {
 export interface DismissMissedDoseResponse {
   missedDose: MissedDose;
 }
+
+/** "Decide later": hide all pending entries until `until` (default +60 min). */
+export interface SnoozeMissedDosesRequest {
+  until?: string;
+}
+
+export interface SnoozeMissedDosesResponse {
+  deferredUntil: string;
+}
+
+/** Batch-confirm selected catch-up doses. */
+export interface ConfirmMissedDosesRequest {
+  ids: string[];
+}
+
+export interface ConfirmMissedDosesResponse {
+  /** Dose ids submitted to the engine immediately. */
+  fired: string[];
+  /** Dose ids confirmed but delayed for per-pump spacing (see confirmAfter). */
+  scheduled: string[];
+  /** Dose ids NOT fired because a safety cap would be exceeded. */
+  dropped: Array<{ id: string; reason: string }>;
+}
+
+/** Batch-dismiss (permanent) — used for "Skip all" and unselected leftovers. */
+export interface DismissMissedDosesRequest {
+  ids: string[];
+}
+
+export interface DismissMissedDosesResponse {
+  dismissed: string[];
+}
