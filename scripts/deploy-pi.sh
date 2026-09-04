@@ -33,6 +33,9 @@ rsync -avz --delete \
   --exclude='apps/*/dist' \
   --exclude='*.tsbuildinfo' \
   --exclude='.env' \
+  --exclude='*.db' \
+  --exclude='*.db-journal' \
+  --exclude='*.db-wal' \
   ./ "${PI_USER}@${PI_HOST}:${REMOTE_DIR}/"
 
 # Scoped install keeps the Pi from pulling the entire Expo mobile workspace

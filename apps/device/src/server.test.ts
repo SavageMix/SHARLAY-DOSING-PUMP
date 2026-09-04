@@ -1,4 +1,5 @@
 import { writeFile, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -84,6 +85,57 @@ describe('Server endpoints', () => {
     } finally {
       scheduler.stop();
       db.close();
+    }
+  });
+
+  it('a schedule created via POST /api/schedules survives a full server restart', async () => {
+    const tmpPath = join(
+      tmpdir(),
+      `reef-schedule-persist-${process.pid}-${Date.now()}.db`,
+    );
+    const boot = async () => {
+      const db = new ReefDatabase(tmpPath);
+      const engine = createEngine(db);
+      const server = await createServer(db, engine);
+      return { db, server };
+    };
+    let instance = await boot();
+    try {
+      const created = await instance.server.fastify.inject({
+        method: 'POST',
+        url: '/api/schedules',
+        payload: {
+          pumpId: 'ca',
+          volumeMl: 2,
+          timesPerDay: 2,
+          startTime: '16:00',
+          repeatEveryNDays: 1,
+          enabled: true,
+        },
+      });
+      expect(created.statusCode).toBe(201);
+
+      // Simulate a reboot: tear everything down, reopen the same DB file.
+      await instance.server.close();
+      instance.db.close();
+      instance = await boot();
+
+      const list = await instance.server.fastify.inject({
+        method: 'GET',
+        url: '/api/schedules',
+      });
+      expect(list.statusCode).toBe(200);
+      const body = JSON.parse(list.body);
+      expect(body.schedules).toHaveLength(1);
+      expect(body.schedules[0]).toMatchObject({
+        pumpId: 'ca',
+        startTime: '16:00',
+        timesPerDay: 2,
+      });
+    } finally {
+      await instance.server.close();
+      instance.db.close();
+      await unlink(tmpPath).catch(() => {});
     }
   });
 

@@ -20,14 +20,16 @@ import { OfflineCard } from '@/components/OfflineCard';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedTextInput, ThemedView } from '@/components/Themed';
 import {
-  createSchedule,
-  deleteSchedule,
   getDeviceBaseUrl,
   getSchedules,
   resolveDeviceBaseUrl,
-  updateSchedule,
   type DoseSchedule,
 } from '@/src/api/client';
+import {
+  createScheduleVerified,
+  deleteScheduleVerified,
+  updateScheduleVerified,
+} from '@/src/api/schedules';
 import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
 import {
   computeScheduleTimes,
@@ -490,16 +492,18 @@ export default function SchedulesScreen() {
       return;
     }
     try {
+      // Verified mutations: the list only updates from a subsequent GET, so
+      // a schedule is never shown as saved unless the server confirmed it.
       if (editingId) {
-        await updateSchedule(baseUrl, editingId, parsed.data);
+        setSchedules(await updateScheduleVerified(baseUrl, editingId, parsed.data));
         setMessage('Schedule updated');
       } else {
-        await createSchedule(baseUrl, parsed.data);
+        setSchedules(await createScheduleVerified(baseUrl, parsed.data));
         setMessage('Schedule created');
       }
       setModalVisible(false);
-      setSchedules(await getSchedules(baseUrl));
     } catch (err) {
+      // Keep the modal open — the schedule was NOT saved.
       setMessage(err instanceof Error ? err.message : 'Failed');
     }
   };
@@ -516,9 +520,8 @@ export default function SchedulesScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              await deleteSchedule(baseUrl, schedule.id);
+              setSchedules(await deleteScheduleVerified(baseUrl, schedule.id));
               setMessage('Schedule deleted');
-              setSchedules(await getSchedules(baseUrl));
             } catch (err) {
               setMessage(err instanceof Error ? err.message : 'Failed');
             }

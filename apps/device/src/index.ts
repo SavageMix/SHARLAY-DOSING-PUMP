@@ -1,14 +1,23 @@
+import { fileURLToPath } from 'node:url';
 import { createEngine } from './engine.js';
 import { ReefDatabase } from './db.js';
 import { createScheduler } from './scheduler.js';
 import { createServer } from './server.js';
 import { waitForClockSync } from './clock-sync.js';
 
-const DB_PATH = process.env.REEF_DB_PATH ?? './reef-doser.db';
+// The default DB lives next to the compiled output (apps/device/reef-doser.db)
+// rather than being resolved from the process CWD. A relative './reef-doser.db'
+// silently points at a DIFFERENT database when the server is started manually
+// from the repo root instead of the systemd unit's WorkingDirectory — schedules
+// then "save" but vanish on the next proper boot.
+const DB_PATH =
+  process.env.REEF_DB_PATH ??
+  fileURLToPath(new URL('../reef-doser.db', import.meta.url));
 const PORT = Number(process.env.REEF_PORT ?? 8000);
 const HOST = process.env.REEF_HOST ?? '0.0.0.0';
 
 async function main(): Promise<void> {
+  console.log(`Database: ${DB_PATH}`);
   const db = new ReefDatabase(DB_PATH);
   const engine = createEngine(db);
   const scheduler = createScheduler(db, engine);
