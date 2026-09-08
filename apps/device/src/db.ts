@@ -30,6 +30,8 @@ export class ReefDatabase
   }
 
   private initSchema(): void {
+    // 1. Tables only. CREATE TABLE IF NOT EXISTS never alters an existing
+    //    table, so databases created by older builds open fine at this stage.
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS pumps (
         pump_id TEXT PRIMARY KEY,
@@ -62,11 +64,6 @@ export class ReefDatabase
         error TEXT
       );
 
-      CREATE INDEX IF NOT EXISTS idx_dose_events_pump_started
-        ON dose_events(pump_id, started_at);
-      CREATE INDEX IF NOT EXISTS idx_dose_events_schedule_started
-        ON dose_events(schedule_id, started_at);
-
       CREATE TABLE IF NOT EXISTS missed_doses (
         id TEXT PRIMARY KEY,
         schedule_id TEXT NOT NULL,
@@ -79,21 +76,65 @@ export class ReefDatabase
         confirm_after TEXT
       );
 
-      CREATE INDEX IF NOT EXISTS idx_missed_doses_status
-        ON missed_doses(status);
-      CREATE INDEX IF NOT EXISTS idx_missed_doses_schedule_for
-        ON missed_doses(schedule_id, scheduled_for);
-      CREATE INDEX IF NOT EXISTS idx_missed_doses_confirm_after
-        ON missed_doses(status, confirm_after);
-
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
     `);
 
-    this.migrateSchedulesTable();
-    this.migrateMissedDosesTable();
+    // 2. Migrations — BEFORE any index or statement referencing migrated
+    //    columns. A database created before the snooze/catch-up feature has a
+    //    missed_doses table without deferred_until/confirm_after; creating an
+    //    index on a missing column here is what brick-booted the service
+    //    ("no such column: confirm_after"). Every step is idempotent so a
+    //    half-migrated database recovers cleanly on the next boot.
+    this.runMigration('schedules table', () => this.migrateSchedulesTable());
+    this.runMigration('missed_doses snooze/catch-up columns', () =>
+      this.migrateMissedDosesTable(),
+    );
+
+    // Hard gate: never proceed to indexes unless the migrated columns exist.
+    this.assertColumnExists('missed_doses', 'deferred_until');
+    this.assertColumnExists('missed_doses', 'confirm_after');
+
+    // 3. Indexes last — only after every column they reference is guaranteed
+    //    to exist on databases of every vintage.
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_dose_events_pump_started
+        ON dose_events(pump_id, started_at);
+      CREATE INDEX IF NOT EXISTS idx_dose_events_schedule_started
+        ON dose_events(schedule_id, started_at);
+
+      CREATE INDEX IF NOT EXISTS idx_missed_doses_status
+        ON missed_doses(status);
+      CREATE INDEX IF NOT EXISTS idx_missed_doses_schedule_for
+        ON missed_doses(schedule_id, scheduled_for);
+      CREATE INDEX IF NOT EXISTS idx_missed_doses_confirm_after
+        ON missed_doses(status, confirm_after);
+    `);
+  }
+
+  private runMigration(name: string, migrate: () => void): void {
+    try {
+      migrate();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.error(`[db] migration "${name}" failed: ${reason}`);
+      throw new Error(`migration "${name}" failed: ${reason}`);
+    }
+  }
+
+  private assertColumnExists(table: string, column: string): void {
+    const row = this.db
+      .prepare(
+        `SELECT name FROM pragma_table_info('${table}') WHERE name = ?`,
+      )
+      .get(column);
+    if (!row) {
+      throw new Error(
+        `migration "missed_doses snooze/catch-up columns" did not produce column ${table}.${column}`,
+      );
+    }
   }
 
   /**

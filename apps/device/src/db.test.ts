@@ -124,4 +124,138 @@ describe('ReefDatabase smoke', () => {
       fs.unlinkSync(tmpPath);
     }
   });
+
+  it('migrates a real pre-snooze database (no deferred_until/confirm_after) without bricking boot', () => {
+    const tmpPath = path.join(
+      os.tmpdir(),
+      `reef-pre-snooze-migration-test-${Date.now()}.db`,
+    );
+
+    try {
+      // Recreate a database exactly as an older build left it on a customer's
+      // Pi: missed_doses WITHOUT deferred_until/confirm_after, with the two
+      // original indexes and a pending row. The current (broken) initSchema
+      // crash-loops on this file with "no such column: confirm_after".
+      const raw = new Database(tmpPath);
+      raw.exec(`
+        CREATE TABLE missed_doses (
+          id TEXT PRIMARY KEY,
+          schedule_id TEXT NOT NULL,
+          pump_id TEXT NOT NULL,
+          scheduled_for TEXT NOT NULL,
+          volume_ml REAL NOT NULL,
+          status TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_missed_doses_status ON missed_doses(status);
+        CREATE INDEX idx_missed_doses_schedule_for
+          ON missed_doses(schedule_id, scheduled_for);
+        INSERT INTO missed_doses (id, schedule_id, pump_id, scheduled_for, volume_ml, status, created_at)
+        VALUES ('missed-1', 'sched-1', 'alk', '2026-09-01T09:00:00.000Z', 1.5, 'pending', '2026-09-01T09:30:00.000Z');
+      `);
+      raw.close();
+
+      // This constructor is the boot-time crash site: it must migrate, not throw.
+      const db = new ReefDatabase(tmpPath);
+
+      try {
+        // Existing row preserved and visible.
+        const pending = db.getPendingMissedDoses(new Date('2026-09-01T10:00:00Z'));
+        expect(pending).toHaveLength(1);
+        expect(pending[0]).toMatchObject({
+          id: 'missed-1',
+          pumpId: 'alk',
+          volumeMl: 1.5,
+          status: 'pending',
+          deferredUntil: null,
+          confirmAfter: null,
+        });
+
+        // Migrated columns are live: snooze hides, then the horizon passes.
+        db.snoozePendingMissedDoses('2026-09-01T11:00:00.000Z');
+        expect(
+          db.getPendingMissedDoses(new Date('2026-09-01T10:30:00Z')),
+        ).toHaveLength(0);
+        expect(
+          db.getPendingMissedDoses(new Date('2026-09-01T11:01:00Z')),
+        ).toHaveLength(1);
+      } finally {
+        db.close();
+      }
+
+      // Post-migration schema on disk: both columns and the new index exist.
+      const check = new Database(tmpPath, {
+        readonly: true,
+        fileMustExist: true,
+      });
+      try {
+        const columns = (
+          check
+            .prepare("SELECT name FROM pragma_table_info('missed_doses')")
+            .all() as Array<{ name: string }>
+        ).map((c) => c.name);
+        expect(columns).toContain('deferred_until');
+        expect(columns).toContain('confirm_after');
+
+        const indexes = (
+          check
+            .prepare(
+              "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'missed_doses'",
+            )
+            .all() as Array<{ name: string }>
+        ).map((i) => i.name);
+        expect(indexes).toContain('idx_missed_doses_confirm_after');
+      } finally {
+        check.close();
+      }
+    } finally {
+      fs.unlinkSync(tmpPath);
+    }
+  });
+
+  it('recovers a half-migrated database (deferred_until present, confirm_after missing)', () => {
+    const tmpPath = path.join(
+      os.tmpdir(),
+      `reef-half-migrated-test-${Date.now()}.db`,
+    );
+
+    try {
+      // Simulate a migration interrupted mid-way (e.g. power cut during boot).
+      const raw = new Database(tmpPath);
+      raw.exec(`
+        CREATE TABLE missed_doses (
+          id TEXT PRIMARY KEY,
+          schedule_id TEXT NOT NULL,
+          pump_id TEXT NOT NULL,
+          scheduled_for TEXT NOT NULL,
+          volume_ml REAL NOT NULL,
+          status TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          deferred_until TEXT
+        );
+      `);
+      raw.close();
+
+      const db = new ReefDatabase(tmpPath);
+      db.close();
+
+      const check = new Database(tmpPath, {
+        readonly: true,
+        fileMustExist: true,
+      });
+      try {
+        const columns = (
+          check
+            .prepare("SELECT name FROM pragma_table_info('missed_doses')")
+            .all() as Array<{ name: string }>
+        ).map((c) => c.name);
+        expect(columns).toContain('deferred_until');
+        expect(columns).toContain('confirm_after');
+      } finally {
+        check.close();
+      }
+    } finally {
+      fs.unlinkSync(tmpPath);
+    }
+  });
 });
