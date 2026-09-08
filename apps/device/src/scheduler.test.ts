@@ -476,3 +476,115 @@ describe('per-pump stagger', () => {
     expect(engine.submitDose).toHaveBeenLastCalledWith('ca', 1, 'schedule', 'sched-ca');
   });
 });
+
+describe('boot arming (missed slots never auto-fire)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.clearAllMocks();
+  });
+
+  it('untrusted clock: an overdue slot with no lastRunAt becomes pending, never fires', () => {
+    // The hardware incident: NTP gate timed out at ~10:28:24 and the scheduler
+    // auto-fired the missed 10:25 slot in the same second.
+    vi.setSystemTime(new Date('2026-08-23T10:28:24Z'));
+
+    const repo = new FakeSchedulerRepository();
+    repo.schedules.push(
+      makeSchedule({
+        id: 'sched-1',
+        pumpId: 'alk',
+        startTime: '10:25',
+        lastRunAt: null,
+      }),
+    );
+
+    const engine = createFakeEngine();
+    const scheduler = new Scheduler(repo, engine, 30_000);
+    scheduler.start({ clockTrusted: false });
+    try {
+      expect(engine.submitDose).not.toHaveBeenCalled();
+      expect(repo.missedDoses).toHaveLength(1);
+      expect(repo.missedDoses[0]).toMatchObject({
+        scheduleId: 'sched-1',
+        scheduledFor: '2026-08-23T10:25:00.000Z',
+        status: 'pending',
+      });
+      expect(repo.schedules[0].lastRunAt).toBe('2026-08-23T10:25:00.000Z');
+
+      // The NEXT day's slot — due after arming — fires normally.
+      vi.setSystemTime(new Date('2026-08-24T10:25:31Z'));
+      scheduler.tick();
+      expect(engine.submitDose).toHaveBeenCalledTimes(1);
+      expect(engine.submitDose).toHaveBeenCalledWith('alk', 1, 'schedule', 'sched-1');
+    } finally {
+      scheduler.stop();
+    }
+  });
+
+  it('trusted clock: an overdue slot with no lastRunAt at arm time becomes pending, never fires', () => {
+    vi.setSystemTime(new Date('2026-08-23T09:30:00Z'));
+
+    const repo = new FakeSchedulerRepository();
+    repo.schedules.push(
+      makeSchedule({
+        id: 'sched-1',
+        pumpId: 'alk',
+        startTime: '09:00',
+        lastRunAt: null,
+      }),
+    );
+
+    const engine = createFakeEngine();
+    const scheduler = new Scheduler(repo, engine, 30_000);
+    scheduler.start(); // trusted clock
+    try {
+      expect(engine.submitDose).not.toHaveBeenCalled();
+      expect(repo.missedDoses).toHaveLength(1);
+      expect(repo.missedDoses[0]).toMatchObject({
+        scheduledFor: '2026-08-23T09:00:00.000Z',
+        status: 'pending',
+      });
+
+      // Slot due after arming fires normally.
+      vi.setSystemTime(new Date('2026-08-24T09:00:31Z'));
+      scheduler.tick();
+      expect(engine.submitDose).toHaveBeenCalledTimes(1);
+      expect(engine.submitDose).toHaveBeenCalledWith('alk', 1, 'schedule', 'sched-1');
+    } finally {
+      scheduler.stop();
+    }
+  });
+
+  it('backstop: a pre-arm slot reaching the tick fire path becomes missed, not fired', () => {
+    vi.setSystemTime(new Date('2026-08-23T09:30:00Z'));
+
+    const repo = new FakeSchedulerRepository();
+    const engine = createFakeEngine();
+    const scheduler = new Scheduler(repo, engine, 30_000);
+    scheduler.start();
+    try {
+      // A schedule appears mid-run with a stale lastRunAt (e.g. re-enabled
+      // after its slot passed) — detection never ran for it.
+      repo.schedules.push(
+        makeSchedule({
+          id: 'sched-1',
+          pumpId: 'alk',
+          startTime: '09:00',
+          lastRunAt: '2026-08-22T09:00:00.000Z',
+        }),
+      );
+
+      vi.setSystemTime(new Date('2026-08-23T09:31:00Z'));
+      scheduler.tick();
+
+      expect(engine.submitDose).not.toHaveBeenCalled();
+      expect(repo.missedDoses).toHaveLength(1);
+      expect(repo.missedDoses[0]).toMatchObject({
+        scheduledFor: '2026-08-23T09:00:00.000Z',
+        status: 'pending',
+      });
+    } finally {
+      scheduler.stop();
+    }
+  });
+});

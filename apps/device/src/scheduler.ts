@@ -27,6 +27,8 @@ const DEFAULT_INTERVAL_MS = 30_000;
 
 export class Scheduler {
   private timer: NodeJS.Timeout | null = null;
+  /** Moment the scheduler was armed. Slots due BEFORE this must never auto-fire. */
+  private armedAt: Date | null = null;
 
   constructor(
     private repository: SchedulerRepository & MissedDosesRepository,
@@ -38,18 +40,20 @@ export class Scheduler {
     if (this.timer) return;
 
     const clockTrusted = options.clockTrusted ?? true;
+    const now = new Date();
+    this.armedAt = now;
 
     if (clockTrusted) {
       // Find doses missed while the engine was offline and surface them as
       // pending confirmations. This must happen before the scheduler begins firing
       // future doses so we never auto-fire a missed slot.
-      detectMissedDoses(this.repository, new Date());
+      detectMissedDoses(this.repository, now);
     } else {
       // The clock is not trusted (e.g., no RTC and NTP not yet available).
       // Treat every scheduled dose since lastRunAt as a missed confirmation
       // instead of firing it; advance lastRunAt to the current (untrusted) time
       // so future ticks only fire doses that become due from here on.
-      detectMissedDosesWithUntrustedClock(this.repository, new Date());
+      detectMissedDosesWithUntrustedClock(this.repository, now);
     }
 
     this.timer = setInterval(() => this.tick(), this.intervalMs);
@@ -90,6 +94,38 @@ export class Scheduler {
 
       // The most recent scheduled occurrence has already been handled.
       if (previousDue <= lastRun) continue;
+
+      // Backstop: a slot that came due BEFORE the scheduler was armed (device
+      // was off, or the clock was untrusted at boot) must NEVER auto-fire.
+      // Detection surfaces these as pending confirmations; if one still
+      // reaches here, surface it ourselves rather than fire it.
+      if (this.armedAt && previousDue < this.armedAt) {
+        const cutoff = new Date(
+          this.armedAt.getTime() - 24 * 60 * 60 * 1000,
+        );
+        if (previousDue >= cutoff) {
+          const exists = this.repository.hasPendingMissedDoseForSlot(
+            schedule.id,
+            previousDue.toISOString(),
+          );
+          if (!exists) {
+            this.repository.createMissedDose({
+              scheduleId: schedule.id,
+              pumpId: schedule.pumpId,
+              scheduledFor: previousDue.toISOString(),
+              volumeMl: schedule.volumeMl,
+              status: 'pending',
+              deferredUntil: null,
+              confirmAfter: null,
+            });
+          }
+        }
+        this.repository.updateScheduleLastRunAt(
+          schedule.id,
+          previousDue.toISOString(),
+        );
+        continue;
+      }
 
       // Deterministic per-pump stagger: a pump's fire instant is its slot
       // plus a fixed offset by pump index, so pumps sharing a slot never

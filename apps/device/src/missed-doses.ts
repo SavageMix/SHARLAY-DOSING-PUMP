@@ -1,4 +1,4 @@
-import { computeDoseLimits, getMissedDueDates } from '@reef/shared';
+import { computeDoseLimits, getMissedDueDates, getPreviousDueDate } from '@reef/shared';
 import type {
   DoseEvent,
   DoseSchedule,
@@ -59,7 +59,16 @@ export function detectMissedDoses(
 
   for (const schedule of schedules) {
     const lastRunAt = schedule.lastRunAt ? new Date(schedule.lastRunAt) : null;
-    if (!lastRunAt) continue;
+
+    if (!lastRunAt) {
+      // No anchor (schedule never ran, or lastRunAt was lost). The most
+      // recent slot before now passed while the device was off or not yet
+      // running — it must become a pending confirmation (if within the
+      // lookback), never an auto-fire. Arm lastRunAt at that slot so the
+      // scheduler only fires slots that come due after arming.
+      armScheduleAtPreviousDue(repository, schedule, now, cutoff);
+      continue;
+    }
 
     const missedDueDates = getMissedDueDates(schedule, lastRunAt, now);
 
@@ -199,7 +208,14 @@ export function detectMissedDosesWithUntrustedClock(
 
   for (const schedule of schedules) {
     const lastRunAt = schedule.lastRunAt ? new Date(schedule.lastRunAt) : null;
-    if (!lastRunAt) continue;
+
+    if (!lastRunAt) {
+      // No anchor: the most recent slot before now was missed under an
+      // untrusted clock. Surface it as a pending confirmation and arm
+      // lastRunAt at that slot so the scheduler never auto-fires it.
+      armScheduleAtPreviousDue(repository, schedule, now);
+      continue;
+    }
 
     const missedDueDates = getMissedDueDates(schedule, lastRunAt, now);
 
@@ -223,6 +239,49 @@ export function detectMissedDosesWithUntrustedClock(
       repository.updateScheduleLastRunAt(schedule.id, dueDate.toISOString());
     }
   }
+}
+
+/**
+ * Arm a schedule that has no lastRunAt anchor (never ran, or the anchor was
+ * lost). The most recent slot before `now` is treated as missed — pending
+ * confirmation, never auto-fire — if it is within `cutoff` (when given), and
+ * lastRunAt is advanced to that slot so the scheduler only fires slots that
+ * come due afterwards. If a dose already fired for the slot, only the anchor
+ * is restored.
+ */
+function armScheduleAtPreviousDue(
+  repository: MissedDosesRepository,
+  schedule: DoseSchedule,
+  now: Date,
+  cutoff?: Date,
+): void {
+  const previousDue = getPreviousDueDate(schedule, now);
+  if (!previousDue) return;
+
+  const after = new Date(previousDue.getTime() - 1).toISOString();
+  const firedEvent = repository
+    .getScheduleDoseEventsAfter(schedule.id, after)
+    .find((event) => new Date(event.startedAt) >= previousDue);
+
+  if (!firedEvent && (!cutoff || previousDue >= cutoff)) {
+    const exists = repository.hasPendingMissedDoseForSlot(
+      schedule.id,
+      previousDue.toISOString(),
+    );
+    if (!exists) {
+      repository.createMissedDose({
+        scheduleId: schedule.id,
+        pumpId: schedule.pumpId,
+        scheduledFor: previousDue.toISOString(),
+        volumeMl: schedule.volumeMl,
+        status: 'pending',
+        deferredUntil: null,
+        confirmAfter: null,
+      });
+    }
+  }
+
+  repository.updateScheduleLastRunAt(schedule.id, previousDue.toISOString());
 }
 
 // ---------------------------------------------------------------------------

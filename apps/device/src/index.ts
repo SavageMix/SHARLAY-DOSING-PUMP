@@ -36,7 +36,7 @@ async function main(): Promise<void> {
     console.log('Clock synchronized, scheduler armed');
   } else {
     console.log(
-      'Clock NOT synchronized after 120s — treating intervening doses as missed',
+      'Clock NOT synchronized after 300s — treating intervening doses as missed',
     );
   }
 

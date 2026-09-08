@@ -3,8 +3,10 @@ import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = 300_000;
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
+/** Log progress while waiting, so a slow NTP sync is visible in journalctl. */
+const LOG_INTERVAL_MS = 30_000;
 
 export interface ClockSyncOptions {
   timeoutMs?: number;
@@ -25,7 +27,8 @@ export async function waitForClockSync(
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const checkSync = options.checkSync ?? checkNtpSynchronized;
 
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
   while (Date.now() < deadline) {
     try {
       const synced = await checkSync();
@@ -36,6 +39,12 @@ export async function waitForClockSync(
       console.error('Clock sync check failed:', error);
     }
     await sleep(pollIntervalMs);
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs % LOG_INTERVAL_MS < pollIntervalMs) {
+      console.log(
+        `Still waiting for clock sync... (${Math.round(elapsedMs / 1000)}s elapsed, timeout ${Math.round(timeoutMs / 1000)}s)`,
+      );
+    }
   }
   return false;
 }
