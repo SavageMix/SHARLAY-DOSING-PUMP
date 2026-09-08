@@ -101,6 +101,24 @@ class FakeSchedulerRepository implements SchedulerRepository, MissedDosesReposit
       (m) => m.scheduleId === scheduleId && m.scheduledFor === scheduledFor,
     );
   }
+
+  skipNextPumps = new Set<PumpId>();
+
+  getPumpSkipNext(pumpId: PumpId): boolean {
+    return this.skipNextPumps.has(pumpId);
+  }
+
+  setPumpSkipNext(pumpId: PumpId, skipNext: boolean): void {
+    if (skipNext) {
+      this.skipNextPumps.add(pumpId);
+    } else {
+      this.skipNextPumps.delete(pumpId);
+    }
+  }
+
+  saveDoseEvent(event: DoseEvent): void {
+    this.events.push(event);
+  }
 }
 
 function createFakeEngine(): SchedulerEngine {
@@ -586,5 +604,110 @@ describe('boot arming (missed slots never auto-fire)', () => {
     } finally {
       scheduler.stop();
     }
+  });
+});
+
+describe('skip next dose', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.clearAllMocks();
+  });
+
+  it('skip-next: the occurrence is not fired, a skipped event is recorded, and the flag auto-clears', () => {
+    vi.setSystemTime(new Date('2026-08-23T09:30:00Z'));
+
+    const repo = new FakeSchedulerRepository();
+    repo.schedules.push(
+      makeSchedule({
+        id: 'sched-1',
+        pumpId: 'alk',
+        startTime: '06:00',
+        timesPerDay: 2,
+        lastRunAt: '2026-08-22T18:00:00.000Z',
+      }),
+    );
+    repo.skipNextPumps.add('alk');
+
+    const engine = createFakeEngine();
+    const scheduler = new Scheduler(repo, engine, 30_000);
+
+    scheduler.tick();
+
+    // Fired zero times; the skip is recorded for History and the flag clears.
+    expect(engine.submitDose).not.toHaveBeenCalled();
+    expect(repo.skipNextPumps.has('alk')).toBe(false);
+    expect(repo.schedules[0].lastRunAt).toBe('2026-08-23T06:00:00.000Z');
+    const skipped = repo.events.filter((e) => e.status === 'skipped');
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]).toMatchObject({
+      pumpId: 'alk',
+      source: 'schedule',
+      scheduleId: 'sched-1',
+      requestedMl: 1,
+      actualMl: null,
+    });
+
+    // The following slot fires normally — exactly one dose was skipped.
+    vi.setSystemTime(new Date('2026-08-23T18:00:30Z'));
+    scheduler.tick();
+    expect(engine.submitDose).toHaveBeenCalledTimes(1);
+    expect(engine.submitDose).toHaveBeenCalledWith('alk', 1, 'schedule', 'sched-1');
+  });
+
+  it('skip then cancel: the occurrence fires normally', () => {
+    vi.setSystemTime(new Date('2026-08-23T09:30:00Z'));
+
+    const repo = new FakeSchedulerRepository();
+    repo.schedules.push(
+      makeSchedule({
+        id: 'sched-1',
+        pumpId: 'alk',
+        startTime: '09:00',
+        lastRunAt: '2026-08-22T09:00:00.000Z',
+      }),
+    );
+    repo.skipNextPumps.add('alk');
+    repo.skipNextPumps.delete('alk'); // user cancelled the skip before the slot
+
+    const engine = createFakeEngine();
+    const scheduler = new Scheduler(repo, engine, 30_000);
+
+    scheduler.tick();
+
+    expect(engine.submitDose).toHaveBeenCalledTimes(1);
+    expect(engine.submitDose).toHaveBeenCalledWith('alk', 1, 'schedule', 'sched-1');
+    expect(repo.events.filter((e) => e.status === 'skipped')).toHaveLength(0);
+  });
+
+  it('the flag survives a slot that already fired and applies to the next occurrence', () => {
+    vi.setSystemTime(new Date('2026-08-23T09:30:00Z'));
+
+    const repo = new FakeSchedulerRepository();
+    repo.schedules.push(
+      makeSchedule({
+        id: 'sched-1',
+        pumpId: 'alk',
+        startTime: '06:00',
+        timesPerDay: 2,
+        // The 06:00 slot already fired before the flag was set.
+        lastRunAt: '2026-08-23T06:00:00.000Z',
+      }),
+    );
+    repo.skipNextPumps.add('alk');
+
+    const engine = createFakeEngine();
+    const scheduler = new Scheduler(repo, engine, 30_000);
+
+    scheduler.tick();
+    // 06:00 was already handled — the flag must NOT be consumed by it.
+    expect(engine.submitDose).not.toHaveBeenCalled();
+    expect(repo.skipNextPumps.has('alk')).toBe(true);
+
+    // It applies to the next unfired occurrence (18:00) instead.
+    vi.setSystemTime(new Date('2026-08-23T18:00:30Z'));
+    scheduler.tick();
+    expect(engine.submitDose).not.toHaveBeenCalled();
+    expect(repo.skipNextPumps.has('alk')).toBe(false);
+    expect(repo.events.filter((e) => e.status === 'skipped')).toHaveLength(1);
   });
 });

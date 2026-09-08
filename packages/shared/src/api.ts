@@ -84,6 +84,15 @@ export interface RefillContainerResponse {
   capacityMl: number;
 }
 
+/** Response for POST /api/pumps/:id/skip-next and .../skip-next/cancel. */
+export interface SkipNextDoseResponse {
+  pumpId: PumpId;
+  /** Whether the next scheduled occurrence for this pump will be skipped. */
+  skipNext: boolean;
+  /** The occurrence the skip applies to (ISO), or null when not skipping. */
+  skipScheduledFor: string | null;
+}
+
 export interface LimitsResponse {
   limits: {
     maxSingleDoseMl: number;

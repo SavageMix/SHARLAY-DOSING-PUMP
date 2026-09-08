@@ -6,7 +6,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import { z } from 'zod';
-import { computeDoseLimits, LIMITS } from '@reef/shared';
+import { computeDoseLimits, getNextDueDate, LIMITS } from '@reef/shared';
 import type { ContainerInfo, PumpId, PumpState } from '@reef/shared';
 import type { ReefDatabase } from './db.js';
 import type { Engine } from './engine.js';
@@ -88,6 +88,10 @@ const missedDoseParamsSchema = z.object({
   id: z.string().uuid(),
 });
 
+const pumpParamsSchema = z.object({
+  id: pumpIdSchema,
+});
+
 const snoozeMissedDosesSchema = z.object({
   until: z.string().datetime().optional(),
 });
@@ -117,6 +121,7 @@ function buildPumpState(db: ReefDatabase): PumpState[] {
     stepsPerMl: pump.stepsPerMl,
     todayDoseMl: db.getTodayDoseMl(pump.pumpId),
     containerRemainingMl: pump.containerRemainingMl,
+    skipNext: pump.skipNext,
   }));
 }
 
@@ -127,6 +132,21 @@ function buildContainerInfo(db: ReefDatabase): ContainerInfo[] {
     remainingMl: pump.containerRemainingMl,
     lastRefilledAt: null, // could be persisted later
   }));
+}
+
+/** Earliest upcoming due slot across a pump's enabled schedules, or null. */
+function nextDueForPump(
+  db: ReefDatabase,
+  pumpId: PumpId,
+  now: Date,
+): Date | null {
+  const dues = db
+    .getSchedules()
+    .filter((schedule) => schedule.pumpId === pumpId && schedule.enabled)
+    .map((schedule) => getNextDueDate(schedule, now))
+    .filter((due): due is Date => due !== null)
+    .sort((a, b) => a.getTime() - b.getTime());
+  return dues[0] ?? null;
 }
 
 /**
@@ -542,6 +562,51 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
       'manual',
     );
     return reply.status(202).send({ jobId });
+  });
+
+  fastify.post('/api/pumps/:id/skip-next', async (request, reply) => {
+    const params = pumpParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.status(400).send({ error: firstZodMessage(params.error) });
+    }
+    const pumpId = params.data.id;
+
+    try {
+      db.getPumpCalibration(pumpId);
+    } catch {
+      return reply.status(404).send({ error: `Unknown pump ${pumpId}` });
+    }
+
+    const nextDue = nextDueForPump(db, pumpId, new Date());
+    if (!nextDue) {
+      return reply
+        .status(409)
+        .send({ error: `No upcoming scheduled dose for ${pumpId}` });
+    }
+
+    db.setPumpSkipNext(pumpId, true);
+    return {
+      pumpId,
+      skipNext: true,
+      skipScheduledFor: nextDue.toISOString(),
+    };
+  });
+
+  fastify.post('/api/pumps/:id/skip-next/cancel', async (request, reply) => {
+    const params = pumpParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.status(400).send({ error: firstZodMessage(params.error) });
+    }
+    const pumpId = params.data.id;
+
+    try {
+      // Idempotent: clearing a flag that is not set is a no-op, not an error.
+      db.setPumpSkipNext(pumpId, false);
+    } catch {
+      return reply.status(404).send({ error: `Unknown pump ${pumpId}` });
+    }
+
+    return { pumpId, skipNext: false, skipScheduledFor: null };
   });
 
   fastify.post('/api/calibrate/start', async (request, reply) => {

@@ -18,6 +18,8 @@ export interface PumpState {
   stepsPerMl: number | null;
   todayDoseMl: number;
   containerRemainingMl: number;
+  /** True when the next scheduled occurrence for this pump will be skipped. */
+  skipNext: boolean;
 }
 
 export type DoseSource = 'manual' | 'schedule' | 'calibration' | 'prime';
@@ -27,7 +29,8 @@ export type DoseEventStatus =
   | 'running'
   | 'completed'
   | 'failed'
-  | 'aborted';
+  | 'aborted'
+  | 'skipped';
 
 export type MissedDoseStatus =
   | 'pending'

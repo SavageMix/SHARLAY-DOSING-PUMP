@@ -139,6 +139,179 @@ describe('Server endpoints', () => {
     }
   });
 
+  it('POST /api/pumps/:id/skip-next refuses when nothing is scheduled', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      const response = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/pumps/alk/skip-next',
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error).toMatch(
+        /no upcoming scheduled dose/i,
+      );
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/pumps/:id/skip-next arms the flag, /api/status exposes it, cancel clears it', async () => {
+    vi.setSystemTime(new Date('2026-08-23T08:00:00Z'));
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 1.5,
+        timesPerDay: 1,
+        startTime: '09:00',
+        repeatEveryNDays: 1,
+        enabled: true,
+        lastRunAt: null,
+      });
+
+      const response = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/pumps/alk/skip-next',
+      });
+      expect(response.statusCode).toBe(200);
+      const armBody = JSON.parse(response.body);
+      expect(armBody).toMatchObject({ pumpId: 'alk', skipNext: true });
+      expect(armBody.skipScheduledFor).toBeTruthy();
+
+      const status = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      const alk = JSON.parse(status.body).pumps.find(
+        (p: { pumpId: string }) => p.pumpId === 'alk',
+      );
+      expect(alk.skipNext).toBe(true);
+
+      const cancel = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/pumps/alk/skip-next/cancel',
+      });
+      expect(cancel.statusCode).toBe(200);
+      expect(JSON.parse(cancel.body).skipNext).toBe(false);
+
+      const after = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      const alkAfter = JSON.parse(after.body).pumps.find(
+        (p: { pumpId: string }) => p.pumpId === 'alk',
+      );
+      expect(alkAfter.skipNext).toBe(false);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('skip-next survives a service restart', async () => {
+    const tmpPath = join(
+      tmpdir(),
+      `reef-skip-next-${process.pid}-${Date.now()}.db`,
+    );
+    const boot = async () => {
+      const db = new ReefDatabase(tmpPath);
+      const engine = createEngine(db);
+      const server = await createServer(db, engine);
+      return { db, server };
+    };
+    let instance = await boot();
+    try {
+      instance.db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 1.5,
+        timesPerDay: 1,
+        startTime: '09:00',
+        repeatEveryNDays: 1,
+        enabled: true,
+        lastRunAt: null,
+      });
+      const res = await instance.server.fastify.inject({
+        method: 'POST',
+        url: '/api/pumps/alk/skip-next',
+      });
+      expect(res.statusCode).toBe(200);
+
+      // Simulate a reboot: tear everything down, reopen the same DB file.
+      await instance.server.close();
+      instance.db.close();
+      instance = await boot();
+
+      const status = await instance.server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      const alk = JSON.parse(status.body).pumps.find(
+        (p: { pumpId: string }) => p.pumpId === 'alk',
+      );
+      expect(alk.skipNext).toBe(true);
+    } finally {
+      await instance.server.close();
+      instance.db.close();
+      await unlink(tmpPath).catch(() => {});
+    }
+  });
+
+  it('skip-next is consumed by the scheduler: no dose fires and history records the skip', async () => {
+    vi.setSystemTime(new Date('2026-08-23T08:00:00Z'));
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 1.5,
+        timesPerDay: 1,
+        startTime: '09:00',
+        repeatEveryNDays: 1,
+        enabled: true,
+        lastRunAt: null,
+      });
+
+      const arm = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/pumps/alk/skip-next',
+      });
+      expect(arm.statusCode).toBe(200);
+
+      vi.setSystemTime(new Date('2026-08-23T09:00:30Z'));
+      scheduler.tick();
+
+      const status = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      const pumps = JSON.parse(status.body).pumps;
+      const alk = pumps.find((p: { pumpId: string }) => p.pumpId === 'alk');
+      expect(alk.skipNext).toBe(false);
+      // A skipped dose must not count toward the daily total.
+      expect(alk.todayDoseMl).toBe(0);
+      expect(JSON.parse(status.body).currentDose).toBeNull();
+
+      const history = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/history',
+      });
+      const events = JSON.parse(history.body).events;
+      const skipped = events.find(
+        (e: { status: string }) => e.status === 'skipped',
+      );
+      expect(skipped).toMatchObject({
+        pumpId: 'alk',
+        source: 'schedule',
+        requestedMl: 1.5,
+        actualMl: null,
+      });
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
   it('PATCH /api/schedules/:id updates the startTime and persists across a restart', async () => {
     const tmpPath = join(
       tmpdir(),

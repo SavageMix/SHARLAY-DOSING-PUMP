@@ -26,12 +26,14 @@ import type {
   PrimeStartResponse,
   PrimeStopRequest,
   PrimeStopResponse,
+  PumpId,
   PumpState,
   RefillContainerRequest,
   RefillContainerResponse,
   SnoozeMissedDosesRequest,
   SnoozeMissedDosesResponse,
   StatusResponse,
+  SkipNextDoseResponse,
   UpdateScheduleRequest,
   UpdateScheduleResponse,
 } from '@reef/shared';
@@ -317,6 +319,28 @@ export async function dismissMissedDoses(
     'POST',
     '/api/missed-doses/dismiss',
     { ids } satisfies DismissMissedDosesRequest,
+  );
+}
+
+export async function skipNextDose(
+  baseUrl: string,
+  pumpId: PumpId,
+): Promise<SkipNextDoseResponse> {
+  return request<SkipNextDoseResponse>(
+    baseUrl,
+    'POST',
+    `/api/pumps/${pumpId}/skip-next`,
+  );
+}
+
+export async function cancelSkipNextDose(
+  baseUrl: string,
+  pumpId: PumpId,
+): Promise<SkipNextDoseResponse> {
+  return request<SkipNextDoseResponse>(
+    baseUrl,
+    'POST',
+    `/api/pumps/${pumpId}/skip-next/cancel`,
   );
 }
 

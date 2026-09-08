@@ -37,7 +37,8 @@ export class ReefDatabase
         pump_id TEXT PRIMARY KEY,
         steps_per_ml REAL,
         container_capacity_ml REAL NOT NULL,
-        container_remaining_ml REAL NOT NULL
+        container_remaining_ml REAL NOT NULL,
+        skip_next INTEGER NOT NULL DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS schedules (
@@ -92,6 +93,7 @@ export class ReefDatabase
     this.runMigration('missed_doses snooze/catch-up columns', () =>
       this.migrateMissedDosesTable(),
     );
+    this.runMigration('pumps skip_next column', () => this.migratePumpsTable());
 
     // Hard gate: never proceed to indexes unless the migrated columns exist.
     this.assertColumnExists('missed_doses', 'deferred_until');
@@ -155,6 +157,23 @@ export class ReefDatabase
     if (!names.has('confirm_after')) {
       this.db.exec(
         'ALTER TABLE missed_doses ADD COLUMN confirm_after TEXT',
+      );
+    }
+  }
+
+  /**
+   * Existing databases predate the "skip next dose" flag. Add the column if
+   * missing. Idempotent: safe on fully migrated and half-migrated databases.
+   */
+  private migratePumpsTable(): void {
+    const columns = this.db
+      .prepare("SELECT name FROM pragma_table_info('pumps')")
+      .all() as Array<{ name: string }>;
+    const names = new Set(columns.map((c) => c.name));
+
+    if (!names.has('skip_next')) {
+      this.db.exec(
+        'ALTER TABLE pumps ADD COLUMN skip_next INTEGER NOT NULL DEFAULT 0',
       );
     }
   }
@@ -656,21 +675,42 @@ export class ReefDatabase
     }
   }
 
+  setPumpSkipNext(pumpId: PumpId, skipNext: boolean): void {
+    const result = this.db
+      .prepare('UPDATE pumps SET skip_next = ? WHERE pump_id = ?')
+      .run(skipNext ? 1 : 0, pumpId);
+    if (result.changes === 0) {
+      throw new Error(`Unknown pump ${pumpId}`);
+    }
+  }
+
+  getPumpSkipNext(pumpId: PumpId): boolean {
+    const row = this.db
+      .prepare('SELECT skip_next FROM pumps WHERE pump_id = ?')
+      .get(pumpId) as { skip_next: number } | undefined;
+    if (!row) {
+      throw new Error(`Unknown pump ${pumpId}`);
+    }
+    return row.skip_next === 1;
+  }
+
   getAllPumps(): Array<{
     pumpId: PumpId;
     stepsPerMl: number | null;
     containerCapacityMl: number;
     containerRemainingMl: number;
+    skipNext: boolean;
   }> {
     const rows = this.db
       .prepare(
-        'SELECT pump_id, steps_per_ml, container_capacity_ml, container_remaining_ml FROM pumps',
+        'SELECT pump_id, steps_per_ml, container_capacity_ml, container_remaining_ml, skip_next FROM pumps',
       )
       .all() as Array<{
         pump_id: PumpId;
         steps_per_ml: number | null;
         container_capacity_ml: number;
         container_remaining_ml: number;
+        skip_next: number;
       }>;
 
     return rows.map((row) => ({
@@ -678,6 +718,7 @@ export class ReefDatabase
       stepsPerMl: row.steps_per_ml,
       containerCapacityMl: row.container_capacity_ml,
       containerRemainingMl: row.container_remaining_ml,
+      skipNext: row.skip_next === 1,
     }));
   }
 

@@ -14,12 +14,14 @@ import { OfflineCard } from '@/components/OfflineCard';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedTextInput, ThemedView } from '@/components/Themed';
 import {
+  cancelSkipNextDose,
   clearDeviceBaseUrl,
   getDeviceBaseUrl,
   getStatus,
   resolveDeviceBaseUrl,
   saveCalibration,
   setDeviceBaseUrl,
+  skipNextDose,
   startCalibration,
   startPrime,
   stopCalibration,
@@ -463,7 +465,12 @@ export default function SettingsScreen() {
   const [savedUrl, setSavedUrl] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
   const [status, setStatus] = useState<{
-    pumps: { pumpId: PumpId; calibrated: boolean; stepsPerMl: number | null }[];
+    pumps: {
+      pumpId: PumpId;
+      calibrated: boolean;
+      stepsPerMl: number | null;
+      skipNext: boolean;
+    }[];
     queueDepth: number;
   } | null>(null);
   const [wizardPump, setWizardPump] = useState<PumpId | null>(null);
@@ -515,6 +522,7 @@ export default function SettingsScreen() {
           pumpId: p.pumpId,
           calibrated: p.calibrated,
           stepsPerMl: p.stepsPerMl,
+          skipNext: p.skipNext ?? false,
         })) ?? [],
         queueDepth: data?.queueDepth ?? 0,
       });
@@ -563,12 +571,39 @@ export default function SettingsScreen() {
   );
 
   const pumpsById = useMemo(() => {
-    const map = new Map<PumpId, { calibrated: boolean; stepsPerMl: number | null }>();
+    const map = new Map<
+      PumpId,
+      { calibrated: boolean; stepsPerMl: number | null; skipNext: boolean }
+    >();
     for (const p of status?.pumps ?? []) {
       map.set(p.pumpId, p);
     }
     return map;
   }, [status]);
+
+  const [skipError, setSkipError] = useState('');
+
+  const handleSkipNext = async (pumpId: PumpId) => {
+    if (!savedUrl) return;
+    setSkipError('');
+    try {
+      await skipNextDose(savedUrl, pumpId);
+      await load();
+    } catch (err) {
+      setSkipError(err instanceof Error ? err.message : 'Failed to skip');
+    }
+  };
+
+  const handleCancelSkip = async (pumpId: PumpId) => {
+    if (!savedUrl) return;
+    setSkipError('');
+    try {
+      await cancelSkipNextDose(savedUrl, pumpId);
+      await load();
+    } catch (err) {
+      setSkipError(err instanceof Error ? err.message : 'Failed to cancel');
+    }
+  };
 
   const handlePrimeStart = async (pumpId: PumpId) => {
     if (!savedUrl) return;
@@ -815,6 +850,51 @@ export default function SettingsScreen() {
         </ThemedView>
 
         <ThemedView style={styles.card}>
+          <ThemedText style={styles.label}>Skip next dose</ThemedText>
+          <ThemedText style={styles.metric}>
+            After a water change, skip a pump's next scheduled dose once —
+            the schedule resumes normally afterwards.
+          </ThemedText>
+          {skipError ? (
+            <ThemedText style={styles.errorText}>{skipError}</ThemedText>
+          ) : null}
+          {PUMP_ORDER.map((id) => {
+            const skipped = pumpsById.get(id)?.skipNext ?? false;
+            return (
+              <ThemedView key={id} style={styles.pumpRow}>
+                <ThemedView style={styles.pumpInfo}>
+                  <ThemedText style={styles.pumpTitle}>{id}</ThemedText>
+                  <ThemedText
+                    style={[
+                      styles.pumpMetric,
+                      skipped && { color: Colors.warning },
+                    ]}>
+                    {skipped ? 'Next dose skipped' : 'Dosing normally'}
+                  </ThemedText>
+                </ThemedView>
+                {skipped ? (
+                  <Pressable
+                    style={styles.cancelSkipButton}
+                    onPress={() => handleCancelSkip(id)}>
+                    <ThemedText style={styles.cancelSkipText}>
+                      Cancel skip
+                    </ThemedText>
+                  </Pressable>
+                ) : (
+                  <Pressable
+                    style={styles.skipButton}
+                    onPress={() => handleSkipNext(id)}>
+                    <ThemedText style={styles.skipButtonText}>
+                      Skip next
+                    </ThemedText>
+                  </Pressable>
+                )}
+              </ThemedView>
+            );
+          })}
+        </ThemedView>
+
+        <ThemedView style={styles.card}>
           <ThemedText style={styles.label}>Connection</ThemedText>
           <ThemedText style={styles.metric}>
             Saved URL: {savedUrl ?? 'none'}
@@ -1008,6 +1088,30 @@ const styles = StyleSheet.create({
   },
   disabledButton: {
     opacity: 0.4,
+  },
+  skipButton: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: Colors.warning,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.sm,
+  },
+  skipButtonText: {
+    ...Typography.body,
+    color: Colors.warning,
+    fontWeight: '600',
+  },
+  cancelSkipButton: {
+    backgroundColor: Colors.warning,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.sm,
+  },
+  cancelSkipText: {
+    ...Typography.body,
+    color: Colors.obsidian,
+    fontWeight: '600',
   },
   modalOverlay: {
     flex: 1,

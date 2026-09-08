@@ -12,6 +12,9 @@ export interface SchedulerRepository {
   getEnabledSchedules(): DoseSchedule[];
   updateScheduleLastRunAt(id: string, lastRunAt: string): void;
   getScheduleDoseEventsAfter(scheduleId: string, after: string): DoseEvent[];
+  getPumpSkipNext(pumpId: PumpId): boolean;
+  setPumpSkipNext(pumpId: PumpId, skipNext: boolean): void;
+  saveDoseEvent(event: DoseEvent): void;
 }
 
 export interface SchedulerEngine {
@@ -150,6 +153,36 @@ export class Scheduler {
       );
 
       if (firedEvent) {
+        this.repository.updateScheduleLastRunAt(
+          schedule.id,
+          previousDue.toISOString(),
+        );
+        continue;
+      }
+
+      // Skip-next: the user deliberately skipped this pump's next occurrence
+      // (e.g. after a water change). Record a 'skipped' event so History
+      // shows it was intentional, clear the flag (exactly one dose skipped),
+      // and do NOT fire. The flag survives until a real (unfired) occurrence
+      // passes — if the dose already fired, the reconcile above kept it.
+      if (this.repository.getPumpSkipNext(schedule.pumpId)) {
+        const skippedAt = now.toISOString();
+        this.repository.saveDoseEvent({
+          id: crypto.randomUUID(),
+          pumpId: schedule.pumpId,
+          requestedMl: schedule.volumeMl,
+          actualMl: null,
+          status: 'skipped',
+          source: 'schedule',
+          scheduleId: schedule.id,
+          startedAt: skippedAt,
+          finishedAt: skippedAt,
+          error: null,
+        });
+        this.repository.setPumpSkipNext(schedule.pumpId, false);
+        console.log(
+          `[scheduler] Skip-next active for ${schedule.pumpId} — slot ${previousDue.toISOString()} not dosed`,
+        );
         this.repository.updateScheduleLastRunAt(
           schedule.id,
           previousDue.toISOString(),
