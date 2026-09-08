@@ -22,11 +22,33 @@ export class ReefDatabase
     this.db = new Database(path);
     this.db.pragma('journal_mode = WAL');
     this.initSchema();
+    this.reconcileInterruptedDoses();
     this.seed();
   }
 
   close(): void {
     this.db.close();
+  }
+
+  /**
+   * Dose events left with status 'running'/'queued' by a process that died
+   * mid-dose never close themselves: the pump physically stopped when the
+   * process died, but the record said 'running' forever. On boot, close them
+   * as 'interrupted' so History is honest, they do not count toward daily
+   * totals as completed (getTodayDoseMl only sums 'completed'), and
+   * missed-dose logic treats the slot conservatively (under-delivered).
+   */
+  private reconcileInterruptedDoses(): void {
+    const result = this.db
+      .prepare(
+        "UPDATE dose_events SET status = 'interrupted' WHERE status IN ('running', 'queued')",
+      )
+      .run();
+    if (result.changes > 0) {
+      console.log(
+        `[db] Marked ${result.changes} dose event(s) as interrupted (left running/queued by a previous run)`,
+      );
+    }
   }
 
   private initSchema(): void {

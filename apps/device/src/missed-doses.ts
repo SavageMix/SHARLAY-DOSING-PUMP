@@ -40,6 +40,16 @@ export interface MissedDosesEngine {
   ): Promise<string>;
 }
 
+/**
+ * A slot counts as handled only when its event actually delivered ('completed')
+ * or was deliberately not dosed ('skipped'). 'interrupted', 'failed', 'aborted'
+ * or unfinished events under-delivered — the slot must be treated
+ * conservatively (missed → pending confirmation), never as fired.
+ */
+export function isSlotHandled(event: DoseEvent): boolean {
+  return event.status === 'completed' || event.status === 'skipped';
+}
+
 const DEFAULT_LOOKBACK_HOURS = 24;
 
 /**
@@ -79,7 +89,8 @@ export function detectMissedDoses(
         after,
       );
       const firedEvent = events.find(
-        (event) => new Date(event.startedAt) >= dueDate,
+        (event) =>
+          isSlotHandled(event) && new Date(event.startedAt) >= dueDate,
       );
 
       if (firedEvent) {
@@ -246,8 +257,8 @@ export function detectMissedDosesWithUntrustedClock(
  * lost). The most recent slot before `now` is treated as missed — pending
  * confirmation, never auto-fire — if it is within `cutoff` (when given), and
  * lastRunAt is advanced to that slot so the scheduler only fires slots that
- * come due afterwards. If a dose already fired for the slot, only the anchor
- * is restored.
+ * come due afterwards. If a dose already delivered for the slot (or it was
+ * deliberately skipped), only the anchor is restored.
  */
 function armScheduleAtPreviousDue(
   repository: MissedDosesRepository,
@@ -261,7 +272,10 @@ function armScheduleAtPreviousDue(
   const after = new Date(previousDue.getTime() - 1).toISOString();
   const firedEvent = repository
     .getScheduleDoseEventsAfter(schedule.id, after)
-    .find((event) => new Date(event.startedAt) >= previousDue);
+    .find(
+      (event) =>
+        isSlotHandled(event) && new Date(event.startedAt) >= previousDue,
+    );
 
   if (!firedEvent && (!cutoff || previousDue >= cutoff)) {
     const exists = repository.hasPendingMissedDoseForSlot(

@@ -201,6 +201,45 @@ describe('detectMissedDoses', () => {
     expect(repo.schedules[0].lastRunAt).toBe('2026-08-23T09:00:00.000Z');
   });
 
+  it('treats a slot whose dose was interrupted mid-run as missed (conservative)', () => {
+    // The process died mid-dose: the event is left 'running'/'interrupted' by
+    // boot reconciliation, but the tank never received the full volume. The
+    // slot must surface as a pending missed dose, not count as delivered.
+    const now = new Date('2026-08-23T09:30:00Z');
+    vi.setSystemTime(now);
+
+    const repo = new FakeMissedDosesRepository();
+    repo.schedules.push(
+      makeSchedule({
+        id: 'sched-1',
+        pumpId: 'alk',
+        startTime: '09:00',
+        lastRunAt: '2026-08-23T08:00:00.000Z',
+      }),
+    );
+    repo.events.push({
+      id: 'event-1',
+      pumpId: 'alk',
+      requestedMl: 1,
+      actualMl: 0.2,
+      status: 'interrupted',
+      source: 'schedule',
+      scheduleId: 'sched-1',
+      startedAt: '2026-08-23T09:00:05.000Z',
+      finishedAt: null,
+      error: null,
+    });
+
+    detectMissedDoses(repo, now);
+
+    expect(repo.missedDoses).toHaveLength(1);
+    expect(repo.missedDoses[0]).toMatchObject({
+      scheduleId: 'sched-1',
+      scheduledFor: '2026-08-23T09:00:00.000Z',
+      status: 'pending',
+    });
+  });
+
   it('does not create an entry for a dose missed 2 days ago', () => {
     const now = new Date('2026-08-24T10:00:00Z');
     vi.setSystemTime(now);

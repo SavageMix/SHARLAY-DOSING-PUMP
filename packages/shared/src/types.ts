@@ -30,7 +30,8 @@ export type DoseEventStatus =
   | 'completed'
   | 'failed'
   | 'aborted'
-  | 'skipped';
+  | 'skipped'
+  | 'interrupted';
 
 export type MissedDoseStatus =
   | 'pending'

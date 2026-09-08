@@ -213,6 +213,67 @@ describe('ReefDatabase smoke', () => {
     }
   });
 
+  it('marks dose events left running by a killed process as interrupted on boot', () => {
+    const tmpPath = path.join(
+      os.tmpdir(),
+      `reef-interrupted-test-${Date.now()}.db`,
+    );
+
+    try {
+      // First boot: a scheduled dose starts, then the process "dies" mid-dose
+      // (the pump physically stops, but nothing closes the event).
+      const db = new ReefDatabase(tmpPath);
+      db.saveDoseEvent({
+        id: 'event-1',
+        pumpId: 'no3',
+        requestedMl: 2,
+        actualMl: 0.4, // partially delivered before the kill
+        status: 'running',
+        source: 'schedule',
+        scheduleId: 'sched-1',
+        startedAt: '2026-09-08T08:00:00.000Z',
+        finishedAt: null,
+        error: null,
+      });
+      db.saveDoseEvent({
+        id: 'event-2',
+        pumpId: 'ca',
+        requestedMl: 1,
+        actualMl: null,
+        status: 'queued',
+        source: 'manual',
+        scheduleId: null,
+        startedAt: '2026-09-08T08:01:00.000Z',
+        finishedAt: null,
+        error: null,
+      });
+      db.close();
+
+      // Reboot: the constructor must close the stale events as 'interrupted'.
+      const reopened = new ReefDatabase(tmpPath);
+      try {
+        const history = reopened.getHistory({});
+        const interrupted = history.events.filter(
+          (e) => e.status === 'interrupted',
+        );
+        expect(interrupted).toHaveLength(2);
+        expect(interrupted.find((e) => e.id === 'event-1')).toMatchObject({
+          pumpId: 'no3',
+          actualMl: 0.4, // partial delivery stays visible for the record
+        });
+
+        // An interrupted dose under-delivered: it must NOT count toward
+        // today's total as if it completed.
+        expect(reopened.getTodayDoseMl('no3')).toBe(0);
+        expect(reopened.getTodayDoseMl('ca')).toBe(0);
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      fs.unlinkSync(tmpPath);
+    }
+  });
+
   it('recovers a half-migrated database (deferred_until present, confirm_after missing)', () => {
     const tmpPath = path.join(
       os.tmpdir(),
