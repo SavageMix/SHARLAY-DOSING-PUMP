@@ -191,8 +191,9 @@ describe('Scheduler', () => {
     scheduler.tick();
 
     expect(engine.submitDose).not.toHaveBeenCalled();
-    // Scheduler should reconcile lastRunAt from the persisted event.
-    expect(repo.schedules[0].lastRunAt).toBe('2026-08-23T09:00:05.000Z');
+    // Scheduler should reconcile lastRunAt to the exact scheduled slot (not
+    // the actual event start time) so the schedule never drifts.
+    expect(repo.schedules[0].lastRunAt).toBe('2026-08-23T09:00:00.000Z');
   });
 
   it('never fires a disabled schedule', () => {
@@ -367,5 +368,111 @@ describe('Scheduler', () => {
       'sched-1',
     );
     expect(engine.submitDose).toHaveBeenCalledOnce();
+  });
+});
+
+describe('wall-clock anchoring (no drift)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.clearAllMocks();
+  });
+
+  it('anchors lastRunAt to the exact slot, not the actual run time, across repeated firings', () => {
+    vi.setSystemTime(new Date('2026-08-23T06:00:30Z'));
+
+    const repo = new FakeSchedulerRepository();
+    repo.schedules.push(
+      makeSchedule({
+        id: 'sched-1',
+        pumpId: 'alk',
+        startTime: '06:00',
+        timesPerDay: 2,
+        lastRunAt: null,
+      }),
+    );
+
+    const engine = createFakeEngine();
+    const scheduler = new Scheduler(repo, engine, 30_000);
+
+    scheduler.tick();
+    expect(engine.submitDose).toHaveBeenCalledTimes(1);
+    expect(repo.schedules[0].lastRunAt).toBe('2026-08-23T06:00:00.000Z');
+
+    // Simulate a late completion (06:01:15) and a reboot with a stale
+    // lastRunAt: the reconcile must record the SLOT time, not 06:01:15.
+    repo.events.push({
+      id: 'event-1',
+      pumpId: 'alk',
+      requestedMl: 1,
+      actualMl: 1,
+      status: 'completed',
+      source: 'schedule',
+      scheduleId: 'sched-1',
+      startedAt: '2026-08-23T06:01:15.000Z',
+      finishedAt: '2026-08-23T06:01:16.000Z',
+      error: null,
+    });
+    repo.updateScheduleLastRunAt('sched-1', '2026-08-22T18:00:00.000Z');
+    scheduler.tick();
+    expect(engine.submitDose).toHaveBeenCalledTimes(1); // not re-fired
+    expect(repo.schedules[0].lastRunAt).toBe('2026-08-23T06:00:00.000Z');
+
+    // Every subsequent cycle fires at the exact configured wall-clock slot,
+    // regardless of when the previous dose completed.
+    vi.setSystemTime(new Date('2026-08-23T18:00:30Z'));
+    scheduler.tick();
+    expect(repo.schedules[0].lastRunAt).toBe('2026-08-23T18:00:00.000Z');
+
+    vi.setSystemTime(new Date('2026-08-24T06:00:30Z'));
+    scheduler.tick();
+    expect(repo.schedules[0].lastRunAt).toBe('2026-08-24T06:00:00.000Z');
+
+    expect(engine.submitDose).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('per-pump stagger', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.clearAllMocks();
+  });
+
+  it('same-time schedules fire offset by pump index, never in the same instant', () => {
+    vi.setSystemTime(new Date('2026-08-23T06:00:30Z'));
+
+    const repo = new FakeSchedulerRepository();
+    repo.schedules.push(
+      makeSchedule({ id: 'sched-alk', pumpId: 'alk', startTime: '06:00', lastRunAt: null }),
+      makeSchedule({ id: 'sched-ca', pumpId: 'ca', startTime: '06:00', lastRunAt: null }),
+    );
+
+    const engine = createFakeEngine();
+    const scheduler = new Scheduler(repo, engine, 30_000);
+
+    scheduler.tick();
+    // alk (index 0, offset 0) fires; ca (index 1, +90 s) must not fire yet.
+    expect(engine.submitDose).toHaveBeenCalledTimes(1);
+    expect(engine.submitDose).toHaveBeenCalledWith('alk', 1, 'schedule', 'sched-alk');
+    expect(repo.schedules[1].lastRunAt).toBeNull();
+
+    vi.setSystemTime(new Date('2026-08-23T06:01:00Z'));
+    scheduler.tick();
+    expect(engine.submitDose).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(new Date('2026-08-23T06:01:31Z'));
+    scheduler.tick();
+    expect(engine.submitDose).toHaveBeenCalledTimes(2);
+    expect(engine.submitDose).toHaveBeenLastCalledWith('ca', 1, 'schedule', 'sched-ca');
+
+    // Next day the offsets are identical — the stagger never accumulates.
+    vi.setSystemTime(new Date('2026-08-24T06:00:30Z'));
+    scheduler.tick();
+    expect(engine.submitDose).toHaveBeenCalledTimes(3);
+    expect(engine.submitDose).toHaveBeenLastCalledWith('alk', 1, 'schedule', 'sched-alk');
+
+    vi.setSystemTime(new Date('2026-08-24T06:01:31Z'));
+    scheduler.tick();
+    expect(engine.submitDose).toHaveBeenCalledTimes(4);
+    expect(engine.submitDose).toHaveBeenLastCalledWith('ca', 1, 'schedule', 'sched-ca');
   });
 });

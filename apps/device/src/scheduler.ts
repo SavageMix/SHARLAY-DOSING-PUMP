@@ -1,4 +1,4 @@
-import { getPreviousDueDate } from '@reef/shared';
+import { getPreviousDueDate, getPumpStaggerOffsetMs } from '@reef/shared';
 import type { DoseEvent, DoseSchedule, PumpId } from '@reef/shared';
 import {
   detectMissedDoses,
@@ -77,6 +77,10 @@ export class Scheduler {
     const schedules = this.repository.getEnabledSchedules();
 
     for (const schedule of schedules) {
+      // The due slot is always derived from the configured wall-clock times
+      // (via computeScheduleTimes) — never from when the previous dose
+      // actually ran. lastRunAt is only a dedupe marker: it records which
+      // slots have already been handled.
       const previousDue = getPreviousDueDate(schedule, now);
       if (!previousDue) continue;
 
@@ -87,9 +91,19 @@ export class Scheduler {
       // The most recent scheduled occurrence has already been handled.
       if (previousDue <= lastRun) continue;
 
+      // Deterministic per-pump stagger: a pump's fire instant is its slot
+      // plus a fixed offset by pump index, so pumps sharing a slot never
+      // start in the same instant. Computed from the slot every cycle — the
+      // offset never accumulates.
+      const fireAt = new Date(
+        previousDue.getTime() + getPumpStaggerOffsetMs(schedule.pumpId),
+      );
+      if (now < fireAt) continue;
+
       // Reconcile against persisted dose_events. If a dose for this schedule
-      // already started at or after the previous due time, it fired (possibly
-      // before a reboot). Update lastRunAt and skip firing.
+      // already started at or after the slot time, it fired (possibly before
+      // a reboot). Advance lastRunAt to the SLOT time (not the actual start
+      // time) so the next cycle stays anchored to the wall clock.
       const events = this.repository.getScheduleDoseEventsAfter(
         schedule.id,
         lastRun.toISOString(),
@@ -100,11 +114,14 @@ export class Scheduler {
       );
 
       if (firedEvent) {
-        this.repository.updateScheduleLastRunAt(schedule.id, firedEvent.startedAt);
+        this.repository.updateScheduleLastRunAt(
+          schedule.id,
+          previousDue.toISOString(),
+        );
         continue;
       }
 
-      // Fire the scheduled dose and advance lastRunAt to the due time.
+      // Fire the scheduled dose and record the exact slot as handled.
       void this.engine.submitDose(
         schedule.pumpId,
         schedule.volumeMl,

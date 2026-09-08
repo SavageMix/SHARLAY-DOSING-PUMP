@@ -101,3 +101,15 @@ describe('schedule due dates are device-local wall clock', () => {
     expect(local(before!)).toBe('06:00');
   });
 });
+
+describe('getPumpStaggerOffsetMs', () => {
+  it('offsets each pump deterministically by index', async () => {
+    const { getPumpStaggerOffsetMs, PUMP_STAGGER_MS_PER_INDEX } = await import(
+      './schedule.js'
+    );
+    expect(getPumpStaggerOffsetMs('alk')).toBe(0);
+    expect(getPumpStaggerOffsetMs('ca')).toBe(PUMP_STAGGER_MS_PER_INDEX);
+    expect(getPumpStaggerOffsetMs('no3')).toBe(2 * PUMP_STAGGER_MS_PER_INDEX);
+    expect(getPumpStaggerOffsetMs('po4')).toBe(3 * PUMP_STAGGER_MS_PER_INDEX);
+  });
+});

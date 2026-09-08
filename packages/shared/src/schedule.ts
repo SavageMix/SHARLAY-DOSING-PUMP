@@ -1,6 +1,22 @@
-import type { DoseSchedule } from './types.js';
+import type { DoseSchedule, PumpId } from './types.js';
 
 const MINUTES_PER_DAY = 24 * 60;
+
+/**
+ * Deterministic stagger between pumps that share a schedule slot. Doses are
+ * offset by pump index (alk=0, ca=1.5 min, no3=3 min, po4=4.5 min) so two
+ * pumps scheduled at the same wall-clock time never start in the same
+ * instant. The offset is derived from the slot on every cycle — it never
+ * accumulates and never drifts.
+ */
+export const PUMP_STAGGER_MS_PER_INDEX = 90_000;
+
+const PUMP_STAGGER_ORDER: PumpId[] = ['alk', 'ca', 'no3', 'po4'];
+
+export function getPumpStaggerOffsetMs(pumpId: PumpId): number {
+  const index = PUMP_STAGGER_ORDER.indexOf(pumpId);
+  return (index < 0 ? 0 : index) * PUMP_STAGGER_MS_PER_INDEX;
+}
 
 export interface ScheduleTime {
   hour: number;
@@ -101,11 +117,10 @@ export function getPreviousDueDate(
   if (times.length === 0) return null;
 
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
-  const currentSeconds = now.getSeconds();
-  const currentMs = now.getMilliseconds();
 
-  // Find the most recent time-of-day that is <= now's time-of-day.
-  // If none, the previous occurrence was the last time of the previous eligible day.
+  // Find the most recent time-of-day within or before now's current minute
+  // (a 06:00 slot is "due" for the whole of the 06:00 minute). If none, the
+  // previous occurrence was the last time of the previous eligible day.
   let dayOffset = 0;
   let selectedTime: ScheduleTime | null = null;
 
@@ -115,7 +130,7 @@ export function getPreviousDueDate(
   for (let i = sortedTimes.length - 1; i >= 0; i--) {
     const t = sortedTimes[i];
     const tMinutes = t.hour * 60 + t.minute;
-    if (tMinutes < currentMinutes || (tMinutes === currentMinutes && currentSeconds === 0 && currentMs === 0)) {
+    if (tMinutes <= currentMinutes) {
       selectedTime = t;
       break;
     }

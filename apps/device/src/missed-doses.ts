@@ -74,9 +74,11 @@ export function detectMissedDoses(
       );
 
       if (firedEvent) {
+        // Advance to the SLOT time, never the actual start time — detection
+        // must stay anchored to the wall-clock schedule.
         repository.updateScheduleLastRunAt(
           schedule.id,
-          new Date(firedEvent.startedAt).toISOString(),
+          dueDate.toISOString(),
         );
         continue;
       }
