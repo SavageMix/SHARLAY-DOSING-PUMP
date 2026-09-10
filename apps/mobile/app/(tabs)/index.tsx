@@ -42,6 +42,7 @@ import {
   type StatusResponse,
 } from '@/src/api/client';
 import { Theme } from '@/constants/Theme';
+import { describeCatchupQueue } from '@/src/lib/catchup-banner';
 import {
   getNextDueDate,
   type DoseEvent,
@@ -1068,7 +1069,11 @@ export default function DashboardScreen() {
         .map(([id]) => id);
       // Also poll fast while ANY dose is physically firing (e.g. a catch-up
       // fired by the scheduler) so the live indicator tracks it.
-      if (activeIds.length === 0 && !data?.status.currentDose) return;
+      const catchupActive =
+        (data?.status.catchupQueue?.queued?.length ?? 0) > 0 ||
+        data?.status.catchupQueue?.firing != null;
+      if (activeIds.length === 0 && !data?.status.currentDose && !catchupActive)
+        return;
 
       const interval = setInterval(() => {
         load();
@@ -1155,12 +1160,15 @@ export default function DashboardScreen() {
     [data?.schedules],
   );
 
-  // A catch-up physically firing right now (driven by the scheduler, not by
-  // a local dose action) — surfaced as a live banner.
-  const firingCatchup =
-    data?.status.currentDose?.source === 'catchup'
-      ? data.status.currentDose
-      : null;
+  // Catch-up queue banner — 100% derived from /api/status's catchupQueue so a
+  // page refresh mid-dose or mid-queue re-renders exactly the same state.
+  const catchupBanner = useMemo(() => {
+    const queue = data?.status.catchupQueue;
+    return describeCatchupQueue(queue?.firing ?? null, queue?.queued ?? [], {
+      formatSlot: formatMissedWhen,
+      formatTime: (iso) => formatTime(new Date(iso)),
+    });
+  }, [data?.status]);
 
   // "Decide later" is a 1-hour snooze stored on the device. A returned pending
   // entry whose snooze has already LAPSED makes the re-prompt forced: no snooze
@@ -1383,15 +1391,11 @@ export default function DashboardScreen() {
           queueDepth={data?.status.queueDepth ?? 0}
         />
 
-        {firingCatchup ? (
+        {catchupBanner.visible ? (
           <View style={styles.catchupBanner}>
             <Ionicons name="water" size={18} color={T.colors.primary} />
             <ThemedText style={styles.catchupBannerText}>
-              Firing catch-up — missed{' '}
-              {firingCatchup.missedDoseScheduledFor
-                ? formatMissedWhen(firingCatchup.missedDoseScheduledFor)
-                : '—'}{' '}
-              ({PUMP_SHORT_NAMES[firingCatchup.pumpId]})
+              {catchupBanner.text}
             </ThemedText>
           </View>
         ) : null}

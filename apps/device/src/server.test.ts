@@ -1421,4 +1421,151 @@ describe('Server endpoints', () => {
       db.close();
     }
   });
+
+  // UX gap regression: after confirming several missed doses, the doses that
+  // are not firing yet sit in the engine's stagger queue INVISIBLY — the user
+  // thinks they were dropped. /api/status must expose the full catch-up
+  // queue (firing + queued, with estimated fire times) so the app's banner
+  // can show "3 queued: PO4 ~19:52, …". Page refresh must re-derive the same
+  // state because the device is the source of truth.
+  it('/api/status exposes the catch-up queue after confirming multiple missed doses', async () => {
+    vi.setSystemTime(new Date('2026-08-24T01:00:00Z'));
+    const { db, server, scheduler } = await buildServer();
+    try {
+      const pumps = ['alk', 'ca', 'no3', 'po4'] as const;
+      for (const pumpId of pumps) {
+        db.updatePumpCalibration(pumpId, 100);
+        db.createSchedule({
+          pumpId,
+          volumeMl: 1.5,
+          timesPerDay: 1,
+          startTime: '00:00',
+          repeatEveryNDays: 1,
+          enabled: true,
+          lastRunAt: '2026-08-22T00:00:00.000Z',
+        });
+      }
+      detectMissedDoses(db, new Date());
+      for (const s of db.getSchedules()) {
+        db.updateSchedule(s.id, { enabled: false });
+      }
+
+      const list = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/missed-doses',
+      });
+      const { missedDoses } = JSON.parse(list.body);
+      expect(missedDoses).toHaveLength(4); // one slot per pump
+
+      const confirm = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/missed-doses/confirm',
+        payload: { ids: missedDoses.map((m: { id: string }) => m.id) },
+      });
+      expect(confirm.statusCode).toBe(200);
+      // Four different pumps: every catch-up submits to the engine at once,
+      // so the stagger queue is fully populated for the status check.
+      expect(JSON.parse(confirm.body).fired).toHaveLength(4);
+
+      const scheduledForById = new Map(
+        missedDoses.map((m: { id: string; scheduledFor: string }) => [
+          m.id,
+          m.scheduledFor,
+        ]),
+      );
+      const confirmTime = Date.now();
+
+      const status = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      expect(status.statusCode).toBe(200);
+      const body = JSON.parse(status.body);
+
+      // Entries whose catch-up already completed are legitimately in NEITHER
+      // firing nor queued (instant mocked runSteps can finish dose 1 before
+      // this GET). Everything still outstanding must be accounted for across
+      // firing + queued — nothing invisible, nothing extra.
+      const doneIds = new Set(
+        db
+          .getHistory({})
+          .events.filter(
+            (e) => e.source === 'catchup' && e.status === 'completed',
+          )
+          .map((e) => e.missedDoseId)
+          .filter(Boolean),
+      );
+      const firingId = body.catchupQueue.firing?.missedDoseId ?? null;
+      if (firingId !== null) expect(doneIds.has(firingId)).toBe(false);
+      const queuedIds = body.catchupQueue.queued.map(
+        (q: { missedDoseId: string }) => q.missedDoseId,
+      );
+      expect(new Set(queuedIds).size).toBe(queuedIds.length);
+      for (const id of queuedIds) {
+        expect(doneIds.has(id)).toBe(false);
+      }
+      // Outstanding = confirmed-but-not-completed entries: each is firing,
+      // queued, or (if its dose finished before the snapshot) completed.
+      for (const m of missedDoses) {
+        expect(
+          firingId === m.id ||
+            queuedIds.includes(m.id) ||
+            doneIds.has(m.id),
+        ).toBe(true);
+      }
+      // With one dose done and three staggered behind it, the queue view
+      // shows at least the two still waiting in line.
+      expect(queuedIds.length).toBeGreaterThanOrEqual(2);
+      expect(queuedIds.length + (firingId ? 1 : 0) + doneIds.size).toBe(4);
+
+      // Firing entry, when present, carries the original missed slot time.
+      if (body.catchupQueue.firing) {
+        expect(body.catchupQueue.firing.missedDoseScheduledFor).toBe(
+          scheduledForById.get(body.catchupQueue.firing.missedDoseId),
+        );
+        expect(pumps).toContain(body.catchupQueue.firing.pumpId);
+      }
+
+      // Queued entries: original slot times + estimated fire times spaced by
+      // the inter-dose gap (~90s). The first estimate lands about one gap
+      // after the confirm; each subsequent one a gap later.
+      for (const q of body.catchupQueue.queued) {
+        expect(q.missedDoseScheduledFor).toBe(
+          scheduledForById.get(q.missedDoseId),
+        );
+        expect(pumps).toContain(q.pumpId);
+      }
+      const estTimes = body.catchupQueue.queued.map((q: {
+        estimatedFireAt: string;
+      }) => new Date(q.estimatedFireAt).getTime());
+      expect(estTimes[0] - confirmTime).toBeGreaterThanOrEqual(80_000);
+      expect(estTimes[0] - confirmTime).toBeLessThan(120_000);
+      for (let i = 1; i < estTimes.length; i++) {
+        expect(estTimes[i] - estTimes[i - 1]).toBe(90_000);
+      }
+
+      // Let the queue drain: all four fire exactly once and every entry ends
+      // terminal — the queue view was describing real, single-fire doses.
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+      const catchups = db
+        .getHistory({})
+        .events.filter((e) => e.source === 'catchup');
+      expect(catchups).toHaveLength(4);
+      for (const m of missedDoses) {
+        expect(db.getMissedDoseById(m.id)?.status).toBe('completed');
+      }
+
+      // Once drained, the queue reports empty.
+      const after = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      const afterBody = JSON.parse(after.body);
+      expect(afterBody.catchupQueue.firing).toBeNull();
+      expect(afterBody.catchupQueue.queued).toHaveLength(0);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
 });

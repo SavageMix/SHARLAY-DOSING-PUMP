@@ -56,12 +56,32 @@ export interface CalibrateSaveResponse {
   stepsPerMl: number;
 }
 
+/**
+ * A catch-up dose that is firing now or waiting in the engine queue.
+ * `missedDoseScheduledFor` is the original wall-clock slot the dose was
+ * missed at (device-local); `estimatedFireAt` is when the engine expects to
+ * fire it, honouring the minimum inter-dose gap. Estimates assume instant
+ * dose durations, hence "~" prefixes in the UI.
+ */
+export interface CatchupQueueItem {
+  pumpId: PumpId;
+  missedDoseId: string;
+  missedDoseScheduledFor: string | null;
+  estimatedFireAt: string | null;
+}
+
+export interface CatchupQueueStatus {
+  firing: CatchupQueueItem | null;
+  queued: CatchupQueueItem[];
+}
+
 export interface StatusResponse {
   pumps: PumpState[];
   containers: ContainerInfo[];
   currentDose: DoseEvent | null;
   queue: DoseEvent[];
   queueDepth: number;
+  catchupQueue: CatchupQueueStatus;
   systemVolumeLitres: number;
   prime: {
     priming: boolean;

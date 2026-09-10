@@ -532,12 +532,39 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
           }
         : status.current
       : null;
+    // Catch-up queue visibility: the currently-firing catch-up plus every
+    // catch-up waiting in the engine queue, with estimated fire times. The
+    // app derives its live banner purely from this — a page refresh mid-dose
+    // or mid-queue re-renders the exact same state.
+    const firing =
+      status.current?.source === 'catchup' && status.current.missedDoseId
+        ? {
+            pumpId: status.current.pumpId,
+            missedDoseId: status.current.missedDoseId,
+            missedDoseScheduledFor:
+              db.getMissedDoseById(status.current.missedDoseId)?.scheduledFor ??
+              null,
+            estimatedFireAt: status.current.startedAt,
+          }
+        : null;
+    const queued = engine
+      .getQueueSnapshot()
+      .filter((item) => item.source === 'catchup')
+      .map((item) => ({
+        pumpId: item.pumpId,
+        missedDoseId: item.missedDoseId as string,
+        missedDoseScheduledFor: item.missedDoseId
+          ? (db.getMissedDoseById(item.missedDoseId)?.scheduledFor ?? null)
+          : null,
+        estimatedFireAt: item.estimatedFireAt,
+      }));
     return {
       pumps: buildPumpState(db),
       containers: buildContainerInfo(db),
       currentDose,
       queue: status.current ? [status.current] : [],
       queueDepth: status.queueDepth,
+      catchupQueue: { firing, queued },
       systemVolumeLitres: db.getSystemVolumeLitres(),
       prime: {
         priming: isPriming(),
