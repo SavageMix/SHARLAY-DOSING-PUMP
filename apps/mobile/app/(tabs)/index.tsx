@@ -991,6 +991,11 @@ export default function DashboardScreen() {
   const [modalPumpId, setModalPumpId] = useState<PumpId | null>(null);
   const [doseStates, setDoseStates] = useState<Record<string, DoseState>>({});
   const [missedDoses, setMissedDoses] = useState<MissedDose[]>([]);
+  // Every pending entry including snoozed ones — drives the persistent banner
+  // so "Decide later" never locks the user out of the decision UI.
+  const [missedAll, setMissedAll] = useState<MissedDose[]>([]);
+  // Banner tap reopens the modal with snoozed entries included.
+  const [missedReviewOpen, setMissedReviewOpen] = useState(false);
   // Keyed by pumpId — one card per pump in the modal.
   const [missedCardStates, setMissedCardStates] = useState<
     Record<string, MissedCardState>
@@ -1021,15 +1026,27 @@ export default function DashboardScreen() {
         getStatus(baseUrl),
         getSchedules(baseUrl),
         getLimits(baseUrl),
-        getMissedDoses(baseUrl),
+        getMissedDoses(baseUrl, { includeSnoozed: true }),
         getHistory(baseUrl, { days: 30, limit: 10000, offset: 0 }),
       ]);
       setData({ status, schedules, limits, missedDoses: missed, history });
-      setMissedDoses(missed);
+      setMissedAll(missed);
+      // The modal blocks on entries whose snooze has lapsed (or never existed);
+      // snoozed entries stay reachable via the banner instead.
+      setMissedDoses(
+        missed.filter(
+          (m) =>
+            !m.deferredUntil ||
+            Number.isNaN(new Date(m.deferredUntil).getTime()) ||
+            new Date(m.deferredUntil).getTime() <= Date.now(),
+        ),
+      );
+      setMissedReviewOpen(false);
     } catch {
       setOffline(true);
       setData(null);
       setMissedDoses([]);
+      setMissedAll([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -1049,13 +1066,15 @@ export default function DashboardScreen() {
       const activeIds = Object.entries(doseStates)
         .filter(([, s]) => s.status === 'queued' || s.status === 'running')
         .map(([id]) => id);
-      if (activeIds.length === 0) return;
+      // Also poll fast while ANY dose is physically firing (e.g. a catch-up
+      // fired by the scheduler) so the live indicator tracks it.
+      if (activeIds.length === 0 && !data?.status.currentDose) return;
 
       const interval = setInterval(() => {
         load();
       }, 2_000);
       return () => clearInterval(interval);
-    }, [doseStates, load]),
+    }, [doseStates, data?.status, load]),
   );
 
   useMemo(() => {
@@ -1136,10 +1155,34 @@ export default function DashboardScreen() {
     [data?.schedules],
   );
 
+  // A catch-up physically firing right now (driven by the scheduler, not by
+  // a local dose action) — surfaced as a live banner.
+  const firingCatchup =
+    data?.status.currentDose?.source === 'catchup'
+      ? data.status.currentDose
+      : null;
+
   // "Decide later" is a 1-hour snooze stored on the device. A returned pending
-  // entry with deferredUntil set has already been snoozed and lapsed — the
-  // re-prompt is forced: no snooze button, no back/backdrop dismissal.
-  const missedForced = missedDoses.some((m) => m.deferredUntil != null);
+  // entry whose snooze has already LAPSED makes the re-prompt forced: no snooze
+  // button, no back/backdrop dismissal. Entries still inside their snooze
+  // window are not forced — the user reopened them voluntarily from the banner.
+  const missedForced = missedDoses.some(
+    (m) =>
+      m.deferredUntil != null &&
+      !Number.isNaN(new Date(m.deferredUntil).getTime()) &&
+      new Date(m.deferredUntil).getTime() <= Date.now(),
+  );
+
+  // Persistent entry point: pending entries exist (possibly snoozed) but the
+  // blocking modal is not open. Tapping reopens the decision UI with every
+  // entry, so snoozing never locks the user out until the next re-prompt.
+  const missedBannerVisible =
+    !missedReviewOpen && missedAll.length > 0 && missedDoses.length === 0;
+
+  const openMissedReview = () => {
+    setMissedReviewOpen(true);
+    setMissedDoses(missedAll);
+  };
 
   const handleMissedToggle = (id: string, value: boolean) => {
     setMissedCheckedIds((s) => ({ ...s, [id]: value }));
@@ -1248,6 +1291,13 @@ export default function DashboardScreen() {
   };
 
   const handleMissedDecideLater = async () => {
+    // Banner-driven review of snoozed entries: closing is local-only — the
+    // device-side snooze is untouched and the banner stays available.
+    if (missedReviewOpen) {
+      setMissedReviewOpen(false);
+      setMissedDoses([]);
+      return;
+    }
     if (!baseUrl) return;
     try {
       await snoozeMissedDoses(baseUrl);
@@ -1332,6 +1382,38 @@ export default function DashboardScreen() {
           offline={offline}
           queueDepth={data?.status.queueDepth ?? 0}
         />
+
+        {firingCatchup ? (
+          <View style={styles.catchupBanner}>
+            <Ionicons name="water" size={18} color={T.colors.primary} />
+            <ThemedText style={styles.catchupBannerText}>
+              Firing catch-up — missed{' '}
+              {firingCatchup.missedDoseScheduledFor
+                ? formatMissedWhen(firingCatchup.missedDoseScheduledFor)
+                : '—'}{' '}
+              ({PUMP_SHORT_NAMES[firingCatchup.pumpId]})
+            </ThemedText>
+          </View>
+        ) : null}
+
+        {missedBannerVisible ? (
+          <Pressable style={styles.missedBanner} onPress={openMissedReview}>
+            <Ionicons
+              name="alert-circle"
+              size={18}
+              color={T.colors.warning}
+            />
+            <ThemedText style={styles.missedBannerText}>
+              {missedAll.length} missed dose
+              {missedAll.length === 1 ? '' : 's'} awaiting your decision
+            </ThemedText>
+            <Ionicons
+              name="chevron-forward"
+              size={18}
+              color={T.colors.warning}
+            />
+          </Pressable>
+        ) : null}
 
         {Object.entries(doseStates).map(
           ([pumpId, state]) =>
@@ -1655,6 +1737,38 @@ const styles = StyleSheet.create({
   doseStateText: {
     ...T.typography.body,
     textAlign: 'center',
+  },
+  catchupBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: T.spacing.sm,
+    backgroundColor: 'rgba(32, 227, 219, 0.08)',
+    borderRadius: T.radius.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(32, 227, 219, 0.25)',
+    padding: T.spacing.md,
+    marginBottom: T.spacing.md,
+  },
+  catchupBannerText: {
+    ...T.typography.body,
+    color: T.colors.primary,
+    flex: 1,
+  },
+  missedBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: T.spacing.sm,
+    backgroundColor: 'rgba(255, 181, 71, 0.10)',
+    borderRadius: T.radius.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 181, 71, 0.35)',
+    padding: T.spacing.md,
+    marginBottom: T.spacing.md,
+  },
+  missedBannerText: {
+    ...T.typography.body,
+    color: T.colors.warning,
+    flex: 1,
   },
   modalOverlay: {
     flex: 1,

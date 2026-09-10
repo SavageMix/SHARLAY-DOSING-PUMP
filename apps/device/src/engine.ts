@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { computeDoseLimits } from '@reef/shared';
+import { computeDoseLimits, PUMP_STAGGER_MS_PER_INDEX } from '@reef/shared';
 import type { DoseEvent, DoseSource, PumpId } from '@reef/shared';
 import { driversDisable } from './gpio.js';
 import { runSteps } from './stepper.js';
@@ -18,6 +18,12 @@ export interface DoseRepository {
   getTodayDoseMl(pumpId: PumpId): number | Promise<number>;
   getPumpCalibration(pumpId: PumpId): PumpCalibration | Promise<PumpCalibration>;
   saveDoseEvent(event: DoseEvent): void | Promise<void>;
+  /**
+   * OPTIONAL. Persist a finished dose event and, for catch-up doses, close
+   * the linked missed_doses entry atomically in the same transaction. When
+   * absent, saveDoseEvent is used.
+   */
+  finalizeDoseEvent?(event: DoseEvent): void | Promise<void>;
   decrementContainer(pumpId: PumpId, amountMl: number): void | Promise<void>;
 }
 
@@ -27,6 +33,7 @@ interface QueueItem {
   amountMl: number;
   source: DoseSource;
   scheduleId: string | null;
+  missedDoseId: string | null;
 }
 
 export interface EngineStatus {
@@ -34,12 +41,43 @@ export interface EngineStatus {
   queueDepth: number;
 }
 
+export interface EngineOptions {
+  /**
+   * Minimum gap between the end of one pump run and the start of the next,
+   * regardless of trigger source (schedule, catch-up, manual). Reuses the
+   * per-pump stagger constant: concurrent or back-to-back dosing is both a
+   * chemistry hazard (alk/ca co-dosing) and an electrical one (multiple
+   * steppers on one supply).
+   */
+  minInterDoseGapMs?: number;
+  /**
+   * Global motor lock. Prime and calibration run their own motor loops
+   * OUTSIDE this queue; while either is running the engine must not start a
+   * dose (and vice versa — the API refuses prime/calibration while the queue
+   * is non-empty, but a scheduled dose can land mid-prime, so the engine
+   * polls this before touching the hardware).
+   */
+  isMotorBusy?: () => boolean;
+}
+
 export class Engine {
   private queue: QueueItem[] = [];
   private processing = false;
   private current: DoseEvent | null = null;
+  /** Item shifted from the queue but not finished: executing or gap-waiting. */
+  private active: QueueItem | null = null;
+  private lastRunEndAt: number | null = null;
+  private minInterDoseGapMs: number;
+  private isMotorBusy?: () => boolean;
 
-  constructor(private repository: DoseRepository) {}
+  constructor(
+    private repository: DoseRepository,
+    options: EngineOptions = {},
+  ) {
+    this.minInterDoseGapMs =
+      options.minInterDoseGapMs ?? PUMP_STAGGER_MS_PER_INDEX;
+    this.isMotorBusy = options.isMotorBusy;
+  }
 
   /**
    * Submit a dose request to the FIFO queue. Returns a job id immediately.
@@ -50,15 +88,21 @@ export class Engine {
     amountMl: number,
     source: DoseSource,
     scheduleId: string | null = null,
+    missedDoseId: string | null = null,
   ): Promise<string> {
+    if (this.processing || this.queue.length > 0) {
+      console.log(
+        `[engine] queued ${pumpId} — ${this.current?.pumpId ?? 'another dose'} running (queue depth ${this.getQueueDepth()})`,
+      );
+    }
     const id = randomUUID();
-    this.queue.push({ id, pumpId, amountMl, source, scheduleId });
+    this.queue.push({ id, pumpId, amountMl, source, scheduleId, missedDoseId });
     void this.processQueue();
     return id;
   }
 
   getQueueDepth(): number {
-    return this.queue.length + (this.current ? 1 : 0);
+    return this.queue.length + (this.active || this.current ? 1 : 0);
   }
 
   getStatus(): EngineStatus {
@@ -74,10 +118,27 @@ export class Engine {
 
     while (this.queue.length > 0) {
       const item = this.queue.shift()!;
+      this.active = item;
+
+      // Minimum inter-pump gap: the previous run's drivers must rest before
+      // the next pump energises, whatever the trigger source.
+      if (this.lastRunEndAt !== null && this.minInterDoseGapMs > 0) {
+        const waitMs = this.minInterDoseGapMs - (Date.now() - this.lastRunEndAt);
+        if (waitMs > 0) {
+          await this.sleep(waitMs);
+        }
+      }
+
       await this.execute(item);
+      this.lastRunEndAt = Date.now();
+      this.active = null;
     }
 
     this.processing = false;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private async execute(item: QueueItem): Promise<void> {
@@ -91,6 +152,7 @@ export class Engine {
       status: 'running',
       source: item.source,
       scheduleId: item.scheduleId,
+      missedDoseId: item.missedDoseId,
       startedAt: new Date().toISOString(),
       finishedAt: null,
       error: null,
@@ -106,6 +168,12 @@ export class Engine {
     }
 
     try {
+      // Global motor lock: prime/calibration own the motor outside this
+      // queue. Wait them out rather than running two pumps at once.
+      while (this.isMotorBusy?.()) {
+        await this.sleep(500);
+      }
+
       const systemVolumeLitres =
         await this.repository.getSystemVolumeLitres();
       const limits = computeDoseLimits(systemVolumeLitres);
@@ -152,7 +220,15 @@ export class Engine {
       this.current = null;
       driversDisable();
       try {
-        await this.repository.saveDoseEvent(event);
+        // finalizeDoseEvent closes the linked missed-dose entry in the same
+        // transaction as this write, so a catch-up can never be eligible to
+        // re-fire after its dose physically completed.
+        const finalize = this.repository.finalizeDoseEvent;
+        if (finalize) {
+          await finalize.call(this.repository, event);
+        } else {
+          await this.repository.saveDoseEvent(event);
+        }
       } catch (saveError) {
         // Persistence failure must not stop the queue or mask the fact that
         // the hardware has already been shut down.
@@ -162,6 +238,9 @@ export class Engine {
   }
 }
 
-export function createEngine(repository: DoseRepository): Engine {
-  return new Engine(repository);
+export function createEngine(
+  repository: DoseRepository,
+  options: EngineOptions = {},
+): Engine {
+  return new Engine(repository, options);
 }

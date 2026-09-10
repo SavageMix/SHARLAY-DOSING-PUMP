@@ -4,6 +4,8 @@ import { ReefDatabase } from './db.js';
 import { createScheduler } from './scheduler.js';
 import { createServer } from './server.js';
 import { waitForClockSync } from './clock-sync.js';
+import { isCalibrating } from './calibrator.js';
+import { isPriming } from './primer.js';
 
 // The default DB lives next to the compiled output (apps/device/reef-doser.db)
 // rather than being resolved from the process CWD. A relative './reef-doser.db'
@@ -19,7 +21,13 @@ const HOST = process.env.REEF_HOST ?? '0.0.0.0';
 async function main(): Promise<void> {
   console.log(`Database: ${DB_PATH}`);
   const db = new ReefDatabase(DB_PATH);
-  const engine = createEngine(db);
+  const engine = createEngine(db, {
+    // Global motor lock: prime and calibration own the motor outside the
+    // dose queue; the engine waits for them before energising any driver.
+    isMotorBusy: () =>
+      isPriming() ||
+      (['alk', 'ca', 'no3', 'po4'] as const).some((id) => isCalibrating(id)),
+  });
   const scheduler = createScheduler(db, engine);
   const server = await createServer(db, engine);
 

@@ -43,6 +43,7 @@ describe('ReefDatabase smoke', () => {
         status: 'completed',
         source: 'manual',
         scheduleId: null,
+        missedDoseId: null,
         startedAt: new Date().toISOString(),
         finishedAt: new Date().toISOString(),
         error: null,
@@ -231,6 +232,7 @@ describe('ReefDatabase smoke', () => {
         status: 'running',
         source: 'schedule',
         scheduleId: 'sched-1',
+        missedDoseId: null,
         startedAt: '2026-09-08T08:00:00.000Z',
         finishedAt: null,
         error: null,
@@ -243,6 +245,7 @@ describe('ReefDatabase smoke', () => {
         status: 'queued',
         source: 'manual',
         scheduleId: null,
+        missedDoseId: null,
         startedAt: '2026-09-08T08:01:00.000Z',
         finishedAt: null,
         error: null,
@@ -314,6 +317,237 @@ describe('ReefDatabase smoke', () => {
         expect(columns).toContain('confirm_after');
       } finally {
         check.close();
+      }
+    } finally {
+      fs.unlinkSync(tmpPath);
+    }
+  });
+
+  it('migrates a pre-catch-up database (dose_events without missed_dose_id) without bricking boot', () => {
+    const tmpPath = path.join(
+      os.tmpdir(),
+      `reef-pre-catchup-test-${Date.now()}.db`,
+    );
+
+    try {
+      // Old-schema database: dose_events predates the missed_dose_id column.
+      const raw = new Database(tmpPath);
+      raw.exec(`
+        CREATE TABLE dose_events (
+          id TEXT PRIMARY KEY,
+          pump_id TEXT NOT NULL,
+          requested_ml REAL NOT NULL,
+          actual_ml REAL,
+          status TEXT NOT NULL,
+          source TEXT NOT NULL,
+          schedule_id TEXT,
+          started_at TEXT NOT NULL,
+          finished_at TEXT,
+          error TEXT
+        );
+        INSERT INTO dose_events
+          (id, pump_id, requested_ml, actual_ml, status, source, schedule_id, started_at, finished_at, error)
+        VALUES
+          ('event-old', 'alk', 1.5, 1.5, 'completed', 'schedule', 'sched-1', '2026-08-23T09:00:00.000Z', '2026-08-23T09:00:05.000Z', NULL);
+      `);
+      raw.close();
+
+      const db = new ReefDatabase(tmpPath);
+      try {
+        // Old rows survive with a null link; new writes populate the column.
+        const history = db.getHistory({});
+        expect(history.events).toHaveLength(1);
+        expect(history.events[0].missedDoseId).toBeNull();
+      } finally {
+        db.close();
+      }
+    } finally {
+      fs.unlinkSync(tmpPath);
+    }
+  });
+
+  it('finalizeDoseEvent closes the missed entry atomically with the dose event', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      const schedule = db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 1.5,
+        timesPerDay: 1,
+        startTime: '09:00',
+        repeatEveryNDays: 1,
+        enabled: true,
+        lastRunAt: null,
+      });
+      const missed = db.createMissedDose({
+        scheduleId: schedule.id,
+        pumpId: 'alk',
+        scheduledFor: '2026-08-23T09:00:00.000Z',
+        volumeMl: 1.5,
+        status: 'confirmed',
+        deferredUntil: null,
+        confirmAfter: null,
+      });
+
+      db.finalizeDoseEvent({
+        id: 'catchup-1',
+        pumpId: 'alk',
+        requestedMl: 1.5,
+        actualMl: 1.5,
+        status: 'completed',
+        source: 'catchup',
+        scheduleId: schedule.id,
+        missedDoseId: missed.id,
+        startedAt: '2026-08-23T10:00:00.000Z',
+        finishedAt: '2026-08-23T10:00:30.000Z',
+        error: null,
+      });
+
+      expect(db.getMissedDoseById(missed.id)?.status).toBe('completed');
+      const event = db.getHistory({}).events.find((e) => e.id === 'catchup-1');
+      expect(event).toMatchObject({
+        source: 'catchup',
+        missedDoseId: missed.id,
+        status: 'completed',
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('finalizeDoseEvent maps failed and interrupted catch-ups to terminal entry states', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      const makeConfirmed = (scheduledFor: string) =>
+        db.createMissedDose({
+          scheduleId: 'sched-1',
+          pumpId: 'alk',
+          scheduledFor,
+          volumeMl: 1,
+          status: 'confirmed',
+          deferredUntil: null,
+          confirmAfter: null,
+        });
+
+      const failed = makeConfirmed('2026-08-23T06:00:00.000Z');
+      db.finalizeDoseEvent({
+        id: 'catchup-failed',
+        pumpId: 'alk',
+        requestedMl: 1,
+        actualMl: null,
+        status: 'failed',
+        source: 'catchup',
+        scheduleId: 'sched-1',
+        missedDoseId: failed.id,
+        startedAt: '2026-08-23T10:00:00.000Z',
+        finishedAt: '2026-08-23T10:00:01.000Z',
+        error: 'Pump alk is not calibrated',
+      });
+      expect(db.getMissedDoseById(failed.id)?.status).toBe('failed');
+
+      const interrupted = makeConfirmed('2026-08-23T07:00:00.000Z');
+      db.finalizeDoseEvent({
+        id: 'catchup-interrupted',
+        pumpId: 'alk',
+        requestedMl: 1,
+        actualMl: null,
+        status: 'interrupted',
+        source: 'catchup',
+        scheduleId: 'sched-1',
+        missedDoseId: interrupted.id,
+        startedAt: '2026-08-23T10:00:00.000Z',
+        finishedAt: null,
+        error: null,
+      });
+      expect(db.getMissedDoseById(interrupted.id)?.status).toBe('interrupted');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('boot reconciliation: confirmed entry with a terminal catch-up event is closed to match it', () => {
+    const tmpPath = path.join(
+      os.tmpdir(),
+      `reef-reconcile-confirmed-${Date.now()}.db`,
+    );
+
+    try {
+      // Previous boot: a catch-up fired and the event was finalized...
+      const db = new ReefDatabase(tmpPath);
+      const missed = db.createMissedDose({
+        scheduleId: 'sched-1',
+        pumpId: 'alk',
+        scheduledFor: '2026-08-23T09:00:00.000Z',
+        volumeMl: 1.5,
+        status: 'confirmed',
+        deferredUntil: null,
+        confirmAfter: null,
+      });
+      db.saveDoseEvent({
+        id: 'catchup-1',
+        pumpId: 'alk',
+        requestedMl: 1.5,
+        actualMl: 1.5,
+        status: 'completed',
+        source: 'catchup',
+        scheduleId: 'sched-1',
+        missedDoseId: missed.id,
+        startedAt: '2026-08-23T10:00:00.000Z',
+        finishedAt: '2026-08-23T10:00:30.000Z',
+        error: null,
+      });
+      // ...but the entry update never landed (simulated crash between writes).
+      db.updateMissedDoseStatus(missed.id, 'confirmed');
+      db.close();
+
+      // Next boot: reconciliation closes it from the event — never re-fires.
+      const reopened = new ReefDatabase(tmpPath);
+      try {
+        expect(reopened.getMissedDoseById(missed.id)?.status).toBe('completed');
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      fs.unlinkSync(tmpPath);
+    }
+  });
+
+  it('boot reconciliation: confirmed entry with NO dose event is reset to pending, not re-fired', () => {
+    const tmpPath = path.join(
+      os.tmpdir(),
+      `reef-reconcile-suspicious-${Date.now()}.db`,
+    );
+
+    try {
+      // Previous boot: entry confirmed, dose submitted, process died before
+      // any event was persisted.
+      const db = new ReefDatabase(tmpPath);
+      const missed = db.createMissedDose({
+        scheduleId: 'sched-1',
+        pumpId: 'no3',
+        scheduledFor: '2026-08-23T09:00:00.000Z',
+        volumeMl: 2,
+        status: 'pending',
+        deferredUntil: null,
+        confirmAfter: null,
+      });
+      db.updateMissedDoseStatus(missed.id, 'confirmed');
+      db.setMissedDoseConfirmAfter(missed.id, '2026-08-23T09:30:00.000Z');
+      db.close();
+
+      // Next boot: the entry must NOT be eligible to fire; it goes back to
+      // the user for a fresh decision.
+      const reopened = new ReefDatabase(tmpPath);
+      try {
+        const entry = reopened.getMissedDoseById(missed.id);
+        expect(entry?.status).toBe('pending');
+        expect(entry?.confirmAfter).toBeNull();
+        expect(
+          reopened.getDueScheduledConfirmations(new Date('2026-08-23T12:00:00Z')),
+        ).toHaveLength(0);
+      } finally {
+        reopened.close();
       }
     } finally {
       fs.unlinkSync(tmpPath);

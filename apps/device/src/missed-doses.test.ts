@@ -156,8 +156,9 @@ function createFakeEngine(
         async (
           pumpId: PumpId,
           amountMl: number,
-          _source: 'schedule',
+          _source: 'schedule' | 'catchup',
           scheduleId: string,
+          _missedDoseId?: string | null,
         ) => {
           onSubmit?.(pumpId, amountMl, scheduleId);
           return 'job-id';
@@ -225,6 +226,7 @@ describe('detectMissedDoses', () => {
       status: 'interrupted',
       source: 'schedule',
       scheduleId: 'sched-1',
+      missedDoseId: null,
       startedAt: '2026-08-23T09:00:05.000Z',
       finishedAt: null,
       error: null,
@@ -341,8 +343,9 @@ describe('confirmMissedDose', () => {
     expect(engine.submitDose).toHaveBeenCalledWith(
       'alk',
       2,
-      'schedule',
+      'catchup',
       'sched-1',
+      'missed-1',
     );
     expect(repo.missedDoses[0].status).toBe('confirmed');
   });
@@ -564,7 +567,13 @@ describe('confirmMissedDoses (batch)', () => {
     expect(result.scheduled).toEqual([]);
     expect(result.dropped).toEqual([]);
     expect(engine.submitDose).toHaveBeenCalledTimes(1);
-    expect(engine.submitDose).toHaveBeenCalledWith('alk', 1, 'schedule', 'sched-1');
+    expect(engine.submitDose).toHaveBeenCalledWith(
+      'alk',
+      1,
+      'catchup',
+      'sched-1',
+      'missed-1',
+    );
     expect(repo.missedDoses[0].status).toBe('confirmed');
     expect(repo.missedDoses[1].status).toBe('pending');
   });
@@ -605,7 +614,13 @@ describe('confirmMissedDoses (batch)', () => {
     vi.setSystemTime(due);
     await fireScheduledConfirmations(repo, engine, due);
     expect(engine.submitDose).toHaveBeenCalledTimes(2);
-    expect(engine.submitDose).toHaveBeenLastCalledWith('alk', 1, 'schedule', 'sched-1');
+    expect(engine.submitDose).toHaveBeenLastCalledWith(
+      'alk',
+      1,
+      'catchup',
+      'sched-1',
+      'missed-2',
+    );
     expect(repo.missedDoses[1].confirmAfter).toBeNull();
   });
 

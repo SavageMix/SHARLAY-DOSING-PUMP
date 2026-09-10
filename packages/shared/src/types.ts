@@ -22,7 +22,12 @@ export interface PumpState {
   skipNext: boolean;
 }
 
-export type DoseSource = 'manual' | 'schedule' | 'calibration' | 'prime';
+export type DoseSource =
+  | 'manual'
+  | 'schedule'
+  | 'catchup'
+  | 'calibration'
+  | 'prime';
 
 export type DoseEventStatus =
   | 'queued'
@@ -37,7 +42,13 @@ export type MissedDoseStatus =
   | 'pending'
   | 'confirmed'
   | 'dismissed'
-  | 'expired';
+  | 'expired'
+  /** Terminal: the catch-up dose fired and delivered. */
+  | 'completed'
+  /** Terminal: the catch-up dose was submitted but failed (e.g. caps, hardware). */
+  | 'failed'
+  /** Terminal: the catch-up was interrupted mid-run by a process death. */
+  | 'interrupted';
 
 export interface DoseEvent {
   id: string;
@@ -47,9 +58,20 @@ export interface DoseEvent {
   status: DoseEventStatus;
   source: DoseSource;
   scheduleId: string | null;
+  /**
+   * Set when source is 'catchup': the missed_doses entry this dose fulfils.
+   * Lets the engine atomically close the entry when the dose completes, and
+   * lets boot reconciliation recover entries whose fire was cut short.
+   */
+  missedDoseId: string | null;
   startedAt: string;
   finishedAt: string | null;
   error: string | null;
+  /**
+   * Server-side enrichment (not stored on the event): the wall-clock time of
+   * the missed slot, so History/UI can say "Catch-up — missed 06:00".
+   */
+  missedDoseScheduledFor?: string | null;
 }
 
 export interface ContainerInfo {

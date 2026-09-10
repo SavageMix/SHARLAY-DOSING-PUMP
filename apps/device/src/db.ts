@@ -23,6 +23,7 @@ export class ReefDatabase
     this.db.pragma('journal_mode = WAL');
     this.initSchema();
     this.reconcileInterruptedDoses();
+    this.reconcileConfirmedMissedDoses();
     this.seed();
   }
 
@@ -48,6 +49,59 @@ export class ReefDatabase
       console.log(
         `[db] Marked ${result.changes} dose event(s) as interrupted (left running/queued by a previous run)`,
       );
+    }
+  }
+
+  /**
+   * Boot-time audit of catch-up doses that were 'confirmed' when the process
+   * last died. A confirmed entry whose linked dose event reached a terminal
+   * state is closed to match it. A confirmed entry with NO terminal event is
+   * suspicious: the fire may have physically started but never recorded, so
+   * it must NEVER be silently re-fired — it goes back to 'pending' for the
+   * user to decide again, with a loud log line. (This runs after
+   * reconcileInterruptedDoses, so any surviving event is already terminal.)
+   */
+  private reconcileConfirmedMissedDoses(): void {
+    const rows = this.db
+      .prepare("SELECT id, pump_id FROM missed_doses WHERE status = 'confirmed'")
+      .all() as Array<{ id: string; pump_id: PumpId }>;
+
+    for (const row of rows) {
+      const event = this.db
+        .prepare(
+          `SELECT id, status, actual_ml FROM dose_events
+           WHERE missed_dose_id = ? ORDER BY started_at DESC LIMIT 1`,
+        )
+        .get(row.id) as
+        | { id: string; status: string; actual_ml: number | null }
+        | undefined;
+
+      if (event && ['completed', 'failed', 'interrupted'].includes(event.status)) {
+        this.db
+          .prepare(
+            "UPDATE missed_doses SET status = ?, confirm_after = NULL WHERE id = ? AND status = 'confirmed'",
+          )
+          .run(event.status, row.id);
+        console.log(
+          `[db] Closed catch-up ${row.id} (${row.pump_id}) as '${event.status}' from its dose event`,
+        );
+        continue;
+      }
+
+      if (!event) {
+        // Never fired (or fired but never even persisted a running event):
+        // hand the decision back to the user instead of re-firing.
+        this.db
+          .prepare(
+            "UPDATE missed_doses SET status = 'pending', confirm_after = NULL, deferred_until = NULL WHERE id = ? AND status = 'confirmed'",
+          )
+          .run(row.id);
+        console.warn(
+          `[db] SUSPICIOUS: confirmed catch-up ${row.id} (${row.pump_id}) had no completed dose event — reset to 'pending' for re-decision, NOT re-fired`,
+        );
+      }
+      // An event that is somehow still non-terminal (e.g. an unknown future
+      // status) falls through untouched rather than being guessed at.
     }
   }
 
@@ -82,6 +136,7 @@ export class ReefDatabase
         status TEXT NOT NULL,
         source TEXT NOT NULL,
         schedule_id TEXT,
+        missed_dose_id TEXT,
         started_at TEXT NOT NULL,
         finished_at TEXT,
         error TEXT
@@ -116,10 +171,14 @@ export class ReefDatabase
       this.migrateMissedDosesTable(),
     );
     this.runMigration('pumps skip_next column', () => this.migratePumpsTable());
+    this.runMigration('dose_events catch-up column', () =>
+      this.migrateDoseEventsTable(),
+    );
 
     // Hard gate: never proceed to indexes unless the migrated columns exist.
     this.assertColumnExists('missed_doses', 'deferred_until');
     this.assertColumnExists('missed_doses', 'confirm_after');
+    this.assertColumnExists('dose_events', 'missed_dose_id');
 
     // 3. Indexes last — only after every column they reference is guaranteed
     //    to exist on databases of every vintage.
@@ -196,6 +255,23 @@ export class ReefDatabase
     if (!names.has('skip_next')) {
       this.db.exec(
         'ALTER TABLE pumps ADD COLUMN skip_next INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+  }
+
+  /**
+   * Existing databases predate the catch-up link column on dose_events. Add it
+   * if missing. Idempotent, like every migration step.
+   */
+  private migrateDoseEventsTable(): void {
+    const columns = this.db
+      .prepare("SELECT name FROM pragma_table_info('dose_events')")
+      .all() as Array<{ name: string }>;
+    const names = new Set(columns.map((c) => c.name));
+
+    if (!names.has('missed_dose_id')) {
+      this.db.exec(
+        'ALTER TABLE dose_events ADD COLUMN missed_dose_id TEXT',
       );
     }
   }
@@ -286,7 +362,7 @@ export class ReefDatabase
          FROM dose_events
          WHERE pump_id = ?
            AND status = 'completed'
-           AND source IN ('manual', 'schedule')
+           AND source IN ('manual', 'schedule', 'catchup')
            AND date(started_at) = date('now')`,
       )
       .get(pumpId) as { total: number };
@@ -313,8 +389,8 @@ export class ReefDatabase
       .prepare(
         `INSERT OR REPLACE INTO dose_events (
           id, pump_id, requested_ml, actual_ml, status, source, schedule_id,
-          started_at, finished_at, error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          missed_dose_id, started_at, finished_at, error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         event.id,
@@ -324,10 +400,57 @@ export class ReefDatabase
         event.status,
         event.source,
         event.scheduleId ?? null,
+        event.missedDoseId ?? null,
         event.startedAt,
         event.finishedAt ?? null,
         event.error ?? null,
       );
+  }
+
+  /**
+   * Persist a finished dose event AND close its missed_doses entry in the
+   * SAME transaction. A crash between the physical dose and this write must
+   * never leave a confirmed entry eligible to re-fire (boot reconciliation
+   * in the constructor recovers those). Non-catch-up events behave exactly
+   * like saveDoseEvent.
+   */
+  finalizeDoseEvent(event: DoseEvent): void {
+    const save = this.db.prepare(
+      `INSERT OR REPLACE INTO dose_events (
+        id, pump_id, requested_ml, actual_ml, status, source, schedule_id,
+        missed_dose_id, started_at, finished_at, error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const closeEntry = this.db.prepare(
+      `UPDATE missed_doses
+       SET status = ?, confirm_after = NULL
+       WHERE id = ? AND status = 'confirmed'`,
+    );
+    const entryStatus =
+      event.status === 'completed'
+        ? 'completed'
+        : event.status === 'interrupted'
+          ? 'interrupted'
+          : 'failed';
+
+    this.db.transaction(() => {
+      save.run(
+        event.id,
+        event.pumpId,
+        event.requestedMl,
+        event.actualMl ?? null,
+        event.status,
+        event.source,
+        event.scheduleId ?? null,
+        event.missedDoseId ?? null,
+        event.startedAt,
+        event.finishedAt ?? null,
+        event.error ?? null,
+      );
+      if (event.missedDoseId) {
+        closeEntry.run(entryStatus, event.missedDoseId);
+      }
+    })();
   }
 
   decrementContainer(pumpId: PumpId, amountMl: number): void {
@@ -481,6 +604,7 @@ export class ReefDatabase
         status: string;
         source: string;
         schedule_id: string | null;
+        missed_dose_id: string | null;
         started_at: string;
         finished_at: string | null;
         error: string | null;
@@ -494,6 +618,7 @@ export class ReefDatabase
       status: row.status as DoseEvent['status'],
       source: row.source as DoseEvent['source'],
       scheduleId: row.schedule_id,
+      missedDoseId: row.missed_dose_id,
       startedAt: row.started_at,
       finishedAt: row.finished_at,
       error: row.error,
@@ -546,17 +671,22 @@ export class ReefDatabase
 
   /**
    * Pending entries visible to the app. Entries snoozed via "Decide later"
-   * (deferred_until in the future) are hidden until the horizon passes.
+   * (deferred_until in the future) are hidden until the horizon passes —
+   * unless includeSnoozed is set, in which case they are returned too (the
+   * app uses this to keep a tappable banner alive during the snooze).
    */
-  getPendingMissedDoses(now: Date): MissedDose[] {
+  getPendingMissedDoses(now: Date, includeSnoozed = false): MissedDose[] {
     const rows = this.db
       .prepare(
         `SELECT * FROM missed_doses
          WHERE status = 'pending'
-           AND (deferred_until IS NULL OR deferred_until <= ?)
+           ${includeSnoozed ? '' : 'AND (deferred_until IS NULL OR deferred_until <= ?)'}
          ORDER BY scheduled_for ASC`,
       )
-      .all(now.toISOString()) as Record<string, unknown>[];
+      .all(...(includeSnoozed ? [] : [now.toISOString()])) as Record<
+      string,
+      unknown
+    >[];
 
     return rows.map((row) => this.mapMissedDoseRow(row));
   }
@@ -788,6 +918,7 @@ export class ReefDatabase
         status: string;
         source: string;
         schedule_id: string | null;
+        missed_dose_id: string | null;
         started_at: string;
         finished_at: string | null;
         error: string | null;
@@ -801,6 +932,7 @@ export class ReefDatabase
       status: row.status as DoseEvent['status'],
       source: row.source as DoseEvent['source'],
       scheduleId: row.schedule_id,
+      missedDoseId: row.missed_dose_id,
       startedAt: row.started_at,
       finishedAt: row.finished_at,
       error: row.error,

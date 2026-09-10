@@ -175,6 +175,7 @@ export class Scheduler {
           status: 'skipped',
           source: 'schedule',
           scheduleId: schedule.id,
+          missedDoseId: null,
           startedAt: skippedAt,
           finishedAt: skippedAt,
           error: null,

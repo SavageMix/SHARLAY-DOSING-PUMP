@@ -205,14 +205,20 @@ export default function HistoryScreen() {
             <ThemedView style={styles.row}>
               <ThemedText style={styles.pumpTitle}>{item.pumpId}</ThemedText>
               <ThemedView style={styles.badgeRow}>
-                <ThemedText
-                  style={[
-                    styles.badge,
-                    styles.sourceBadge,
-                    { backgroundColor: Colors.midnight },
-                  ]}>
-                  {item.source}
-                </ThemedText>
+                {item.source === 'catchup' ? (
+                  <ThemedText style={[styles.badge, styles.catchupBadge]}>
+                    Catch-up
+                  </ThemedText>
+                ) : (
+                  <ThemedText
+                    style={[
+                      styles.badge,
+                      styles.sourceBadge,
+                      { backgroundColor: Colors.midnight },
+                    ]}>
+                    {item.source}
+                  </ThemedText>
+                )}
                 <ThemedText
                   style={[
                     styles.badge,
@@ -226,6 +232,12 @@ export default function HistoryScreen() {
                 </ThemedText>
               </ThemedView>
             </ThemedView>
+            {item.source === 'catchup' && item.missedDoseScheduledFor ? (
+              <ThemedText style={styles.catchupNote}>
+                Missed{' '}
+                {new Date(item.missedDoseScheduledFor).toLocaleString()}
+              </ThemedText>
+            ) : null}
             <ThemedText style={styles.metric}>
               Requested: {item.requestedMl.toFixed(2)} mL
             </ThemedText>
@@ -346,6 +358,15 @@ const styles = StyleSheet.create({
   },
   sourceBadge: {
     color: Colors.titanium,
+  },
+  catchupBadge: {
+    backgroundColor: Colors.warning,
+    color: Colors.obsidian,
+  },
+  catchupNote: {
+    ...Typography.small,
+    color: Colors.warning,
+    marginBottom: Spacing.xs,
   },
   success: {
     backgroundColor: Colors.success,

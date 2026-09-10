@@ -35,8 +35,9 @@ export interface MissedDosesEngine {
   submitDose(
     pumpId: PumpId,
     amountMl: number,
-    source: 'schedule',
+    source: 'schedule' | 'catchup',
     scheduleId: string,
+    missedDoseId?: string | null,
   ): Promise<string>;
 }
 
@@ -136,7 +137,10 @@ export function detectMissedDoses(
 /**
  * Confirm a pending missed dose. The dose is submitted through the normal engine
  * path with all safety caps enforced. If it would exceed limits, it is rejected
- * and the missed dose remains pending.
+ * and the missed dose remains pending. Once the dose physically finishes, the
+ * engine closes the entry to a terminal state (completed/failed/interrupted)
+ * in the same transaction as the dose event — a confirmed entry can therefore
+ * never be eligible to re-fire.
  */
 export async function confirmMissedDose(
   repository: MissedDosesRepository,
@@ -167,14 +171,19 @@ export async function confirmMissedDose(
     );
   }
 
+  // Mark confirmed BEFORE submitting: the engine closes the entry to its
+  // terminal state (completed/failed/interrupted) when the dose physically
+  // finishes — a status write racing after that would resurrect it.
+  repository.updateMissedDoseStatus(id, 'confirmed');
+
   const jobId = await engine.submitDose(
     missed.pumpId,
     missed.volumeMl,
-    'schedule',
+    'catchup',
     missed.scheduleId,
+    missed.id,
   );
 
-  repository.updateMissedDoseStatus(id, 'confirmed');
   return jobId;
 }
 
@@ -390,9 +399,16 @@ export async function confirmMissedDoses(
       }
 
       if (nextFireAt <= now.getTime()) {
-        await engine.submitDose(pumpId, entry.volumeMl, 'schedule', entry.scheduleId);
+        // Mark confirmed BEFORE submitting (see confirmMissedDose).
         repository.updateMissedDoseStatus(entry.id, 'confirmed');
         repository.setMissedDoseConfirmAfter(entry.id, null);
+        await engine.submitDose(
+          pumpId,
+          entry.volumeMl,
+          'catchup',
+          entry.scheduleId,
+          entry.id,
+        );
         fired.push(entry.id);
       } else {
         // Confirmed now (so it can never re-nag), fired once confirmAfter passes.
@@ -439,7 +455,16 @@ export async function fireScheduledConfirmations(
       continue;
     }
 
-    await engine.submitDose(entry.pumpId, entry.volumeMl, 'schedule', entry.scheduleId);
+    await engine.submitDose(
+      entry.pumpId,
+      entry.volumeMl,
+      'catchup',
+      entry.scheduleId,
+      entry.id,
+    );
+    // The engine closes the entry to a terminal state (completed/failed/
+    // interrupted) atomically with the dose event; clearing confirmAfter here
+    // only ensures the entry is not re-selected while the dose is in flight.
     repository.setMissedDoseConfirmAfter(entry.id, null);
   }
 }

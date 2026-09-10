@@ -255,11 +255,12 @@ export async function getLimits(
 
 export async function getMissedDoses(
   baseUrl: string,
+  options: { includeSnoozed?: boolean } = {},
 ): Promise<MissedDose[]> {
   const data = await request<ListMissedDosesResponse>(
     baseUrl,
     'GET',
-    '/api/missed-doses',
+    options.includeSnoozed ? '/api/missed-doses?includeSnoozed=1' : '/api/missed-doses',
   );
   return data.missedDoses;
 }

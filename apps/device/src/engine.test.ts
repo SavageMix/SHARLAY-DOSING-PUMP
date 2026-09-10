@@ -62,7 +62,7 @@ describe('DoseEngine', () => {
 
   it('processes queued doses in FIFO order', async () => {
     const repo = createMockRepository();
-    const engine = createEngine(repo);
+    const engine = createEngine(repo, { minInterDoseGapMs: 0 });
     const order: PumpId[] = [];
 
     vi.mocked(runSteps).mockImplementation(async (pump) => {
@@ -81,7 +81,7 @@ describe('DoseEngine', () => {
 
   it('rejects doses exceeding the single-dose limit', async () => {
     const repo = createMockRepository();
-    const engine = createEngine(repo);
+    const engine = createEngine(repo, { minInterDoseGapMs: 0 });
     const limits = computeDoseLimits(SYSTEM_VOLUME_L);
 
     await engine.submitDose('alk', limits.maxSingleDoseMl + 1, 'manual');
@@ -99,7 +99,7 @@ describe('DoseEngine', () => {
     const repo = createMockRepository({
       getTodayDoseMl: vi.fn().mockResolvedValue(limits.maxDailyDoseMlPerPump - 1),
     });
-    const engine = createEngine(repo);
+    const engine = createEngine(repo, { minInterDoseGapMs: 0 });
 
     await engine.submitDose('alk', 2, 'manual'); // 1 + 2 > daily limit
     await waitForQueueDrain(engine);
@@ -118,7 +118,7 @@ describe('DoseEngine', () => {
         stepsPerMl: null,
       }),
     });
-    const engine = createEngine(repo);
+    const engine = createEngine(repo, { minInterDoseGapMs: 0 });
 
     await engine.submitDose('alk', 1, 'manual');
     await waitForQueueDrain(engine);
@@ -132,7 +132,7 @@ describe('DoseEngine', () => {
 
   it('disables drivers and records failure when runSteps throws mid-dose', async () => {
     const repo = createMockRepository();
-    const engine = createEngine(repo);
+    const engine = createEngine(repo, { minInterDoseGapMs: 0 });
 
     vi.mocked(runSteps).mockRejectedValue(new Error('stepper fault'));
 
@@ -150,7 +150,7 @@ describe('DoseEngine', () => {
 
   it('only runs one dose at a time', async () => {
     const repo = createMockRepository();
-    const engine = createEngine(repo);
+    const engine = createEngine(repo, { minInterDoseGapMs: 0 });
     let concurrent = 0;
     let maxConcurrent = 0;
 
@@ -172,7 +172,7 @@ describe('DoseEngine', () => {
 
   it('converts mL to steps using calibration and passes them to runSteps', async () => {
     const repo = createMockRepository();
-    const engine = createEngine(repo);
+    const engine = createEngine(repo, { minInterDoseGapMs: 0 });
 
     await engine.submitDose('alk', 2.5, 'manual');
     await waitForQueueDrain(engine);
@@ -188,7 +188,7 @@ describe('DoseEngine', () => {
 
   it('records scheduleId and source for scheduled doses', async () => {
     const repo = createMockRepository();
-    const engine = createEngine(repo);
+    const engine = createEngine(repo, { minInterDoseGapMs: 0 });
 
     await engine.submitDose('alk', 1, 'schedule', 'sched-1');
     await waitForQueueDrain(engine);
@@ -196,5 +196,86 @@ describe('DoseEngine', () => {
     const event = getSavedEvent(repo);
     expect(event.source).toBe('schedule');
     expect(event.scheduleId).toBe('sched-1');
+  });
+
+  it('links catch-up doses to their missed-dose entry', async () => {
+    const repo = createMockRepository();
+    const engine = createEngine(repo, { minInterDoseGapMs: 0 });
+
+    await engine.submitDose('alk', 1, 'catchup', 'sched-1', 'missed-1');
+    await waitForQueueDrain(engine);
+
+    const event = getSavedEvent(repo);
+    expect(event.source).toBe('catchup');
+    expect(event.missedDoseId).toBe('missed-1');
+  });
+
+  it('uses finalizeDoseEvent when the repository provides it', async () => {
+    const finalizeMock = vi.fn().mockResolvedValue(undefined);
+    const repo = createMockRepository({ finalizeDoseEvent: finalizeMock });
+    const engine = createEngine(repo, { minInterDoseGapMs: 0 });
+
+    await engine.submitDose('alk', 1, 'catchup', 'sched-1', 'missed-1');
+    await waitForQueueDrain(engine);
+
+    // The running save still goes through saveDoseEvent; the FINAL save must
+    // go through finalizeDoseEvent so the missed entry closes atomically
+    // with the dose event.
+    expect(finalizeMock).toHaveBeenCalledTimes(1);
+    const finalized = finalizeMock.mock.calls[0]![0];
+    expect(finalized.status).toBe('completed');
+    expect(finalized.missedDoseId).toBe('missed-1');
+  });
+
+  it('enforces the minimum inter-pump gap between queued doses', async () => {
+    const repo = createMockRepository();
+    const gapMs = 60;
+    const engine = createEngine(repo, { minInterDoseGapMs: gapMs });
+
+    const startTimes: number[] = [];
+    const endTimes: number[] = [];
+    vi.mocked(runSteps).mockImplementation(async () => {
+      startTimes.push(Date.now());
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      endTimes.push(Date.now());
+    });
+
+    await engine.submitDose('alk', 1, 'manual');
+    await engine.submitDose('ca', 1, 'manual');
+    await waitForQueueDrain(engine);
+
+    expect(startTimes).toHaveLength(2);
+    // The second pump must not start until the gap after the first ended.
+    expect(startTimes[1] - endTimes[0]).toBeGreaterThanOrEqual(gapMs);
+  });
+
+  it('waits out a busy motor (prime/calibration) before running steps', async () => {
+    const repo = createMockRepository();
+    let motorBusy = true;
+    const engine = createEngine(repo, {
+      minInterDoseGapMs: 0,
+      isMotorBusy: () => motorBusy,
+    });
+
+    // The routine (prime/calibration) owns the motor for ~300 ms, then ends.
+    const routineEnd = setTimeout(() => {
+      motorBusy = false;
+    }, 300);
+
+    let runStepsCalls = 0;
+    vi.mocked(runSteps).mockImplementation(async () => {
+      runStepsCalls += 1;
+    });
+
+    await engine.submitDose('alk', 1, 'manual');
+    await waitForQueueDrain(engine);
+    clearTimeout(routineEnd);
+
+    // Exactly one hardware run: the dose waited for the motor instead of
+    // overlapping the routine, and was not retried afterwards.
+    expect(runStepsCalls).toBe(1);
+    expect(repo.saveDoseEvent).toHaveBeenCalledTimes(2); // running + final
+    const finalEvent = vi.mocked(repo.saveDoseEvent).mock.calls[1]![0];
+    expect(finalEvent.status).toBe('completed');
   });
 });

@@ -439,6 +439,7 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
       status: 'completed',
       source: 'prime',
       scheduleId: null,
+      missedDoseId: null,
       startedAt: new Date().toISOString(),
       finishedAt: new Date().toISOString(),
       error: null,
@@ -519,10 +520,22 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
   fastify.get('/api/status', async () => {
     const status = engine.getStatus();
     const primeLast = getLastPrimeResult();
+    // Surface the missed slot time while a catch-up is physically firing so
+    // the app can show "Firing catch-up — missed HH:MM (ALK)".
+    const currentDose = status.current
+      ? status.current.source === 'catchup' && status.current.missedDoseId
+        ? {
+            ...status.current,
+            missedDoseScheduledFor:
+              db.getMissedDoseById(status.current.missedDoseId)?.scheduledFor ??
+              null,
+          }
+        : status.current
+      : null;
     return {
       pumps: buildPumpState(db),
       containers: buildContainerInfo(db),
-      currentDose: status.current,
+      currentDose,
       queue: status.current ? [status.current] : [],
       queueDepth: status.queueDepth,
       systemVolumeLitres: db.getSystemVolumeLitres(),
@@ -734,18 +747,33 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
     return reply.status(204).send();
   });
 
-  fastify.get('/api/history', async (request) => {
+  fastify.get('/api/history', async (request, reply) => {
     const query = historyQuerySchema.safeParse(request.query);
     if (!query.success) {
-      return { events: [], total: 0 };
+      // A silent empty 200 hides client bugs — validation failure is a 400.
+      return reply.status(400).send({ error: firstZodMessage(query.error) });
     }
 
-    return db.getHistory({
+    const history = db.getHistory({
       pumpId: query.data.pumpId,
       days: query.data.days,
       limit: query.data.limit,
       offset: query.data.offset,
     });
+
+    // Enrich catch-up events with the wall-clock time of the missed slot so
+    // the UI can badge them "Catch-up — missed HH:MM".
+    history.events = history.events.map((event) =>
+      event.source === 'catchup' && event.missedDoseId
+        ? {
+            ...event,
+            missedDoseScheduledFor:
+              db.getMissedDoseById(event.missedDoseId)?.scheduledFor ?? null,
+          }
+        : event,
+    );
+
+    return history;
   });
 
   fastify.post('/api/container/refill', async (request, reply) => {
@@ -771,8 +799,14 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
     };
   });
 
-  fastify.get('/api/missed-doses', async () => {
-    return { missedDoses: db.getPendingMissedDoses(new Date()) };
+  fastify.get('/api/missed-doses', async (request) => {
+    const query = z
+      .object({ includeSnoozed: z.coerce.boolean().optional() })
+      .safeParse(request.query);
+    const includeSnoozed = query.success ? (query.data.includeSnoozed ?? false) : false;
+    return {
+      missedDoses: db.getPendingMissedDoses(new Date(), includeSnoozed),
+    };
   });
 
   fastify.post('/api/missed-doses/snooze', async (request, reply) => {
