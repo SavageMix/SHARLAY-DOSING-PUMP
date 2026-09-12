@@ -30,7 +30,11 @@ import {
   buildResolvedGroups,
   canCloseCatchups,
   groupMissedByPump,
+  groupResolvedByDay,
+  RESOLVED_WINDOW_DAYS,
+  RESOLVED_WINDOW_HOURS,
 } from '@/src/lib/catchups-page';
+import type { ResolvedSlotRow } from '@/src/lib/catchups-page';
 import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
 import type {
   CatchupQueueStatus,
@@ -82,6 +86,42 @@ function formatMissedWhen(scheduledFor: string): string {
   return `${d.toLocaleDateString()} ${time}`;
 }
 
+/** One resolved slot row — green for delivered, muted for skipped, red for failed. */
+function ResolvedSlot({ row }: { row: ResolvedSlotRow }) {
+  const when = formatMissedWhen(row.missedSlotIso);
+  if (row.outcome === 'delivered') {
+    return (
+      <ThemedView style={styles.resolvedSlotRow}>
+        <Ionicons name="checkmark-circle" size={16} color={Colors.success} />
+        <ThemedText style={styles.resolvedSlotText}>
+          missed {when} ·{' '}
+          {row.deliveredKnown
+            ? `delivered ${row.ml.toFixed(2)} mL`
+            : `${row.ml.toFixed(2)} mL requested`}
+        </ThemedText>
+      </ThemedView>
+    );
+  }
+  if (row.outcome === 'failed') {
+    return (
+      <ThemedView style={styles.resolvedSlotRow}>
+        <Ionicons name="alert-circle" size={16} color={Colors.danger} />
+        <ThemedText style={[styles.resolvedSlotText, styles.failedText]}>
+          missed {when} · failed{row.error ? `: ${row.error}` : ''}
+        </ThemedText>
+      </ThemedView>
+    );
+  }
+  return (
+    <ThemedView style={styles.resolvedSlotRow}>
+      <Ionicons name="remove-circle-outline" size={16} color={Colors.danger} />
+      <ThemedText style={[styles.resolvedSlotText, styles.skippedText]}>
+        missed {when} · {row.outcome === 'expired' ? 'expired' : 'skipped'}
+      </ThemedText>
+    </ThemedView>
+  );
+}
+
 export default function CatchupsScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ forced?: string }>();
@@ -125,8 +165,8 @@ export default function CatchupsScreen() {
       const [missed, status, history, resolved] = await Promise.all([
         getMissedDoses(baseUrl, { includeSnoozed: true }),
         getStatus(baseUrl),
-        getHistory(baseUrl, { days: 1, limit: 200, offset: 0 }),
-        getResolvedMissedDoses(baseUrl, 24),
+        getHistory(baseUrl, { days: RESOLVED_WINDOW_DAYS, limit: 200, offset: 0 }),
+        getResolvedMissedDoses(baseUrl, RESOLVED_WINDOW_HOURS),
       ]);
       setOffline(false);
       // nextModalList keeps the current list while the user is deciding;
@@ -173,6 +213,12 @@ export default function CatchupsScreen() {
     () => buildResolvedGroups(fired, resolvedMisses, PUMP_ORDER),
     [fired, resolvedMisses],
   );
+  // Day groups for the expanded cards — device-local wall-clock slicing.
+  const resolvedDaysByPump = useMemo(() => {
+    const map: Record<string, ReturnType<typeof groupResolvedByDay>> = {};
+    for (const g of resolvedGroups) map[g.pumpId] = groupResolvedByDay(g.rows, Date.now());
+    return map;
+  }, [resolvedGroups]);
   // Expanded/collapsed state is display-only — the model stays device-derived.
   const [expandedPumps, setExpandedPumps] = useState<Record<string, boolean>>(
     {},
@@ -526,10 +572,10 @@ export default function CatchupsScreen() {
 
         {/* RESOLVED (last 24h) ------------------------------------------- */}
         <ThemedView style={styles.section}>
-          <ThemedText style={styles.sectionTitle}>Resolved · 24h</ThemedText>
+          <ThemedText style={styles.sectionTitle}>Resolved · 7 days</ThemedText>
           {resolvedGroups.every((g) => g.rows.length === 0) ? (
             <ThemedText style={styles.emptyText}>
-              Nothing resolved in the last 24 hours.
+              Nothing resolved in the last 7 days.
             </ThemedText>
           ) : (
             resolvedGroups.map((group) => {
@@ -571,59 +617,16 @@ export default function CatchupsScreen() {
                     ) : null}
                   </Pressable>
                   {expanded
-                    ? group.rows.map((row) => {
-                        const when = formatMissedWhen(row.missedSlotIso);
-                        if (row.outcome === 'delivered') {
-                          return (
-                            <ThemedView key={row.key} style={styles.resolvedSlotRow}>
-                              <Ionicons
-                                name="checkmark-circle"
-                                size={16}
-                                color={Colors.success}
-                              />
-                              <ThemedText style={styles.resolvedSlotText}>
-                                missed {when} ·{' '}
-                                {row.deliveredKnown
-                                  ? `delivered ${row.ml.toFixed(2)} mL`
-                                  : `${row.ml.toFixed(2)} mL requested`}
-                              </ThemedText>
-                            </ThemedView>
-                          );
-                        }
-                        if (row.outcome === 'failed') {
-                          return (
-                            <ThemedView key={row.key} style={styles.resolvedSlotRow}>
-                              <Ionicons
-                                name="alert-circle"
-                                size={16}
-                                color={Colors.danger}
-                              />
-                              <ThemedText
-                                style={[styles.resolvedSlotText, styles.failedText]}>
-                                missed {when} · failed
-                                {row.error ? `: ${row.error}` : ''}
-                              </ThemedText>
-                            </ThemedView>
-                          );
-                        }
-                        return (
-                          <ThemedView key={row.key} style={styles.resolvedSlotRow}>
-                            <Ionicons
-                              name="remove-circle-outline"
-                              size={16}
-                              color={Colors.danger}
-                            />
-                            <ThemedText
-                              style={[
-                                styles.resolvedSlotText,
-                                styles.skippedText,
-                              ]}>
-                              missed {when} ·{' '}
-                              {row.outcome === 'expired' ? 'expired' : 'skipped'}
-                            </ThemedText>
-                          </ThemedView>
-                        );
-                      })
+                    ? (resolvedDaysByPump[group.pumpId] ?? []).map((day) => (
+                        <ThemedView key={day.dayKey}>
+                          <ThemedText style={styles.dayHeader}>
+                            {day.label}
+                          </ThemedText>
+                          {day.rows.map((row) => (
+                            <ResolvedSlot key={row.key} row={row} />
+                          ))}
+                        </ThemedView>
+                      ))
                     : null}
                 </ThemedView>
               );
@@ -867,6 +870,13 @@ const styles = StyleSheet.create({
     ...Typography.small,
     color: Colors.pearl,
     flexShrink: 1,
+  },
+  dayHeader: {
+    ...Typography.small,
+    color: Colors.slate,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginTop: Spacing.sm,
   },
   failedText: {
     color: Colors.danger,

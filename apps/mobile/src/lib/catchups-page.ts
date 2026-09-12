@@ -105,6 +105,15 @@ export function buildQueueSection(
   };
 }
 
+/**
+ * RESOLVED window: the section answers "what happened while I was away", so
+ * a weekend-incident must still be visible days later. Endpoint already
+ * accepts sinceHours; the matching /api/history enrichment fetch uses
+ * RESOLVED_WINDOW_DAYS.
+ */
+export const RESOLVED_WINDOW_HOURS = 168; // 7 days
+export const RESOLVED_WINDOW_DAYS = 7;
+
 export type ResolvedOutcome = 'delivered' | 'skipped' | 'expired' | 'failed';
 
 export interface ResolvedSlotRow {
@@ -241,6 +250,68 @@ export function buildResolvedGroups(
     const group = groups.get(pumpId)!;
     return { ...group, rows: [...group.rows].sort((a, b) => a.missedSlotIso.localeCompare(b.missedSlotIso)) };
   });
+}
+
+export interface ResolvedDayGroup {
+  /** Start-of-local-day ms — stable grouping identity, not for display. */
+  dayKey: number;
+  /** 'Today' / 'Yesterday' / 'Sat 5 Sep' — device-local wall clock. */
+  label: string;
+  /** Chronological (oldest missed slot first) within the day. */
+  rows: ResolvedSlotRow[];
+}
+
+function startOfLocalDayMs(t: number): number {
+  const d = new Date(t);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+/**
+ * Day label for a timestamp, sliced on DEVICE-LOCAL wall-clock boundaries
+ * (never UTC date-slicing — the timezone lesson from the scheduler applies
+ * here too: the user reads these labels against their own wall clock).
+ */
+export function dayLabelFor(iso: string, now: number): string {
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '—';
+  const diffDays = Math.round(
+    (startOfLocalDayMs(now) - startOfLocalDayMs(t)) / 86_400_000,
+  );
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  return new Date(t).toLocaleDateString([], {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+  });
+}
+
+/**
+ * Group an expanded pump card's rows under day headers: newest day first,
+ * rows chronological within each day. Local-day sliced (see dayLabelFor).
+ */
+export function groupResolvedByDay(
+  rows: ResolvedSlotRow[],
+  now: number,
+): ResolvedDayGroup[] {
+  const byDay = new Map<number, ResolvedSlotRow[]>();
+  for (const r of rows) {
+    const t = new Date(r.missedSlotIso).getTime();
+    if (Number.isNaN(t)) continue;
+    const key = startOfLocalDayMs(t);
+    const list = byDay.get(key) ?? [];
+    list.push(r);
+    byDay.set(key, list);
+  }
+  return [...byDay.entries()]
+    .sort((a, b) => b[0] - a[0])
+    .map(([dayKey, dayRows]) => ({
+      dayKey,
+      label: dayLabelFor(dayRows[0].missedSlotIso, now),
+      rows: [...dayRows].sort((a, b) =>
+        a.missedSlotIso.localeCompare(b.missedSlotIso),
+      ),
+    }));
 }
 
 /** Group pending entries per pump, pump order stable (alk → ca → no3 → po4). */

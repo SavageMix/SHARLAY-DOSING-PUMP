@@ -5,9 +5,17 @@ import {
   buildQueueSection,
   buildResolvedGroups,
   canCloseCatchups,
+  dayLabelFor,
   groupMissedByPump,
+  groupResolvedByDay,
   isBlockingMissedDose,
+  RESOLVED_WINDOW_HOURS,
 } from './catchups-page';
+
+// Day grouping must be pinned to a non-UTC zone: an entry at 23:30 local and
+// one at 00:30 local the next morning share a UTC date and would be silently
+// merged by UTC date-slicing.
+process.env.TZ = 'Pacific/Auckland';
 
 function missed(partial: Partial<MissedDose> & { id: string }): MissedDose {
   return {
@@ -315,6 +323,140 @@ describe('buildResolvedGroups', () => {
     const groups = buildResolvedGroups([scheduled], resolved, PUMP_ORDER);
     expect(groups[0].rows).toHaveLength(1);
     expect(groups[0].rows[0].key).toBe('resolved-md-ok');
+  });
+});
+
+describe('RESOLVED window + day grouping (7-day view)', () => {
+  it('window constant is 168 hours', () => {
+    expect(RESOLVED_WINDOW_HOURS).toBe(168);
+  });
+
+  // Local wall-clock construction: these instants are 23:30 and 00:30 on the
+  // user's wall clock regardless of zone.
+  const isoA = new Date(2026, 8, 11, 23, 30).toISOString(); // yesterday 23:30
+  const isoB = new Date(2026, 8, 12, 0, 30).toISOString(); // today 00:30
+  const isoC = new Date(2026, 8, 5, 9, 0).toISOString(); // Sat 5 Sep
+  const now = new Date(2026, 8, 12, 10, 0).getTime();
+
+  it('pin is active: the two boundary entries share a UTC date', () => {
+    // Under the Auckland pin (+12) both are 2026-09-11 in UTC. If this
+    // assertion fails the TZ pin didn't take and the grouping test below
+    // would be vacuous.
+    expect(isoA.slice(0, 10)).toBe('2026-09-11');
+    expect(isoB.slice(0, 10)).toBe('2026-09-11');
+  });
+
+  it('splits same-UTC-day entries across local day boundaries', () => {
+    const row = (id: string, missedSlotIso: string) => ({
+      key: id,
+      outcome: 'skipped' as const,
+      missedSlotIso,
+      ml: 1.5,
+      deliveredKnown: false,
+      error: null,
+    });
+    const groups = groupResolvedByDay([row('a', isoA), row('b', isoB)], now);
+    expect(groups).toHaveLength(2);
+    expect(groups.map((g) => g.label)).toEqual(['Today', 'Yesterday']);
+    expect(groups[0].rows[0].key).toBe('b');
+    expect(groups[1].rows[0].key).toBe('a');
+  });
+
+  it('labels Today / Yesterday / weekday dates on local boundaries', () => {
+    expect(dayLabelFor(isoB, now)).toBe('Today');
+    expect(dayLabelFor(isoA, now)).toBe('Yesterday');
+    expect(dayLabelFor(isoC, now)).toBe(
+      new Date(2026, 8, 5, 9, 0).toLocaleDateString([], {
+        weekday: 'short',
+        day: 'numeric',
+        month: 'short',
+      }),
+    );
+  });
+
+  it('orders days newest-first and rows chronological within a day', () => {
+    const row = (id: string, missedSlotIso: string) => ({
+      key: id,
+      outcome: 'skipped' as const,
+      missedSlotIso,
+      ml: 1,
+      deliveredKnown: false,
+      error: null,
+    });
+    const lateMorning = new Date(2026, 8, 12, 9, 0).toISOString();
+    const earlyMorning = new Date(2026, 8, 12, 1, 0).toISOString();
+    const groups = groupResolvedByDay(
+      [row('late', lateMorning), row('old', isoC), row('early', earlyMorning)],
+      now,
+    );
+    expect(groups.map((g) => g.label)).toEqual([
+      'Today',
+      new Date(2026, 8, 5, 9, 0).toLocaleDateString([], {
+        weekday: 'short',
+        day: 'numeric',
+        month: 'short',
+      }),
+    ]);
+    expect(groups[0].rows.map((r) => r.key)).toEqual(['early', 'late']);
+    expect(groups[1].rows.map((r) => r.key)).toEqual(['old']);
+  });
+
+  it('collapsed pump summary aggregates counts and mL across the full window', () => {
+    const resolved = [
+      missed({ id: 'd1', status: 'completed', volumeMl: 1, scheduledFor: isoA }),
+      missed({ id: 'd2', status: 'completed', volumeMl: 2, scheduledFor: isoC }),
+      missed({ id: 'd3', status: 'dismissed', scheduledFor: isoB }),
+    ];
+    const fired = [
+      doseEvent({ id: 'e1', missedDoseId: 'd1', actualMl: 1, missedDoseScheduledFor: isoA }),
+      doseEvent({ id: 'e2', missedDoseId: 'd2', actualMl: 2, missedDoseScheduledFor: isoC }),
+    ];
+    const alk = buildResolvedGroups(fired, resolved, PUMP_ORDER)[0];
+    expect(alk.deliveredCount).toBe(2);
+    expect(alk.skippedCount).toBe(1);
+    expect(alk.totalMl).toBe(3);
+    expect(alk.rows).toHaveLength(3);
+  });
+
+  it('a 7-day-heavy fixture (30+ entries per pump) groups cleanly by day', () => {
+    const resolved: MissedDose[] = [];
+    for (const pumpId of PUMP_ORDER) {
+      for (let i = 0; i < 32; i++) {
+        const d = new Date(2026, 8, 6 + (i % 7), 6 + (i % 12), (i * 7) % 60);
+        resolved.push(
+          missed({
+            id: `${pumpId}-${i}`,
+            pumpId,
+            status: i % 3 === 0 ? 'dismissed' : 'completed',
+            scheduledFor: d.toISOString(),
+            volumeMl: 1,
+          }),
+        );
+      }
+    }
+    const fired = resolved
+      .filter((m) => m.status === 'completed')
+      .map((m) =>
+        doseEvent({
+          id: `ev-${m.id}`,
+          missedDoseId: m.id,
+          pumpId: m.pumpId,
+          actualMl: 1,
+          missedDoseScheduledFor: m.scheduledFor,
+        }),
+      );
+    const groups = buildResolvedGroups(fired, resolved, PUMP_ORDER);
+    expect(groups).toHaveLength(4);
+    for (const g of groups) {
+      expect(g.rows).toHaveLength(32);
+      const dayGroups = groupResolvedByDay(g.rows, now);
+      const rendered = dayGroups.reduce((n, d) => n + d.rows.length, 0);
+      expect(rendered).toBe(32); // no row lost or duplicated in grouping
+      // Day groups newest-first, non-empty.
+      for (let i = 1; i < dayGroups.length; i++) {
+        expect(dayGroups[i - 1].dayKey).toBeGreaterThan(dayGroups[i].dayKey);
+      }
+    }
   });
 });
 

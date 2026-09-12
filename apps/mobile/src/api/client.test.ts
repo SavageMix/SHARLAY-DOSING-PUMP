@@ -13,6 +13,7 @@ import {
   deleteSchedule,
   getHistory,
   getMissedDoses,
+  getResolvedMissedDoses,
   getSchedules,
   getStatus,
 } from './client';
@@ -89,5 +90,13 @@ describe('request headers', () => {
     expect(captured!.method).toBe('POST');
     expect(captured!.headers?.['Content-Type']).toBe('application/json');
     expect(captured!.body).toBeDefined();
+  });
+
+  it('resolved missed-doses fetch passes sinceHours through', async () => {
+    await getResolvedMissedDoses(BASE, 168);
+    expect(captured!.url).toContain('/api/missed-doses/resolved?sinceHours=168');
+
+    await getResolvedMissedDoses(BASE);
+    expect(captured!.url).toContain('/api/missed-doses/resolved?sinceHours=24');
   });
 });
