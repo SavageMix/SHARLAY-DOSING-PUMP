@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Dimensions,
@@ -43,6 +43,11 @@ import {
 } from '@/src/api/client';
 import { Theme } from '@/constants/Theme';
 import { describeCatchupQueue } from '@/src/lib/catchup-banner';
+import {
+  nextModalList,
+  planDoseSelection,
+  toggleChecked,
+} from '@/src/lib/missed-decisions';
 import {
   getNextDueDate,
   type DoseEvent,
@@ -808,6 +813,7 @@ function MissedDosesModal({
   forced,
   onToggle,
   onDoseSelected,
+  onSkipDose,
   onSkipAll,
   onDecideLater,
 }: {
@@ -818,6 +824,8 @@ function MissedDosesModal({
   forced: boolean;
   onToggle: (id: string, value: boolean) => void;
   onDoseSelected: (pumpId: PumpId) => void;
+  /** Explicit per-dose dismissal — the only way a single entry is skipped. */
+  onSkipDose: (id: string) => void;
   onSkipAll: (pumpId: PumpId) => void;
   onDecideLater: () => void;
 }) {
@@ -895,6 +903,15 @@ function MissedDosesModal({
                           ? `${missed.volumeMl.toFixed(2)} mL`
                           : '—'}
                       </ThemedText>
+                      <Pressable
+                        style={styles.missedRowSkip}
+                        onPress={() => onSkipDose(missed.id)}
+                        disabled={loading || resolved != null}
+                        accessibilityRole="button">
+                        <ThemedText style={styles.missedRowSkipText}>
+                          Skip
+                        </ThemedText>
+                      </Pressable>
                     </ThemedView>
                   ))}
 
@@ -939,7 +956,7 @@ function MissedDosesModal({
                               styles.missedSkipText,
                               styles.missedButtonText,
                             ]}>
-                            Skip all
+                            Skip all for {pumpId.toUpperCase()}
                           </ThemedText>
                         )}
                       </Pressable>
@@ -997,6 +1014,12 @@ export default function DashboardScreen() {
   const [missedAll, setMissedAll] = useState<MissedDose[]>([]);
   // Banner tap reopens the modal with snoozed entries included.
   const [missedReviewOpen, setMissedReviewOpen] = useState(false);
+  // Ref mirror so load() (stable identity) can read it without re-subscribing
+  // the poll intervals. While a review is open, polling must not close it.
+  const missedReviewOpenRef = useRef(false);
+  useEffect(() => {
+    missedReviewOpenRef.current = missedReviewOpen;
+  }, [missedReviewOpen]);
   // Keyed by pumpId — one card per pump in the modal.
   const [missedCardStates, setMissedCardStates] = useState<
     Record<string, MissedCardState>
@@ -1032,22 +1055,22 @@ export default function DashboardScreen() {
       ]);
       setData({ status, schedules, limits, missedDoses: missed, history });
       setMissedAll(missed);
-      // The modal blocks on entries whose snooze has lapsed (or never existed);
-      // snoozed entries stay reachable via the banner instead.
-      setMissedDoses(
-        missed.filter(
-          (m) =>
-            !m.deferredUntil ||
-            Number.isNaN(new Date(m.deferredUntil).getTime()) ||
-            new Date(m.deferredUntil).getTime() <= Date.now(),
-        ),
+      // The modal blocks on entries whose snooze has lapsed (or never
+      // existed); snoozed entries stay reachable via the banner instead.
+      // CRITICAL: while the modal is open (visible entries, or a banner-
+      // opened review) polling must NOT replace the in-progress list or
+      // close the review — nextModalList keeps the user's selection sacred.
+      setMissedDoses((prev) =>
+        nextModalList(missedReviewOpenRef.current, prev, missed, Date.now()),
       );
-      setMissedReviewOpen(false);
     } catch {
       setOffline(true);
       setData(null);
-      setMissedDoses([]);
-      setMissedAll([]);
+      // A transient failure must never destroy an in-progress decision:
+      // while the modal is open its list (and the banner's) stay untouched.
+      if (missedReviewOpenRef.current) return;
+      setMissedDoses((prev) => (prev.length > 0 ? prev : []));
+      setMissedAll((prev) => (prev.length > 0 ? prev : []));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -1193,7 +1216,20 @@ export default function DashboardScreen() {
   };
 
   const handleMissedToggle = (id: string, value: boolean) => {
-    setMissedCheckedIds((s) => ({ ...s, [id]: value }));
+    // Selection state only — ticking a checkbox can NEVER submit (see
+    // planDoseSelection; submission is exclusively the explicit button).
+    setMissedCheckedIds((s) => toggleChecked(s, id, value));
+  };
+
+  // Remove entries from the modal after the device confirmed the action.
+  // Untouched entries stay visible — and stay pending on the device.
+  const removeMissedEntries = (ids: string[]) => {
+    setMissedDoses((prev) => prev.filter((m) => !ids.includes(m.id)));
+    setMissedCheckedIds((s) => {
+      const next = { ...s };
+      for (const id of ids) delete next[id];
+      return next;
+    });
   };
 
   // Show the brief "Dosed ✓" / "Skipped" state, then remove the pump's cards.
@@ -1231,32 +1267,39 @@ export default function DashboardScreen() {
   const handleMissedDoseSelected = async (pumpId: PumpId) => {
     if (!baseUrl) return;
     const pumpMisses = missedDoses.filter((m) => m.pumpId === pumpId);
-    const selected = pumpMisses.filter((m) => missedCheckedIds[m.id]);
-    if (selected.length === 0) return;
-    // Unselected entries are treated as skipped — the user saw the full list
-    // and decided. Nothing stays behind to nag.
-    const unselected = pumpMisses.filter((m) => !missedCheckedIds[m.id]);
+    // Explicit "Dose selected (N)" press only. The plan confirms EXACTLY the
+    // ticked entries — unticked ones stay pending under the normal
+    // snooze/forced-decision rules. Omission never dismisses.
+    const plan = planDoseSelection(pumpMisses, missedCheckedIds);
+    if (plan.selectedIds.length === 0) return;
     setMissedCardStates((s) => ({
       ...s,
       [pumpId]: { loading: true, error: null },
     }));
     try {
-      const result = await confirmMissedDoses(
-        baseUrl,
-        selected.map((m) => m.id),
-      );
-      if (unselected.length > 0) {
-        await dismissMissedDoses(
-          baseUrl,
-          unselected.map((m) => m.id),
-        );
+      const result = await confirmMissedDoses(baseUrl, plan.selectedIds);
+      const selectedIds = new Set(plan.selectedIds);
+      const remaining = pumpMisses.filter((m) => !selectedIds.has(m.id));
+      if (remaining.length === 0) {
+        // Whole pump resolved: brief "Dosed ✓", then the card comes out.
+        resolveMissedPumpCard(pumpId, 'dosed', plan.selectedIds, result.dropped);
+      } else {
+        // Partial selection: the confirmed doses leave the card; the
+        // unticked entries remain for an explicit decision (dose or skip).
+        removeMissedEntries(plan.selectedIds);
+        setMissedCardStates((s) => ({
+          ...s,
+          [pumpId]: {
+            loading: false,
+            error: null,
+            dropped:
+              result.dropped && result.dropped.length > 0
+                ? result.dropped
+                : undefined,
+          },
+        }));
+        load();
       }
-      resolveMissedPumpCard(
-        pumpId,
-        'dosed',
-        pumpMisses.map((m) => m.id),
-        result.dropped,
-      );
     } catch (err) {
       // Keep the card; surface the error inline — never swallow it.
       setMissedCardStates((s) => ({
@@ -1264,6 +1307,30 @@ export default function DashboardScreen() {
         [pumpId]: {
           loading: false,
           error: err instanceof Error ? err.message : 'Failed to dose',
+        },
+      }));
+    }
+  };
+
+  // Explicit per-dose dismissal — the ONLY way a single entry is skipped.
+  const handleMissedSkipDose = async (id: string) => {
+    if (!baseUrl) return;
+    const entry = missedDoses.find((m) => m.id === id);
+    if (!entry) return;
+    setMissedCardStates((s) => ({
+      ...s,
+      [entry.pumpId]: { loading: true, error: null },
+    }));
+    try {
+      await dismissMissedDoses(baseUrl, [id]);
+      removeMissedEntries([id]);
+      load();
+    } catch (err) {
+      setMissedCardStates((s) => ({
+        ...s,
+        [entry.pumpId]: {
+          loading: false,
+          error: err instanceof Error ? err.message : 'Failed to skip',
         },
       }));
     }
@@ -1457,6 +1524,7 @@ export default function DashboardScreen() {
         forced={missedForced}
         onToggle={handleMissedToggle}
         onDoseSelected={handleMissedDoseSelected}
+        onSkipDose={handleMissedSkipDose}
         onSkipAll={handleMissedSkipAll}
         onDecideLater={handleMissedDecideLater}
       />
@@ -1883,6 +1951,15 @@ const styles = StyleSheet.create({
     ...T.typography.body,
     color: T.colors.textPrimary,
     fontFamily: T.typography.fontFamily.semiBold,
+  },
+  missedRowSkip: {
+    paddingHorizontal: T.spacing.sm,
+    paddingVertical: 2,
+    marginLeft: 'auto',
+  },
+  missedRowSkipText: {
+    ...T.typography.small,
+    color: T.colors.danger,
   },
   missedTime: {
     ...T.typography.small,
