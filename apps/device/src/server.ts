@@ -836,6 +836,19 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
     };
   });
 
+  // Read-only feed for the Catch-ups page's RESOLVED section: terminal
+  // entries (skipped/expired or whose catch-up finished) detected within the
+  // window. Never mutates anything.
+  fastify.get('/api/missed-doses/resolved', async (request) => {
+    const query = z
+      .object({ sinceHours: z.coerce.number().min(1).max(24 * 30).optional() })
+      .safeParse(request.query);
+    const sinceHours = query.success ? (query.data.sinceHours ?? 24) : 24;
+    return {
+      missedDoses: db.getResolvedMissedDoses(new Date(), sinceHours),
+    };
+  });
+
   fastify.post('/api/missed-doses/snooze', async (request, reply) => {
     const body = snoozeMissedDosesSchema.safeParse(request.body ?? {});
     if (!body.success) {

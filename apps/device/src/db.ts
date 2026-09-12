@@ -700,6 +700,27 @@ export class ReefDatabase
     return this.mapMissedDoseRow(row);
   }
 
+  /**
+   * Terminal entries (skipped/dismissed, expired, or whose catch-up dose
+   * reached a final state) for the RESOLVED section of the Catch-ups page.
+   * Read-only. The time window is on created_at (detection time) — the table
+   * has no resolved-at stamp, and for the page's purpose ("did that dose
+   * actually happen?") misses detected within the window are the right set.
+   */
+  getResolvedMissedDoses(now: Date, sinceHours: number): MissedDose[] {
+    const cutoff = new Date(now.getTime() - sinceHours * 3_600_000);
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM missed_doses
+         WHERE status IN ('dismissed', 'expired', 'completed', 'failed', 'interrupted')
+           AND created_at >= ?
+         ORDER BY scheduled_for ASC`,
+      )
+      .all(cutoff.toISOString()) as Record<string, unknown>[];
+
+    return rows.map((row) => this.mapMissedDoseRow(row));
+  }
+
   updateMissedDoseStatus(id: string, status: MissedDoseStatus): void {
     this.db
       .prepare("UPDATE missed_doses SET status = ? WHERE id = ?")

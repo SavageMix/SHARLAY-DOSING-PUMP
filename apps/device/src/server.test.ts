@@ -628,6 +628,59 @@ describe('Server endpoints', () => {
     }
   });
 
+  // Read-only feed for the Catch-ups page RESOLVED section: terminal entries
+  // within the window, never pending ones.
+  it('GET /api/missed-doses/resolved returns terminal entries from the window only', async () => {
+    vi.setSystemTime(new Date('2026-08-24T09:30:00Z'));
+    const { db, server, scheduler } = await buildServer();
+    try {
+      const mk = (pumpId: 'alk' | 'ca') =>
+        db.createSchedule({
+          pumpId,
+          volumeMl: 1.5,
+          timesPerDay: 1,
+          startTime: '09:00',
+          repeatEveryNDays: 1,
+          enabled: true,
+          lastRunAt: '2026-08-23T09:00:00.000Z',
+        });
+      mk('alk');
+      mk('ca');
+      detectMissedDoses(db, new Date());
+      const [alkMiss, caMiss] = db.getPendingMissedDoses(new Date());
+      // One skipped (terminal), one still pending, plus an older resolved
+      // entry whose scheduled slot is days ago (created_at = now, so it IS
+      // inside the window — the window keys on detection time).
+      db.updateMissedDoseStatus(alkMiss.id, 'dismissed');
+      const old = db.createMissedDose({
+        scheduleId: caMiss.scheduleId,
+        pumpId: 'no3',
+        scheduledFor: '2026-08-20T09:00:00.000Z',
+        volumeMl: 1,
+        status: 'dismissed',
+        deferredUntil: null,
+        confirmAfter: null,
+      });
+
+      const response = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/missed-doses/resolved',
+      });
+      expect(response.statusCode).toBe(200);
+      const { missedDoses } = JSON.parse(response.body);
+      // Terminal entries only: the dismissed alk and no3 rows, never the
+      // still-pending ca one.
+      expect(missedDoses).toHaveLength(2);
+      const ids = missedDoses.map((m: { id: string }) => m.id);
+      expect(ids).toContain(alkMiss.id);
+      expect(ids).toContain(old.id);
+      expect(ids).not.toContain(caMiss.id);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
   it('POST /api/missed-doses/dismiss batch-dismisses entries permanently', async () => {
     vi.setSystemTime(new Date('2026-08-24T09:30:00Z'));
     const { db, server, scheduler } = await buildServer();
