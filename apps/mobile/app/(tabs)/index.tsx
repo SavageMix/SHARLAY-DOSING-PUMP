@@ -42,6 +42,10 @@ import { Theme } from '@/constants/Theme';
 import { describeCatchupQueue } from '@/src/lib/catchup-banner';
 import { isBlockingMissedDose } from '@/src/lib/catchups-page';
 import {
+  activeFindings,
+  loadDismissedFindingIds,
+} from '@/src/lib/integrity-findings';
+import {
   getNextDueDate,
   type DoseSchedule,
   type HistoryResponse,
@@ -803,15 +807,29 @@ export default function DashboardScreen() {
   // alarm: the banner counts these, and snooze-lapsed (or never-snoozed)
   // entries redirect straight into the forced-decision flow.
   const [missedAll, setMissedAll] = useState<MissedDose[]>([]);
+  // Integrity-audit findings the user has already read and dismissed
+  // (device-side records are never touched by dismissal — this is local only).
+  const [dismissedFindingIds, setDismissedFindingIds] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
   // Push the forced Catch-ups page at most once per blocking batch; reset
   // when a poll sees the blocking set cleared.
   const missedRedirectedRef = useRef(false);
+
+  // Boot-time integrity audit findings not yet dismissed by the user.
+  const integrityFindings = useMemo(
+    () => activeFindings(data?.status.integrityFindings ?? [], dismissedFindingIds),
+    [data?.status, dismissedFindingIds],
+  );
 
   useFocusEffect(
     useCallback(() => {
       let mounted = true;
       getDeviceBaseUrl().then((url) => {
         if (mounted) setBaseUrl(resolveDeviceBaseUrl(url));
+      });
+      loadDismissedFindingIds().then((ids) => {
+        if (mounted) setDismissedFindingIds(ids);
       });
       return () => {
         mounted = false;
@@ -1059,6 +1077,26 @@ export default function DashboardScreen() {
               name="chevron-forward"
               size={18}
               color={T.colors.primary}
+            />
+          </Pressable>
+        ) : null}
+
+        {integrityFindings.length > 0 ? (
+          <Pressable
+            style={styles.missedBanner}
+            onPress={() => router.push('/catchups')}>
+            <Ionicons
+              name="warning"
+              size={18}
+              color={T.colors.warning}
+            />
+            <ThemedText style={styles.missedBannerText}>
+              Record inconsistency detected — see Catch-ups
+            </ThemedText>
+            <Ionicons
+              name="chevron-forward"
+              size={18}
+              color={T.colors.warning}
             />
           </Pressable>
         ) : null}

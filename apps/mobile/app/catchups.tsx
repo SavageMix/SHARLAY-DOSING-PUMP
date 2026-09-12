@@ -35,10 +35,16 @@ import {
   RESOLVED_WINDOW_HOURS,
 } from '@/src/lib/catchups-page';
 import type { ResolvedSlotRow } from '@/src/lib/catchups-page';
+import {
+  activeFindings,
+  loadDismissedFindingIds,
+  saveDismissedFindingIds,
+} from '@/src/lib/integrity-findings';
 import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
 import type {
   CatchupQueueStatus,
   DoseEvent,
+  IntegrityFinding,
   MissedDose,
   PumpId,
 } from '@reef/shared';
@@ -143,6 +149,13 @@ export default function CatchupsScreen() {
   });
   const [fired, setFired] = useState<DoseEvent[]>([]);
   const [resolvedMisses, setResolvedMisses] = useState<MissedDose[]>([]);
+  // Boot-time integrity audit findings (from /api/status) and the ones the
+  // user has read and dismissed. Dismissal is local display state only — the
+  // device never modifies the underlying records.
+  const [integrityFindings, setIntegrityFindings] = useState<IntegrityFinding[]>([]);
+  const [dismissedFindingIds, setDismissedFindingIds] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
   const [checkedIds, setCheckedIds] = useState<Record<string, boolean>>({});
   const [cardStates, setCardStates] = useState<Record<string, MissedCardState>>(
     {},
@@ -153,6 +166,9 @@ export default function CatchupsScreen() {
     let mounted = true;
     getDeviceBaseUrl().then((url) => {
       if (mounted) setBaseUrl(resolveDeviceBaseUrl(url));
+    });
+    loadDismissedFindingIds().then((ids) => {
+      if (mounted) setDismissedFindingIds(ids);
     });
     return () => {
       mounted = false;
@@ -176,6 +192,7 @@ export default function CatchupsScreen() {
       setQueue(status.catchupQueue ?? { firing: null, queued: [] });
       setFired(history.events);
       setResolvedMisses(resolved);
+      setIntegrityFindings(status.integrityFindings ?? []);
     } catch {
       setOffline(true);
     }
@@ -226,6 +243,19 @@ export default function CatchupsScreen() {
   const [expandedPumps, setExpandedPumps] = useState<Record<string, boolean>>(
     {},
   );
+  const visibleFindings = useMemo(
+    () => activeFindings(integrityFindings, dismissedFindingIds),
+    [integrityFindings, dismissedFindingIds],
+  );
+
+  const dismissFinding = async (id: string) => {
+    setDismissedFindingIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      void saveDismissedFindingIds(next);
+      return next;
+    });
+  };
   const groups = useMemo(
     () => groupMissedByPump(pending, PUMP_ORDER),
     [pending],
@@ -573,6 +603,38 @@ export default function CatchupsScreen() {
           </ThemedView>
         ) : null}
 
+        {/* RECORD INTEGRITY ---------------------------------------------- */}
+        {visibleFindings.length > 0 ? (
+          <ThemedView style={styles.section}>
+            <ThemedText style={styles.sectionTitle}>Record integrity</ThemedText>
+            <ThemedText style={styles.findingsIntro}>
+              The dosing record disagrees with itself in the ways listed below.
+              Dosing is unaffected and nothing has been changed — these are
+              reported for you to review.
+            </ThemedText>
+            {visibleFindings.map((finding) => (
+              <ThemedView key={finding.id} style={styles.findingCard}>
+                <Ionicons
+                  name="warning"
+                  size={18}
+                  color={Colors.warning}
+                />
+                <ThemedText style={styles.findingText}>
+                  {finding.message}
+                </ThemedText>
+                <Pressable
+                  style={styles.findingDismiss}
+                  onPress={() => dismissFinding(finding.id)}
+                  accessibilityRole="button">
+                  <ThemedText style={styles.findingDismissText}>
+                    Dismiss
+                  </ThemedText>
+                </Pressable>
+              </ThemedView>
+            ))}
+          </ThemedView>
+        ) : null}
+
         {/* RESOLVED (last 24h) ------------------------------------------- */}
         <ThemedView style={styles.section}>
           <ThemedText style={styles.sectionTitle}>Resolved · 7 days</ThemedText>
@@ -880,6 +942,36 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 1,
     marginTop: Spacing.sm,
+  },
+  findingsIntro: {
+    ...Typography.small,
+    color: Colors.titanium,
+    marginBottom: Spacing.sm,
+  },
+  findingCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: 'rgba(255, 181, 71, 0.08)',
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 181, 71, 0.4)',
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
+  },
+  findingText: {
+    ...Typography.small,
+    color: Colors.pearl,
+    flex: 1,
+    flexShrink: 1,
+  },
+  findingDismiss: {
+    paddingHorizontal: Spacing.xs,
+    paddingVertical: 2,
+  },
+  findingDismissText: {
+    ...Typography.small,
+    color: Colors.titanium,
   },
   failedText: {
     color: Colors.danger,
