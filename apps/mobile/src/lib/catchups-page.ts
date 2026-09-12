@@ -105,39 +105,55 @@ export function buildQueueSection(
   };
 }
 
-export type ResolvedRow =
-  | {
-      kind: 'fired';
-      key: string;
-      pumpId: PumpId;
-      /** Wall-clock time of the original missed slot. */
-      missedSlotIso: string | null;
-      /** When the catch-up actually fired. */
-      firedAtIso: string;
-      actualMl: number | null;
-      status: 'completed' | 'failed' | 'interrupted';
-      error: string | null;
-    }
-  | {
-      kind: 'skipped';
-      key: string;
-      pumpId: PumpId;
-      missedSlotIso: string;
-      volumeMl: number;
-      reason: 'skipped' | 'expired';
-    };
+export type ResolvedOutcome = 'delivered' | 'skipped' | 'expired' | 'failed';
+
+export interface ResolvedSlotRow {
+  key: string;
+  outcome: ResolvedOutcome;
+  /** Wall-clock time of the original missed slot. */
+  missedSlotIso: string;
+  /**
+   * mL figure shown on the row: actualMl when the dose event is matched,
+   * otherwise the requested volumeMl.
+   */
+  ml: number;
+  /**
+   * False when the entry is 'completed' but its dose event aged out of the
+   * /api/history window — the UI labels this "X mL requested" instead of
+   * "delivered X mL" so we never claim a delivery we can't confirm.
+   */
+  deliveredKnown: boolean;
+  error: string | null;
+}
+
+export interface ResolvedPumpGroup {
+  pumpId: PumpId;
+  deliveredCount: number;
+  /** Includes expired entries (visually labelled 'expired'). */
+  skippedCount: number;
+  failedCount: number;
+  /** Sum of delivered rows' mL. */
+  totalMl: number;
+  /** Chronological (oldest missed slot first). */
+  rows: ResolvedSlotRow[];
+}
 
 /**
- * RESOLVED (last 24h) section. Fired catch-ups come from /api/history
- * (source 'catchup', already time-windowed by the query, enriched with the
- * missed slot); skipped/expired entries from /api/missed-doses/resolved.
- * Entries represented by a fired event take precedence over the terminal
- * missed row, so nothing appears twice. Newest first.
+ * RESOLVED (last 24h) section. /api/missed-doses/resolved is the PRIMARY
+ * source — every terminal entry it returns renders a row, so a dismissed
+ * (or completed-but-aged-out) entry can never silently vanish. Dose events
+ * from /api/history only ENRICH a 'completed' entry (actualMl, error,
+ * deliveredKnown); they never gate whether a row exists. This previously
+ * worked the other way round and dropped dismissed rows from the UI.
+ *
+ * Always returns one group per pump in `pumpOrder`, even with zero rows, so
+ * the section keeps its four top-level lines regardless of outage size.
  */
-export function buildResolvedRows(
+export function buildResolvedGroups(
   firedEvents: DoseEvent[],
   resolvedMisses: MissedDose[],
-): ResolvedRow[] {
+  pumpOrder: PumpId[],
+): ResolvedPumpGroup[] {
   const firedByMissedId = new Map<string, DoseEvent>();
   for (const e of firedEvents) {
     if (e.source === 'catchup' && e.missedDoseId) {
@@ -145,40 +161,86 @@ export function buildResolvedRows(
     }
   }
 
-  const rows: ResolvedRow[] = [];
-  for (const e of firedEvents) {
-    if (e.source !== 'catchup') continue;
-    rows.push({
-      kind: 'fired',
-      key: `fired-${e.id}`,
-      pumpId: e.pumpId,
-      missedSlotIso: (e as DoseEvent & { missedDoseScheduledFor?: string | null })
-        .missedDoseScheduledFor ?? null,
-      firedAtIso: e.startedAt,
-      actualMl: e.actualMl,
-      status:
-        e.status === 'completed' || e.status === 'failed' || e.status === 'interrupted'
-          ? e.status
-          : 'failed',
-      error: e.error,
-    });
-  }
-  for (const m of resolvedMisses) {
-    if (firedByMissedId.has(m.id)) continue; // already shown as a fired row
-    if (m.status !== 'dismissed' && m.status !== 'expired') continue;
-    rows.push({
-      kind: 'skipped',
-      key: `skipped-${m.id}`,
-      pumpId: m.pumpId,
-      missedSlotIso: m.scheduledFor,
-      volumeMl: m.volumeMl,
-      reason: m.status === 'expired' ? 'expired' : 'skipped',
+  const groups = new Map<PumpId, ResolvedPumpGroup>();
+  for (const pumpId of pumpOrder) {
+    groups.set(pumpId, {
+      pumpId,
+      deliveredCount: 0,
+      skippedCount: 0,
+      failedCount: 0,
+      totalMl: 0,
+      rows: [],
     });
   }
 
-  const timeOf = (r: ResolvedRow) =>
-    r.kind === 'fired' ? r.firedAtIso : r.missedSlotIso;
-  return rows.sort((a, b) => timeOf(b).localeCompare(timeOf(a)));
+  for (const m of resolvedMisses) {
+    const group = groups.get(m.pumpId);
+    if (!group) continue;
+    if (
+      m.status !== 'completed' &&
+      m.status !== 'dismissed' &&
+      m.status !== 'expired' &&
+      m.status !== 'failed' &&
+      m.status !== 'interrupted'
+    ) {
+      continue; // non-terminal entries never render here
+    }
+    const event =
+      m.status === 'completed' || m.status === 'failed' || m.status === 'interrupted'
+        ? firedByMissedId.get(m.id)
+        : undefined;
+    let row: ResolvedSlotRow;
+    if (m.status === 'completed') {
+      group.deliveredCount += 1;
+      const actualMl = event?.actualMl ?? null;
+      if (actualMl != null) group.totalMl += actualMl;
+      row = {
+        key: `resolved-${m.id}`,
+        outcome: 'delivered',
+        missedSlotIso: m.scheduledFor,
+        ml: actualMl ?? m.volumeMl,
+        deliveredKnown: event != null && actualMl != null,
+        error: event?.error ?? null,
+      };
+    } else if (m.status === 'dismissed') {
+      group.skippedCount += 1;
+      row = {
+        key: `resolved-${m.id}`,
+        outcome: 'skipped',
+        missedSlotIso: m.scheduledFor,
+        ml: m.volumeMl,
+        deliveredKnown: false,
+        error: null,
+      };
+    } else if (m.status === 'expired') {
+      group.skippedCount += 1;
+      row = {
+        key: `resolved-${m.id}`,
+        outcome: 'expired',
+        missedSlotIso: m.scheduledFor,
+        ml: m.volumeMl,
+        deliveredKnown: false,
+        error: null,
+      };
+    } else {
+      group.failedCount += 1;
+      const actualMl = event?.actualMl ?? null;
+      row = {
+        key: `resolved-${m.id}`,
+        outcome: 'failed',
+        missedSlotIso: m.scheduledFor,
+        ml: actualMl ?? m.volumeMl,
+        deliveredKnown: event != null && actualMl != null,
+        error: event?.error ?? null,
+      };
+    }
+    group.rows.push(row);
+  }
+
+  return pumpOrder.map((pumpId) => {
+    const group = groups.get(pumpId)!;
+    return { ...group, rows: [...group.rows].sort((a, b) => a.missedSlotIso.localeCompare(b.missedSlotIso)) };
+  });
 }
 
 /** Group pending entries per pump, pump order stable (alk → ca → no3 → po4). */

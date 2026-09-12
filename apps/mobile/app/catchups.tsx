@@ -27,7 +27,7 @@ import {
 import { nextModalList, planDoseSelection, toggleChecked } from '@/src/lib/missed-decisions';
 import {
   buildQueueSection,
-  buildResolvedRows,
+  buildResolvedGroups,
   canCloseCatchups,
   groupMissedByPump,
 } from '@/src/lib/catchups-page';
@@ -169,9 +169,13 @@ export default function CatchupsScreen() {
     () => buildQueueSection(queue.firing, queue.queued),
     [queue],
   );
-  const resolvedRows = useMemo(
-    () => buildResolvedRows(fired, resolvedMisses),
+  const resolvedGroups = useMemo(
+    () => buildResolvedGroups(fired, resolvedMisses, PUMP_ORDER),
     [fired, resolvedMisses],
+  );
+  // Expanded/collapsed state is display-only — the model stays device-derived.
+  const [expandedPumps, setExpandedPumps] = useState<Record<string, boolean>>(
+    {},
   );
   const groups = useMemo(
     () => groupMissedByPump(pending, PUMP_ORDER),
@@ -523,54 +527,107 @@ export default function CatchupsScreen() {
         {/* RESOLVED (last 24h) ------------------------------------------- */}
         <ThemedView style={styles.section}>
           <ThemedText style={styles.sectionTitle}>Resolved · 24h</ThemedText>
-          {resolvedRows.length === 0 ? (
+          {resolvedGroups.every((g) => g.rows.length === 0) ? (
             <ThemedText style={styles.emptyText}>
               Nothing resolved in the last 24 hours.
             </ThemedText>
           ) : (
-            resolvedRows.map((row) =>
-              row.kind === 'fired' ? (
-                <ThemedView key={row.key} style={styles.resolvedRow}>
-                  <Ionicons
-                    name={
-                      row.status === 'completed'
-                        ? 'checkmark-circle'
-                        : 'alert-circle'
+            resolvedGroups.map((group) => {
+              const expanded = !!expandedPumps[group.pumpId];
+              const hasRows = group.rows.length > 0;
+              const summary = `${PUMP_DISPLAY_NAMES[
+                group.pumpId
+              ].toUpperCase()} — ${group.deliveredCount} delivered · ${
+                group.skippedCount
+              } skipped${
+                group.failedCount > 0 ? ` · ${group.failedCount} failed` : ''
+              } · ${group.totalMl.toFixed(2)} mL total`;
+              return (
+                <ThemedView key={group.pumpId} style={styles.resolvedCard}>
+                  <Pressable
+                    style={styles.resolvedCardHeader}
+                    disabled={!hasRows}
+                    onPress={() =>
+                      setExpandedPumps((s) => ({
+                        ...s,
+                        [group.pumpId]: !expanded,
+                      }))
                     }
-                    size={18}
-                    color={
-                      row.status === 'completed' ? Colors.success : Colors.danger
-                    }
-                  />
-                  <ThemedText style={styles.resolvedRowText}>
-                    {row.pumpId.toUpperCase()} — missed{' '}
-                    {row.missedSlotIso
-                      ? formatMissedWhen(row.missedSlotIso)
-                      : '—'}{' '}
-                    · delivered{' '}
-                    {row.actualMl != null ? `${row.actualMl.toFixed(2)} mL` : '—'}{' '}
-                    {row.status !== 'completed'
-                      ? `(${row.status}${row.error ? `: ${row.error}` : ''})`
-                      : ''}
-                  </ThemedText>
+                    accessibilityRole={hasRows ? 'button' : undefined}>
+                    <ThemedText
+                      style={[
+                        styles.resolvedSummary,
+                        !hasRows && styles.resolvedSummaryEmpty,
+                        { color: hasRows ? PUMP_COLORS[group.pumpId] : undefined },
+                      ]}>
+                      {summary}
+                    </ThemedText>
+                    {hasRows ? (
+                      <Ionicons
+                        name={expanded ? 'chevron-up' : 'chevron-down'}
+                        size={16}
+                        color={Colors.titanium}
+                      />
+                    ) : null}
+                  </Pressable>
+                  {expanded
+                    ? group.rows.map((row) => {
+                        const when = formatMissedWhen(row.missedSlotIso);
+                        if (row.outcome === 'delivered') {
+                          return (
+                            <ThemedView key={row.key} style={styles.resolvedSlotRow}>
+                              <Ionicons
+                                name="checkmark-circle"
+                                size={16}
+                                color={Colors.success}
+                              />
+                              <ThemedText style={styles.resolvedSlotText}>
+                                missed {when} ·{' '}
+                                {row.deliveredKnown
+                                  ? `delivered ${row.ml.toFixed(2)} mL`
+                                  : `${row.ml.toFixed(2)} mL requested`}
+                              </ThemedText>
+                            </ThemedView>
+                          );
+                        }
+                        if (row.outcome === 'failed') {
+                          return (
+                            <ThemedView key={row.key} style={styles.resolvedSlotRow}>
+                              <Ionicons
+                                name="alert-circle"
+                                size={16}
+                                color={Colors.danger}
+                              />
+                              <ThemedText
+                                style={[styles.resolvedSlotText, styles.failedText]}>
+                                missed {when} · failed
+                                {row.error ? `: ${row.error}` : ''}
+                              </ThemedText>
+                            </ThemedView>
+                          );
+                        }
+                        return (
+                          <ThemedView key={row.key} style={styles.resolvedSlotRow}>
+                            <Ionicons
+                              name="remove-circle-outline"
+                              size={16}
+                              color={Colors.danger}
+                            />
+                            <ThemedText
+                              style={[
+                                styles.resolvedSlotText,
+                                styles.skippedText,
+                              ]}>
+                              missed {when} ·{' '}
+                              {row.outcome === 'expired' ? 'expired' : 'skipped'}
+                            </ThemedText>
+                          </ThemedView>
+                        );
+                      })
+                    : null}
                 </ThemedView>
-              ) : (
-                <ThemedView key={row.key} style={styles.resolvedRow}>
-                  <Ionicons
-                    name="remove-circle-outline"
-                    size={18}
-                    color={Colors.titanium}
-                  />
-                  <ThemedText
-                    style={[styles.resolvedRowText, styles.skippedText]}>
-                    {row.pumpId.toUpperCase()} — missed{' '}
-                    {formatMissedWhen(row.missedSlotIso)} ·{' '}
-                    {row.reason === 'expired' ? 'expired' : 'skipped'} (
-                    {row.volumeMl.toFixed(2)} mL)
-                  </ThemedText>
-                </ThemedView>
-              ),
-            )
+              );
+            })
           )}
         </ThemedView>
       </ScrollView>
@@ -780,16 +837,39 @@ const styles = StyleSheet.create({
     color: Colors.titanium,
     flexShrink: 1,
   },
-  resolvedRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: Spacing.sm,
-    paddingVertical: Spacing.sm,
+  resolvedCard: {
+    backgroundColor: Colors.midnight,
+    borderRadius: Radius.sm,
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
   },
-  resolvedRowText: {
+  resolvedCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
+  },
+  resolvedSummary: {
     ...Typography.small,
     color: Colors.pearl,
     flexShrink: 1,
+  },
+  resolvedSummaryEmpty: {
+    color: Colors.slate,
+  },
+  resolvedSlotRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingTop: Spacing.sm,
+  },
+  resolvedSlotText: {
+    ...Typography.small,
+    color: Colors.pearl,
+    flexShrink: 1,
+  },
+  failedText: {
+    color: Colors.danger,
   },
   skippedText: {
     color: Colors.titanium,

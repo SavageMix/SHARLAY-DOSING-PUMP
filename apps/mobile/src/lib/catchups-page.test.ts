@@ -3,7 +3,7 @@ import type { CatchupQueueItem, DoseEvent, MissedDose } from '@reef/shared';
 import {
   buildCatchupsSummary,
   buildQueueSection,
-  buildResolvedRows,
+  buildResolvedGroups,
   canCloseCatchups,
   groupMissedByPump,
   isBlockingMissedDose,
@@ -136,58 +136,185 @@ describe('buildQueueSection — refresh/remount derivation', () => {
   });
 });
 
-describe('buildResolvedRows', () => {
-  const fired: DoseEvent = {
-    id: 'ev-1',
+function doseEvent(partial: Partial<DoseEvent> & { id: string }): DoseEvent {
+  return {
     pumpId: 'alk',
     requestedMl: 1.5,
     actualMl: 1.5,
     status: 'completed',
     source: 'catchup',
     scheduleId: 's1',
-    missedDoseId: 'md-alk',
+    missedDoseId: `md-${partial.id}`,
     startedAt: '2026-08-24T06:48:00.000Z',
     finishedAt: '2026-08-24T06:49:00.000Z',
     error: null,
     missedDoseScheduledFor: '2026-08-23T06:00:00.000Z',
+    ...partial,
   } as DoseEvent;
+}
 
-  it('lists fired catch-ups with delivered mL and the missed slot', () => {
-    const rows = buildResolvedRows([fired], []);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      kind: 'fired',
-      pumpId: 'alk',
+const PUMP_ORDER: Array<MissedDose['pumpId']> = ['alk', 'ca', 'no3', 'po4'];
+
+describe('buildResolvedGroups', () => {
+  it('renders both completed and dismissed rows (the dropped-rows bug)', () => {
+    const fired = doseEvent({ id: 'ev-1', missedDoseId: 'md-alk' });
+    const resolved = [
+      missed({ id: 'md-alk', status: 'completed' }),
+      missed({ id: 'md-po4', pumpId: 'po4', status: 'dismissed' }),
+    ];
+    const groups = buildResolvedGroups([fired], resolved, PUMP_ORDER);
+    expect(groups).toHaveLength(4); // one top-level row per pump, always
+    const alk = groups[0];
+    expect(alk.pumpId).toBe('alk');
+    expect(alk.deliveredCount).toBe(1);
+    expect(alk.rows[0]).toMatchObject({
+      outcome: 'delivered',
       missedSlotIso: '2026-08-23T06:00:00.000Z',
-      actualMl: 1.5,
-      status: 'completed',
+      ml: 1.5,
+      deliveredKnown: true,
+    });
+    const po4 = groups[3];
+    expect(po4.skippedCount).toBe(1);
+    expect(po4.rows[0]).toMatchObject({ outcome: 'skipped', ml: 1.5 });
+    expect(po4.deliveredCount).toBe(0);
+    // Empty pumps still appear as zeroed groups.
+    expect(groups[1].rows).toEqual([]);
+    expect(groups[2].rows).toEqual([]);
+  });
+
+  it('always returns one group per pump in pump order', () => {
+    const groups = buildResolvedGroups([], [], PUMP_ORDER);
+    expect(groups.map((g) => g.pumpId)).toEqual(['alk', 'ca', 'no3', 'po4']);
+    for (const g of groups) {
+      expect(g.rows).toEqual([]);
+      expect(g.deliveredCount).toBe(0);
+      expect(g.skippedCount).toBe(0);
+      expect(g.totalMl).toBe(0);
+    }
+  });
+
+  it('computes summary counts and total mL per pump', () => {
+    const resolved = [
+      missed({ id: 'a1', status: 'completed', volumeMl: 1 }),
+      missed({ id: 'a2', status: 'completed', volumeMl: 2 }),
+      missed({ id: 'a3', status: 'dismissed' }),
+      missed({ id: 'a4', status: 'dismissed' }),
+      missed({ id: 'a5', status: 'expired' }),
+    ];
+    const fired = [
+      doseEvent({ id: 'e1', missedDoseId: 'a1', actualMl: 1 }),
+      doseEvent({ id: 'e2', missedDoseId: 'a2', actualMl: 2 }),
+    ];
+    const alk = buildResolvedGroups(fired, resolved, PUMP_ORDER)[0];
+    expect(alk.deliveredCount).toBe(2);
+    expect(alk.skippedCount).toBe(3); // 2 dismissed + 1 expired
+    expect(alk.failedCount).toBe(0);
+    expect(alk.totalMl).toBe(3);
+  });
+
+  it('orders rows chronologically within a pump', () => {
+    const resolved = [
+      missed({ id: 'late', status: 'dismissed', scheduledFor: '2026-08-24T04:00:00.000Z' }),
+      missed({ id: 'early', status: 'dismissed', scheduledFor: '2026-08-24T01:00:00.000Z' }),
+      missed({ id: 'mid', status: 'completed', scheduledFor: '2026-08-24T02:00:00.000Z' }),
+    ];
+    const alk = buildResolvedGroups([], resolved, PUMP_ORDER)[0];
+    expect(alk.rows.map((r) => r.key)).toEqual([
+      'resolved-early',
+      'resolved-mid',
+      'resolved-late',
+    ]);
+  });
+
+  it('stays four groups with a 20-miss-per-pump outage', () => {
+    const resolved: MissedDose[] = [];
+    for (const pumpId of PUMP_ORDER) {
+      for (let i = 0; i < 20; i++) {
+        resolved.push(
+          missed({
+            id: `${pumpId}-${i}`,
+            pumpId,
+            status: i % 2 === 0 ? 'completed' : 'dismissed',
+            scheduledFor: `2026-08-24T0${i % 6}:00:00.000Z`,
+            volumeMl: 1,
+          }),
+        );
+      }
+    }
+    const fired = resolved
+      .filter((m) => m.status === 'completed')
+      .map((m) =>
+        doseEvent({
+          id: `ev-${m.id}`,
+          missedDoseId: m.id,
+          pumpId: m.pumpId,
+          actualMl: 1,
+        }),
+      );
+    const groups = buildResolvedGroups(fired, resolved, PUMP_ORDER);
+    expect(groups).toHaveLength(4);
+    for (const g of groups) {
+      expect(g.deliveredCount).toBe(10);
+      expect(g.skippedCount).toBe(10);
+      expect(g.rows).toHaveLength(20);
+      expect(g.totalMl).toBe(10);
+    }
+  });
+
+  it('a completed entry without a matched event renders as requested, not delivered', () => {
+    // The dose event aged out of the 24h /api/history window: the entry must
+    // still appear, labelled with the requested volume.
+    const resolved = [missed({ id: 'md-alk', status: 'completed', volumeMl: 1.5 })];
+    const alk = buildResolvedGroups([], resolved, PUMP_ORDER)[0];
+    expect(alk.deliveredCount).toBe(1);
+    expect(alk.rows[0]).toMatchObject({
+      outcome: 'delivered',
+      ml: 1.5,
+      deliveredKnown: false,
     });
   });
 
-  it('lists skipped entries and never shows an entry twice', () => {
+  it('expired entries count as skipped and are labelled expired', () => {
     const resolved = [
-      missed({ id: 'md-alk', status: 'completed' }), // backed by the fired event
-      missed({ id: 'md-po4', pumpId: 'po4', status: 'dismissed' }),
       missed({ id: 'md-ca', pumpId: 'ca', status: 'expired' }),
     ];
-    const rows = buildResolvedRows([fired], resolved);
-    expect(rows).toHaveLength(3);
-    const kinds = rows.map((r) => `${r.kind}:${r.pumpId}`);
-    expect(kinds).toContain('fired:alk');
-    expect(kinds).toContain('skipped:po4');
-    expect(kinds).toContain('skipped:ca');
-    // The completed missed row was folded into the fired row — no duplicate.
-    expect(rows.filter((r) => r.pumpId === 'alk')).toHaveLength(1);
-    const skipped = rows.find((r) => r.pumpId === 'po4');
-    expect(skipped).toMatchObject({ reason: 'skipped', volumeMl: 1.5 });
-    expect(rows.find((r) => r.pumpId === 'ca')).toMatchObject({
-      reason: 'expired',
+    const ca = buildResolvedGroups([], resolved, PUMP_ORDER)[1];
+    expect(ca.skippedCount).toBe(1);
+    expect(ca.rows[0].outcome).toBe('expired');
+  });
+
+  it('failed entries are counted separately and carry the event error', () => {
+    const fired = doseEvent({
+      id: 'ev-f',
+      missedDoseId: 'md-no3',
+      pumpId: 'no3',
+      status: 'failed',
+      actualMl: 0,
+      error: 'watchdog fired',
+    });
+    const resolved = [missed({ id: 'md-no3', pumpId: 'no3', status: 'failed' })];
+    const no3 = buildResolvedGroups([fired], resolved, PUMP_ORDER)[2];
+    expect(no3.failedCount).toBe(1);
+    expect(no3.deliveredCount).toBe(0);
+    expect(no3.rows[0]).toMatchObject({
+      outcome: 'failed',
+      error: 'watchdog fired',
+      deliveredKnown: true,
+      ml: 0,
     });
   });
 
-  it('ignores non-catch-up history events', () => {
-    const scheduled = { ...fired, id: 'ev-2', source: 'schedule' as const };
-    expect(buildResolvedRows([scheduled], [])).toHaveLength(0);
+  it('ignores non-terminal entries and non-catch-up events', () => {
+    const resolved = [
+      missed({ id: 'md-pending', status: 'pending' }),
+      missed({ id: 'md-confirmed', status: 'confirmed' }),
+      missed({ id: 'md-snoozed', status: 'snoozed' }),
+      missed({ id: 'md-ok', status: 'dismissed' }),
+    ];
+    const scheduled = doseEvent({ id: 'ev-2', source: 'schedule' });
+    const groups = buildResolvedGroups([scheduled], resolved, PUMP_ORDER);
+    expect(groups[0].rows).toHaveLength(1);
+    expect(groups[0].rows[0].key).toBe('resolved-md-ok');
   });
 });
 
