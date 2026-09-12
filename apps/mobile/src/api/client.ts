@@ -265,6 +265,22 @@ export async function getMissedDoses(
   return data.missedDoses;
 }
 
+/**
+ * Terminal missed-dose entries (skipped/expired or whose catch-up finished)
+ * detected within the window — feeds the Catch-ups page RESOLVED section.
+ */
+export async function getResolvedMissedDoses(
+  baseUrl: string,
+  sinceHours = 24,
+): Promise<MissedDose[]> {
+  const data = await request<ListMissedDosesResponse>(
+    baseUrl,
+    'GET',
+    `/api/missed-doses/resolved?sinceHours=${sinceHours}`,
+  );
+  return data.missedDoses;
+}
+
 export async function confirmMissedDose(
   baseUrl: string,
   id: string,

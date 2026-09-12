@@ -11,7 +11,7 @@ import {
   View,
   type ViewStyle,
 } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import {
   Circle,
@@ -27,8 +27,6 @@ import { SharlayWordmark } from '@/components/SharlayWordmark';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedTextInput, ThemedView } from '@/components/Themed';
 import {
-  confirmMissedDoses,
-  dismissMissedDoses,
   getDeviceBaseUrl,
   getHistory,
   getLimits,
@@ -37,17 +35,12 @@ import {
   getStatus,
   postDose,
   resolveDeviceBaseUrl,
-  snoozeMissedDoses,
   type MissedDose,
   type StatusResponse,
 } from '@/src/api/client';
 import { Theme } from '@/constants/Theme';
 import { describeCatchupQueue } from '@/src/lib/catchup-banner';
-import {
-  nextModalList,
-  planDoseSelection,
-  toggleChecked,
-} from '@/src/lib/missed-decisions';
+import { isBlockingMissedDose } from '@/src/lib/catchups-page';
 import {
   getNextDueDate,
   type DoseEvent,
@@ -80,7 +73,6 @@ interface DashboardData {
   status: StatusResponse;
   schedules: DoseSchedule[];
   limits: LimitsResponse;
-  missedDoses: MissedDose[];
   history: HistoryResponse;
 }
 
@@ -798,207 +790,6 @@ function formatMissedWhen(scheduledFor: string): string {
   return `${d.toLocaleDateString()} ${time}`;
 }
 
-interface MissedCardState {
-  loading: boolean;
-  resolved?: 'dosed' | 'skipped';
-  error?: string | null;
-  /** Entries the server refused to fire (cap exceeded), with the reason. */
-  dropped?: Array<{ id: string; reason: string }>;
-}
-
-function MissedDosesModal({
-  missedDoses,
-  cardStates,
-  checkedIds,
-  forced,
-  onToggle,
-  onDoseSelected,
-  onSkipDose,
-  onSkipAll,
-  onDecideLater,
-}: {
-  missedDoses: MissedDose[];
-  cardStates: Record<string, MissedCardState>;
-  checkedIds: Record<string, boolean>;
-  /** Forced re-prompt after the snooze lapsed: every entry must be resolved. */
-  forced: boolean;
-  onToggle: (id: string, value: boolean) => void;
-  onDoseSelected: (pumpId: PumpId) => void;
-  /** Explicit per-dose dismissal — the only way a single entry is skipped. */
-  onSkipDose: (id: string) => void;
-  onSkipAll: (pumpId: PumpId) => void;
-  onDecideLater: () => void;
-}) {
-  const byPump = new Map<PumpId, MissedDose[]>();
-  for (const missed of missedDoses) {
-    const list = byPump.get(missed.pumpId) ?? [];
-    list.push(missed);
-    byPump.set(missed.pumpId, list);
-  }
-
-  return (
-    <Modal
-      visible={missedDoses.length > 0}
-      transparent
-      animationType="fade"
-      // Android hardware back. Forced re-prompt: no escape — every entry must
-      // be resolved. First prompt: back behaves like "Decide later".
-      // There is no backdrop tap or swipe handler by design.
-      onRequestClose={forced ? () => {} : onDecideLater}>
-      <ThemedView style={styles.modalOverlay}>
-        <ThemedView style={[styles.modalContent, styles.missedContent]}>
-          <ThemedText style={styles.modalHeader}>Missed doses</ThemedText>
-          <ThemedText style={styles.missedSubheader}>
-            These doses were missed while the device was off. Dosing them now
-            is optional — your normal schedule is unaffected.
-          </ThemedText>
-
-          <ScrollView style={styles.missedList}>
-            {[...byPump.entries()].map(([pumpId, doses]) => {
-              const card = cardStates[pumpId];
-              const loading = card?.loading ?? false;
-              const resolved = card?.resolved;
-              const selectedCount = doses.filter(
-                (d) => checkedIds[d.id],
-              ).length;
-              return (
-                <ThemedView key={pumpId} style={styles.missedItem}>
-                  <ThemedView style={styles.missedRow}>
-                    <ThemedText
-                      style={[
-                        styles.missedPump,
-                        { color: PUMP_COLORS[pumpId] },
-                      ]}>
-                      {(
-                        PUMP_DISPLAY_NAMES[pumpId] ?? pumpId
-                      ).toUpperCase()}{' '}
-                      — {doses.length} missed dose
-                      {doses.length === 1 ? '' : 's'}
-                    </ThemedText>
-                  </ThemedView>
-
-                  {doses.map((missed) => (
-                    <ThemedView key={missed.id} style={styles.missedDoseRow}>
-                      <Pressable
-                        style={[
-                          styles.missedCheckbox,
-                          checkedIds[missed.id] && {
-                            backgroundColor: T.colors.primary,
-                            borderColor: T.colors.primary,
-                          },
-                        ]}
-                        onPress={() => onToggle(missed.id, !checkedIds[missed.id])}
-                        disabled={loading || resolved != null}
-                        accessibilityRole="checkbox"
-                        accessibilityState={{ checked: !!checkedIds[missed.id] }}>
-                        {checkedIds[missed.id] ? (
-                          <ThemedText style={styles.missedCheckmark}>✓</ThemedText>
-                        ) : null}
-                      </Pressable>
-                      <ThemedText style={styles.missedTime}>
-                        Scheduled {formatMissedWhen(missed.scheduledFor)}
-                      </ThemedText>
-                      <ThemedText style={styles.missedVolume}>
-                        {missed.volumeMl != null
-                          ? `${missed.volumeMl.toFixed(2)} mL`
-                          : '—'}
-                      </ThemedText>
-                      <Pressable
-                        style={styles.missedRowSkip}
-                        onPress={() => onSkipDose(missed.id)}
-                        disabled={loading || resolved != null}
-                        accessibilityRole="button">
-                        <ThemedText style={styles.missedRowSkipText}>
-                          Skip
-                        </ThemedText>
-                      </Pressable>
-                    </ThemedView>
-                  ))}
-
-                  {card?.error ? (
-                    <ThemedText style={styles.missedError}>
-                      {card.error}
-                    </ThemedText>
-                  ) : null}
-
-                  {card?.dropped && card.dropped.length > 0 ? (
-                    <ThemedText style={styles.missedError}>
-                      {card.dropped.length} dose
-                      {card.dropped.length === 1 ? '' : 's'} not dosed:{' '}
-                      {card.dropped.map((d) => d.reason).join('; ')}
-                    </ThemedText>
-                  ) : null}
-
-                  {resolved ? (
-                    <ThemedText
-                      style={[
-                        styles.missedResolved,
-                        {
-                          color:
-                            resolved === 'dosed'
-                              ? T.colors.success
-                              : T.colors.textSecondary,
-                        },
-                      ]}>
-                      {resolved === 'dosed' ? 'Dosed ✓' : 'Skipped'}
-                    </ThemedText>
-                  ) : (
-                    <ThemedView style={styles.missedActions}>
-                      <Pressable
-                        style={[styles.modalButton, styles.skipButton]}
-                        onPress={() => onSkipAll(pumpId)}
-                        disabled={loading}>
-                        {loading ? (
-                          <ActivityIndicator color={T.colors.danger} />
-                        ) : (
-                          <ThemedText
-                            style={[
-                              styles.missedSkipText,
-                              styles.missedButtonText,
-                            ]}>
-                            Skip all for {pumpId.toUpperCase()}
-                          </ThemedText>
-                        )}
-                      </Pressable>
-                      <Pressable
-                        style={[
-                          styles.modalButton,
-                          styles.confirmButton,
-                          selectedCount === 0 && styles.missedButtonDisabled,
-                        ]}
-                        onPress={() => onDoseSelected(pumpId)}
-                        disabled={loading || selectedCount === 0}>
-                        {loading ? (
-                          <ActivityIndicator color={T.colors.background} />
-                        ) : (
-                          <ThemedText
-                            style={[
-                              styles.confirmButtonText,
-                              styles.missedButtonText,
-                            ]}>
-                            Dose selected ({selectedCount})
-                          </ThemedText>
-                        )}
-                      </Pressable>
-                    </ThemedView>
-                  )}
-                </ThemedView>
-              );
-            })}
-          </ScrollView>
-
-          {!forced ? (
-            <Pressable
-              style={[styles.modalButton, styles.cancelButton, styles.decideLaterButton]}
-              onPress={onDecideLater}>
-              <ThemedText style={styles.cancelButtonText}>Decide later</ThemedText>
-            </Pressable>
-          ) : null}
-        </ThemedView>
-      </ThemedView>
-    </Modal>
-  );
-}
 
 export default function DashboardScreen() {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
@@ -1008,26 +799,14 @@ export default function DashboardScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [modalPumpId, setModalPumpId] = useState<PumpId | null>(null);
   const [doseStates, setDoseStates] = useState<Record<string, DoseState>>({});
-  const [missedDoses, setMissedDoses] = useState<MissedDose[]>([]);
-  // Every pending entry including snoozed ones — drives the persistent banner
-  // so "Decide later" never locks the user out of the decision UI.
+  // All pending missed-dose entries including snoozed ones. The Dashboard no
+  // longer hosts the decision UI — the Catch-ups page does — but it stays the
+  // alarm: the banner counts these, and snooze-lapsed (or never-snoozed)
+  // entries redirect straight into the forced-decision flow.
   const [missedAll, setMissedAll] = useState<MissedDose[]>([]);
-  // Banner tap reopens the modal with snoozed entries included.
-  const [missedReviewOpen, setMissedReviewOpen] = useState(false);
-  // Ref mirror so load() (stable identity) can read it without re-subscribing
-  // the poll intervals. While a review is open, polling must not close it.
-  const missedReviewOpenRef = useRef(false);
-  useEffect(() => {
-    missedReviewOpenRef.current = missedReviewOpen;
-  }, [missedReviewOpen]);
-  // Keyed by pumpId — one card per pump in the modal.
-  const [missedCardStates, setMissedCardStates] = useState<
-    Record<string, MissedCardState>
-  >({});
-  // Per-dose opt-in checkboxes in the missed-dose modal. Never pre-checked.
-  const [missedCheckedIds, setMissedCheckedIds] = useState<
-    Record<string, boolean>
-  >({});
+  // Push the forced Catch-ups page at most once per blocking batch; reset
+  // when a poll sees the blocking set cleared.
+  const missedRedirectedRef = useRef(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -1041,6 +820,8 @@ export default function DashboardScreen() {
     }, []),
   );
 
+  const router = useRouter();
+
   const load = useCallback(async () => {
     if (!baseUrl) return;
     try {
@@ -1053,29 +834,28 @@ export default function DashboardScreen() {
         getMissedDoses(baseUrl, { includeSnoozed: true }),
         getHistory(baseUrl, { days: 30, limit: 10000, offset: 0 }),
       ]);
-      setData({ status, schedules, limits, missedDoses: missed, history });
+      setData({ status, schedules, limits, history });
       setMissedAll(missed);
-      // The modal blocks on entries whose snooze has lapsed (or never
-      // existed); snoozed entries stay reachable via the banner instead.
-      // CRITICAL: while the modal is open (visible entries, or a banner-
-      // opened review) polling must NOT replace the in-progress list or
-      // close the review — nextModalList keeps the user's selection sacred.
-      setMissedDoses((prev) =>
-        nextModalList(missedReviewOpenRef.current, prev, missed, Date.now()),
-      );
+      // Forced-decision flow: entries whose snooze has lapsed (or never had
+      // one) open the Catch-ups page full-screen. Urgency must never require
+      // the user to remember where the page lives — the alarm takes them
+      // there. At most one push per blocking batch.
+      const blocking = missed.some((m) => isBlockingMissedDose(m, Date.now()));
+      if (blocking && !missedRedirectedRef.current) {
+        missedRedirectedRef.current = true;
+        router.push('/catchups?forced=1');
+      } else if (!blocking) {
+        missedRedirectedRef.current = false;
+      }
     } catch {
       setOffline(true);
       setData(null);
-      // A transient failure must never destroy an in-progress decision:
-      // while the modal is open its list (and the banner's) stay untouched.
-      if (missedReviewOpenRef.current) return;
-      setMissedDoses((prev) => (prev.length > 0 ? prev : []));
       setMissedAll((prev) => (prev.length > 0 ? prev : []));
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [baseUrl]);
+  }, [baseUrl, router]);
 
   useFocusEffect(
     useCallback(() => {
@@ -1193,196 +973,6 @@ export default function DashboardScreen() {
     });
   }, [data?.status]);
 
-  // "Decide later" is a 1-hour snooze stored on the device. A returned pending
-  // entry whose snooze has already LAPSED makes the re-prompt forced: no snooze
-  // button, no back/backdrop dismissal. Entries still inside their snooze
-  // window are not forced — the user reopened them voluntarily from the banner.
-  const missedForced = missedDoses.some(
-    (m) =>
-      m.deferredUntil != null &&
-      !Number.isNaN(new Date(m.deferredUntil).getTime()) &&
-      new Date(m.deferredUntil).getTime() <= Date.now(),
-  );
-
-  // Persistent entry point: pending entries exist (possibly snoozed) but the
-  // blocking modal is not open. Tapping reopens the decision UI with every
-  // entry, so snoozing never locks the user out until the next re-prompt.
-  const missedBannerVisible =
-    !missedReviewOpen && missedAll.length > 0 && missedDoses.length === 0;
-
-  const openMissedReview = () => {
-    setMissedReviewOpen(true);
-    setMissedDoses(missedAll);
-  };
-
-  const handleMissedToggle = (id: string, value: boolean) => {
-    // Selection state only — ticking a checkbox can NEVER submit (see
-    // planDoseSelection; submission is exclusively the explicit button).
-    setMissedCheckedIds((s) => toggleChecked(s, id, value));
-  };
-
-  // Remove entries from the modal after the device confirmed the action.
-  // Untouched entries stay visible — and stay pending on the device.
-  const removeMissedEntries = (ids: string[]) => {
-    setMissedDoses((prev) => prev.filter((m) => !ids.includes(m.id)));
-    setMissedCheckedIds((s) => {
-      const next = { ...s };
-      for (const id of ids) delete next[id];
-      return next;
-    });
-  };
-
-  // Show the brief "Dosed ✓" / "Skipped" state, then remove the pump's cards.
-  // When no pending entries remain the modal closes itself and the Dashboard
-  // refreshes.
-  const resolveMissedPumpCard = (
-    pumpId: PumpId,
-    outcome: 'dosed' | 'skipped',
-    removedIds: string[],
-    dropped?: Array<{ id: string; reason: string }>,
-  ) => {
-    setMissedCardStates((s) => ({
-      ...s,
-      [pumpId]: { loading: false, resolved: outcome, dropped },
-    }));
-    setTimeout(() => {
-      setMissedDoses((prev) => {
-        const next = prev.filter((m) => !removedIds.includes(m.id));
-        if (next.length === 0) load();
-        return next;
-      });
-      setMissedCardStates((s) => {
-        const next = { ...s };
-        delete next[pumpId];
-        return next;
-      });
-      setMissedCheckedIds((s) => {
-        const next = { ...s };
-        for (const id of removedIds) delete next[id];
-        return next;
-      });
-    }, dropped && dropped.length > 0 ? 2000 : 900);
-  };
-
-  const handleMissedDoseSelected = async (pumpId: PumpId) => {
-    if (!baseUrl) return;
-    const pumpMisses = missedDoses.filter((m) => m.pumpId === pumpId);
-    // Explicit "Dose selected (N)" press only. The plan confirms EXACTLY the
-    // ticked entries — unticked ones stay pending under the normal
-    // snooze/forced-decision rules. Omission never dismisses.
-    const plan = planDoseSelection(pumpMisses, missedCheckedIds);
-    if (plan.selectedIds.length === 0) return;
-    setMissedCardStates((s) => ({
-      ...s,
-      [pumpId]: { loading: true, error: null },
-    }));
-    try {
-      const result = await confirmMissedDoses(baseUrl, plan.selectedIds);
-      const selectedIds = new Set(plan.selectedIds);
-      const remaining = pumpMisses.filter((m) => !selectedIds.has(m.id));
-      if (remaining.length === 0) {
-        // Whole pump resolved: brief "Dosed ✓", then the card comes out.
-        resolveMissedPumpCard(pumpId, 'dosed', plan.selectedIds, result.dropped);
-      } else {
-        // Partial selection: the confirmed doses leave the card; the
-        // unticked entries remain for an explicit decision (dose or skip).
-        removeMissedEntries(plan.selectedIds);
-        setMissedCardStates((s) => ({
-          ...s,
-          [pumpId]: {
-            loading: false,
-            error: null,
-            dropped:
-              result.dropped && result.dropped.length > 0
-                ? result.dropped
-                : undefined,
-          },
-        }));
-        load();
-      }
-    } catch (err) {
-      // Keep the card; surface the error inline — never swallow it.
-      setMissedCardStates((s) => ({
-        ...s,
-        [pumpId]: {
-          loading: false,
-          error: err instanceof Error ? err.message : 'Failed to dose',
-        },
-      }));
-    }
-  };
-
-  // Explicit per-dose dismissal — the ONLY way a single entry is skipped.
-  const handleMissedSkipDose = async (id: string) => {
-    if (!baseUrl) return;
-    const entry = missedDoses.find((m) => m.id === id);
-    if (!entry) return;
-    setMissedCardStates((s) => ({
-      ...s,
-      [entry.pumpId]: { loading: true, error: null },
-    }));
-    try {
-      await dismissMissedDoses(baseUrl, [id]);
-      removeMissedEntries([id]);
-      load();
-    } catch (err) {
-      setMissedCardStates((s) => ({
-        ...s,
-        [entry.pumpId]: {
-          loading: false,
-          error: err instanceof Error ? err.message : 'Failed to skip',
-        },
-      }));
-    }
-  };
-
-  const handleMissedSkipAll = async (pumpId: PumpId) => {
-    if (!baseUrl) return;
-    const pumpMisses = missedDoses.filter((m) => m.pumpId === pumpId);
-    if (pumpMisses.length === 0) return;
-    setMissedCardStates((s) => ({
-      ...s,
-      [pumpId]: { loading: true, error: null },
-    }));
-    try {
-      await dismissMissedDoses(
-        baseUrl,
-        pumpMisses.map((m) => m.id),
-      );
-      resolveMissedPumpCard(
-        pumpId,
-        'skipped',
-        pumpMisses.map((m) => m.id),
-      );
-    } catch (err) {
-      setMissedCardStates((s) => ({
-        ...s,
-        [pumpId]: {
-          loading: false,
-          error: err instanceof Error ? err.message : 'Failed to skip',
-        },
-      }));
-    }
-  };
-
-  const handleMissedDecideLater = async () => {
-    // Banner-driven review of snoozed entries: closing is local-only — the
-    // device-side snooze is untouched and the banner stays available.
-    if (missedReviewOpen) {
-      setMissedReviewOpen(false);
-      setMissedDoses([]);
-      return;
-    }
-    if (!baseUrl) return;
-    try {
-      await snoozeMissedDoses(baseUrl);
-    } catch {
-      // Snooze failed: keep the modal open rather than pretending it worked.
-      return;
-    }
-    setMissedDoses([]);
-  };
-
   const handleDoseConfirm = async (pumpId: PumpId, volumeMl: number) => {
     if (!baseUrl) return;
     setModalPumpId(null);
@@ -1459,16 +1049,25 @@ export default function DashboardScreen() {
         />
 
         {catchupBanner.visible ? (
-          <View style={styles.catchupBanner}>
+          <Pressable
+            style={styles.catchupBanner}
+            onPress={() => router.push('/catchups')}>
             <Ionicons name="water" size={18} color={T.colors.primary} />
             <ThemedText style={styles.catchupBannerText}>
               {catchupBanner.text}
             </ThemedText>
-          </View>
+            <Ionicons
+              name="chevron-forward"
+              size={18}
+              color={T.colors.primary}
+            />
+          </Pressable>
         ) : null}
 
-        {missedBannerVisible ? (
-          <Pressable style={styles.missedBanner} onPress={openMissedReview}>
+        {missedAll.length > 0 ? (
+          <Pressable
+            style={styles.missedBanner}
+            onPress={() => router.push('/catchups')}>
             <Ionicons
               name="alert-circle"
               size={18}
@@ -1515,18 +1114,6 @@ export default function DashboardScreen() {
         maxSingleDoseMl={data?.limits.effective.maxSingleDoseMl ?? 5}
         onClose={() => setModalPumpId(null)}
         onConfirm={handleDoseConfirm}
-      />
-
-      <MissedDosesModal
-        missedDoses={missedDoses}
-        cardStates={missedCardStates}
-        checkedIds={missedCheckedIds}
-        forced={missedForced}
-        onToggle={handleMissedToggle}
-        onDoseSelected={handleMissedDoseSelected}
-        onSkipDose={handleMissedSkipDose}
-        onSkipAll={handleMissedSkipAll}
-        onDecideLater={handleMissedDecideLater}
       />
     </ThemedView>
   );
@@ -1914,108 +1501,5 @@ const styles = StyleSheet.create({
     ...T.typography.title,
     color: T.colors.background,
     fontFamily: T.typography.fontFamily.semiBold,
-  },
-  missedContent: {
-    maxHeight: '80%',
-    borderColor: T.colors.warning,
-    ...T.shadows.elevated,
-  },
-  missedSubheader: {
-    ...T.typography.small,
-    color: T.colors.textSecondary,
-    marginBottom: T.spacing.lg,
-  },
-  missedList: {
-    maxHeight: 400,
-  },
-  missedItem: {
-    backgroundColor: T.colors.surfaceElevated,
-    borderRadius: T.radius.sm,
-    padding: T.spacing.lg,
-    marginBottom: T.spacing.md,
-    borderWidth: 1,
-    borderColor: T.colors.border,
-  },
-  missedRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: T.spacing.xs,
-  },
-  missedPump: {
-    ...T.typography.title,
-    textTransform: 'uppercase',
-    fontFamily: T.typography.fontFamily.semiBold,
-  },
-  missedVolume: {
-    ...T.typography.body,
-    color: T.colors.textPrimary,
-    fontFamily: T.typography.fontFamily.semiBold,
-  },
-  missedRowSkip: {
-    paddingHorizontal: T.spacing.sm,
-    paddingVertical: 2,
-    marginLeft: 'auto',
-  },
-  missedRowSkipText: {
-    ...T.typography.small,
-    color: T.colors.danger,
-  },
-  missedTime: {
-    ...T.typography.small,
-    color: T.colors.textMuted,
-    marginBottom: T.spacing.md,
-  },
-  missedError: {
-    ...T.typography.small,
-    color: T.colors.danger,
-    marginBottom: T.spacing.sm,
-  },
-  missedResolved: {
-    ...T.typography.title,
-    fontFamily: T.typography.fontFamily.semiBold,
-  },
-  missedActions: {
-    flexDirection: 'row',
-    gap: T.spacing.md,
-  },
-  missedDoseRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: T.spacing.sm,
-    marginTop: T.spacing.sm,
-  },
-  missedCheckbox: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: T.colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  missedCheckmark: {
-    color: T.colors.background,
-    fontSize: 14,
-    lineHeight: 16,
-    fontWeight: '700',
-  },
-  missedButtonDisabled: {
-    opacity: 0.4,
-  },
-  skipButton: {
-    flex: 1,
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: T.colors.danger,
-  },
-  missedSkipText: {
-    color: T.colors.danger,
-  },
-  missedButtonText: {
-    ...T.typography.body,
-  },
-  decideLaterButton: {
-    marginTop: T.spacing.sm,
   },
 });

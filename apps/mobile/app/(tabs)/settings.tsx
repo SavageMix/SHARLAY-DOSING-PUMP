@@ -17,6 +17,7 @@ import {
   cancelSkipNextDose,
   clearDeviceBaseUrl,
   getDeviceBaseUrl,
+  getMissedDoses,
   getStatus,
   resolveDeviceBaseUrl,
   saveCalibration,
@@ -27,6 +28,7 @@ import {
   stopCalibration,
   stopPrime,
 } from '@/src/api/client';
+import { buildCatchupsSummary } from '@/src/lib/catchups-page';
 import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
 import {
   isCalibrationGoneError,
@@ -490,6 +492,11 @@ export default function SettingsScreen() {
   } | null>(null);
   const [primeWatchdogResult, setPrimeWatchdogResult] =
     useState<PrimeResult | null>(null);
+  // Live Catch-ups status for the row at the top of Settings — pending
+  // decisions outrank the queue, which outranks the calm resting state.
+  const [catchupsSummary, setCatchupsSummary] = useState<ReturnType<
+    typeof buildCatchupsSummary
+  > | null>(null);
   // Watchdog stops already surfaced (primeRunKey values) and start-confirmation
   // state live in refs: the reconciliation effect must read the latest values
   // without re-running on every local state change.
@@ -515,7 +522,10 @@ export default function SettingsScreen() {
   const load = useCallback(async () => {
     if (!savedUrl) return;
     try {
-      const data = await getStatus(savedUrl);
+      const [data, missed] = await Promise.all([
+        getStatus(savedUrl),
+        getMissedDoses(savedUrl, { includeSnoozed: true }),
+      ]);
       setOffline(false);
       setStatus({
         pumps: data?.pumps?.map((p) => ({
@@ -527,9 +537,14 @@ export default function SettingsScreen() {
         queueDepth: data?.queueDepth ?? 0,
       });
       setPrimeState(data?.prime ?? null);
+      const queue = data?.catchupQueue ?? { firing: null, queued: [] };
+      setCatchupsSummary(
+        buildCatchupsSummary(missed.length, queue.firing, queue.queued.length),
+      );
     } catch {
       setOffline(true);
       setStatus(null);
+      setCatchupsSummary(null);
     }
   }, [savedUrl]);
 
@@ -731,6 +746,29 @@ export default function SettingsScreen() {
       <ScrollView contentContainerStyle={styles.scroll}>
         <ThemedText style={styles.header}>Settings</ThemedText>
         {offline && <OfflineCard onRetry={() => load()} />}
+
+        <Pressable
+          style={styles.catchupsRow}
+          onPress={() => router.push('/catchups')}>
+          <ThemedView style={styles.catchupsInfo}>
+            <ThemedText style={styles.label}>Catch-ups</ThemedText>
+            <ThemedText
+              style={[
+                styles.catchupsStatus,
+                {
+                  color:
+                    catchupsSummary?.tone === 'amber'
+                      ? Colors.warning
+                      : catchupsSummary?.tone === 'aqua'
+                        ? Colors.aqua
+                        : Colors.slate,
+                },
+              ]}>
+              {catchupsSummary ? catchupsSummary.text : '—'}
+            </ThemedText>
+          </ThemedView>
+          <ThemedText style={styles.catchupsChevron}>›</ThemedText>
+        </Pressable>
 
         <ThemedView style={styles.card}>
           <ThemedText style={styles.label}>Reef Doser device URL</ThemedText>
@@ -972,6 +1010,25 @@ const styles = StyleSheet.create({
     ...Typography.h1,
     color: Colors.pearl,
     marginBottom: Spacing.md,
+  },
+  catchupsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.abyss,
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    marginBottom: Spacing.md,
+  },
+  catchupsInfo: {
+    flex: 1,
+  },
+  catchupsStatus: {
+    ...Typography.small,
+  },
+  catchupsChevron: {
+    fontSize: 22,
+    color: Colors.titanium,
+    marginLeft: Spacing.sm,
   },
   card: {
     backgroundColor: Colors.abyss,
