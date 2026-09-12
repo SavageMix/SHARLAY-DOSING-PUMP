@@ -1,5 +1,6 @@
 import { Gpio } from 'pigpio';
 import type { PumpId } from '@reef/shared';
+import { installSignalOverrides } from './signals.js';
 
 // -----------------------------------------------------------------------------
 // GPIO pin map — BCM numbering. EN is active-LOW, one per pump, with a 10k
@@ -74,6 +75,18 @@ export function configurePins(): void {
 
 // Run configuration at module load so pins are always in a known-safe state.
 configurePins();
+
+// pigpio's C library hijacks every signal handler at initialisation and
+// exits 255 on "unhandled" ones (SIGCONT from systemctl stop, SIGTSTP from
+// Ctrl-Z, SIGHUP). Override the non-fatal ones. The call sits here, AFTER
+// the Gpio constructors above, so pigpio's sigSetHandler has already run and
+// libuv's registration overrides it.
+installSignalOverrides({
+  onHangup: () => {
+    shutdown();
+    process.exit(0);
+  },
+});
 
 // -----------------------------------------------------------------------------
 // Shutdown handler: always leave every driver disabled.
