@@ -75,6 +75,42 @@ describe('Server endpoints', () => {
     }
   });
 
+  it('GET /api/status serves boot audit findings when provided, empty otherwise', async () => {
+    const finding = {
+      id: 'orphan-catchup-event:ev-1',
+      check: 'orphan-catchup-event',
+      message: 'A PO4 catch-up dose fired with no missed-dose record linked.',
+      pumpId: 'po4',
+    } as const;
+    const findingsDb = new ReefDatabase(':memory:');
+    const withFindings = await createServer(
+      findingsDb,
+      createEngine(findingsDb),
+      { integrityFindings: [finding] },
+    );
+    const plainDb = new ReefDatabase(':memory:');
+    const plain = await createServer(plainDb, createEngine(plainDb));
+    try {
+      const res = await withFindings.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).integrityFindings).toEqual([finding]);
+
+      const clean = await plain.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      expect(JSON.parse(clean.body).integrityFindings).toEqual([]);
+    } finally {
+      await withFindings.close();
+      await plain.close();
+      findingsDb.close();
+      plainDb.close();
+    }
+  });
+
   it('GET /api/limits reflects a changed system volume', async () => {
     const { db, server, scheduler } = await buildServer();
     try {

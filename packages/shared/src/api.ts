@@ -75,6 +75,33 @@ export interface CatchupQueueStatus {
   queued: CatchupQueueItem[];
 }
 
+/**
+ * A discrepancy found by the boot-time integrity audit (SELECT-only — the
+ * audit never repairs, fires, or dismisses anything). `id` is stable so the
+ * app can let the user dismiss a finding locally without it resurfacing on
+ * every refresh; dismissal never touches the underlying records.
+ */
+export type IntegrityCheckKind =
+  /** missed_doses 'completed' with no (or several) linked dose_events row. */
+  | 'completed-without-event'
+  /** dose_events source 'catchup' with no matching missed_doses row. */
+  | 'orphan-catchup-event'
+  /** A past schedule slot has neither a handled dose event nor a missed-dose entry. */
+  | 'unresolved-slot'
+  /** A missed_doses row is still 'confirmed' after boot reconciliation. */
+  | 'stuck-confirmed';
+
+export interface IntegrityFinding {
+  /** Stable key, e.g. "completed-without-event:<missedDoseId>". */
+  id: string;
+  check: IntegrityCheckKind;
+  /** Plain English, suitable for showing the owner directly. */
+  message: string;
+  pumpId?: PumpId;
+  /** Original wall-clock slot (ISO), when the finding concerns one. */
+  missedSlotIso?: string;
+}
+
 export interface StatusResponse {
   pumps: PumpState[];
   containers: ContainerInfo[];
@@ -82,6 +109,8 @@ export interface StatusResponse {
   queue: DoseEvent[];
   queueDepth: number;
   catchupQueue: CatchupQueueStatus;
+  /** Boot-time integrity audit findings; empty when the record agrees with itself. */
+  integrityFindings: IntegrityFinding[];
   systemVolumeLitres: number;
   prime: {
     priming: boolean;

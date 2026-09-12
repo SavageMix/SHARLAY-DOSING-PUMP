@@ -9,6 +9,10 @@ import type {
 import type { DoseRepository, PumpCalibration } from './engine.js';
 import type { SchedulerRepository } from './scheduler.js';
 import type { MissedDosesRepository } from './missed-doses.js';
+import {
+  createAuditStore,
+  type IntegrityAuditStore,
+} from './audit.js';
 
 const DEFAULT_CONTAINER_CAPACITY_ML = 1000;
 const DEFAULT_SYSTEM_VOLUME_LITRES = 380;
@@ -519,6 +523,15 @@ export class ReefDatabase
 
   getEnabledSchedules(): DoseSchedule[] {
     return this.getSchedules().filter((s) => s.enabled);
+  }
+
+  /**
+   * Read-only store for the boot-time integrity audit (see audit.ts). The
+   * audit is strictly SELECT-only: it reports inconsistencies and never
+   * repairs, fires, or dismisses anything.
+   */
+  createAuditStore(): IntegrityAuditStore {
+    return createAuditStore(this.db);
   }
 
   updateSchedule(

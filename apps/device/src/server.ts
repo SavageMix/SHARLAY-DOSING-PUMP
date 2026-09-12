@@ -7,7 +7,12 @@ import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import { z } from 'zod';
 import { computeDoseLimits, getNextDueDate, LIMITS } from '@reef/shared';
-import type { ContainerInfo, PumpId, PumpState } from '@reef/shared';
+import type {
+  ContainerInfo,
+  IntegrityFinding,
+  PumpId,
+  PumpState,
+} from '@reef/shared';
 import type { ReefDatabase } from './db.js';
 import type { Engine } from './engine.js';
 import {
@@ -421,7 +426,11 @@ const TEST_PAGE_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
-export async function createServer(db: ReefDatabase, engine: Engine) {
+export async function createServer(
+  db: ReefDatabase,
+  engine: Engine,
+  options: { integrityFindings?: IntegrityFinding[] } = {},
+) {
   const fastify = Fastify({
     logger: false,
   });
@@ -574,6 +583,9 @@ export async function createServer(db: ReefDatabase, engine: Engine) {
         calibrating: isAnyPumpCalibrating(),
         lastResult: getLastCalibrationResult(),
       },
+      // Boot-time integrity audit findings (see audit.ts). Informational
+      // only — the audit is read-only and never repairs what it reports.
+      integrityFindings: options.integrityFindings ?? [],
     };
   });
 

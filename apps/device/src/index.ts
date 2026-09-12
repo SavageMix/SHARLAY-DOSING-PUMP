@@ -6,6 +6,7 @@ import { createServer } from './server.js';
 import { waitForClockSync } from './clock-sync.js';
 import { isCalibrating } from './calibrator.js';
 import { isPriming } from './primer.js';
+import { runIntegrityAudit } from './audit.js';
 
 // The default DB lives next to the compiled output (apps/device/reef-doser.db)
 // rather than being resolved from the process CWD. A relative './reef-doser.db'
@@ -21,6 +22,22 @@ const HOST = process.env.REEF_HOST ?? '0.0.0.0';
 async function main(): Promise<void> {
   console.log(`Database: ${DB_PATH}`);
   const db = new ReefDatabase(DB_PATH);
+
+  // Boot-time integrity audit — a SELECT-only observer. Runs after the
+  // database's boot reconciliation (inside the constructor) so the
+  // 'stuck-confirmed' check verifies that pass actually ran. It never writes,
+  // never touches the engine, and never fires/repairs/dismisses anything.
+  const audit = runIntegrityAudit(db.createAuditStore(), new Date());
+  if (audit.findings.length === 0) {
+    console.log(
+      `[audit] integrity check passed — ${audit.verified} records verified`,
+    );
+  } else {
+    for (const finding of audit.findings) {
+      console.warn(`[audit] FINDING [${finding.check}] ${finding.message}`);
+    }
+  }
+
   const engine = createEngine(db, {
     // Global motor lock: prime and calibration own the motor outside the
     // dose queue; the engine waits for them before energising any driver.
@@ -29,7 +46,9 @@ async function main(): Promise<void> {
       (['alk', 'ca', 'no3', 'po4'] as const).some((id) => isCalibrating(id)),
   });
   const scheduler = createScheduler(db, engine);
-  const server = await createServer(db, engine);
+  const server = await createServer(db, engine, {
+    integrityFindings: audit.findings,
+  });
 
   // Start the API server immediately so the app can connect and show status
   // even while we wait for the system clock to become trustworthy.
