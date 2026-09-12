@@ -177,6 +177,7 @@ export const Colors = {
   midnight: Palette.midnight,
   deepOcean: Palette.deepOcean,
   aqua: Palette.electricAqua,
+  blue: Palette.sapphire,
   violet: Palette.reefViolet,
   coral: Palette.coralBloom,
   pearl: Palette.pearl,

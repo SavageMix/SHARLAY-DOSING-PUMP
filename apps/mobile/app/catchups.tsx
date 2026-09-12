@@ -195,7 +195,10 @@ export default function CatchupsScreen() {
   // Forced mode: block navigation away (back button, swipe, browser back)
   // until every pending entry has an explicit decision.
   usePreventRemove(!canClose, (e) => {
-    e.preventDefault();
+    // preventDefault is injected at runtime by the beforeRemove event emitter
+    // (the library's own implementation calls it too) but is missing from
+    // @react-navigation/core's callback type — hence the cast.
+    (e as { preventDefault?: () => void }).preventDefault?.();
   });
 
   // Forced mode exit: once nothing pending remains, leave automatically.

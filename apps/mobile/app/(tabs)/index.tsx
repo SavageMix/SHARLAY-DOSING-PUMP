@@ -43,7 +43,6 @@ import { describeCatchupQueue } from '@/src/lib/catchup-banner';
 import { isBlockingMissedDose } from '@/src/lib/catchups-page';
 import {
   getNextDueDate,
-  type DoseEvent,
   type DoseSchedule,
   type HistoryResponse,
   type LimitsResponse,
@@ -136,7 +135,7 @@ function describeArc(
 }
 
 function computeDosingConsistency(
-  history: DoseEvent[],
+  history: HistoryResponse,
   schedules: DoseSchedule[],
 ): { score: number | null; label: string } {
   const enabled = schedules.filter((s) => s.enabled);
@@ -166,7 +165,7 @@ function computeDosingConsistency(
 }
 
 function computePumpSparkline(
-  history: DoseEvent[],
+  history: HistoryResponse,
   pumpId: PumpId,
   daysBack: number,
 ): number[] {
@@ -189,7 +188,7 @@ function computePumpSparkline(
   return values;
 }
 
-function computeTodayTotal(history: DoseEvent[], pumpId: PumpId): number {
+function computeTodayTotal(history: HistoryResponse, pumpId: PumpId): number {
   const today = startOfDay(new Date()).getTime();
   return history.events
     .filter(

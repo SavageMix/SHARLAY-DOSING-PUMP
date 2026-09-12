@@ -4,6 +4,7 @@
 - Never run `npm audit fix --force`.
 - Design tokens live in `constants/Theme.ts` + `design/design-system.md` — all styling must use them.
 - Never modify `apps/device` or `packages/shared` during UI prompts.
+- The root `npm run typecheck` covers this app (`tsc --noEmit -p apps/mobile`) — it must stay clean. The Expo typed-routes file `.expo/types/router.d.ts` is generated; if it goes stale (route type errors for screens that exist), delete it and let `expo start` regenerate it.
 
 # Expo docs
 

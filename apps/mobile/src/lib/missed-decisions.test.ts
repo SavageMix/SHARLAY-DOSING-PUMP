@@ -58,12 +58,12 @@ describe('missed-dose decisions', () => {
     ];
 
     it('returns the current list untouched while entries are visible', () => {
-      const current = [{ id: 'user-is-deciding' }];
+      const current = [{ id: 'user-is-deciding', deferredUntil: null }];
       expect(nextModalList(false, current, fresh, Date.now())).toBe(current);
     });
 
     it('returns the current list untouched while a review is open', () => {
-      const current: Array<{ id: string }> = [];
+      const current: Array<{ id: string; deferredUntil?: string | null }> = [];
       expect(nextModalList(true, current, fresh, Date.now())).toBe(current);
     });
 
