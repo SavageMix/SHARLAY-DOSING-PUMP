@@ -22,7 +22,15 @@ import {
 export const primeRunKey = routineRunKey;
 
 export type PrimeReconcileInput = RoutineReconcileInput<PrimeResult>;
-export type PrimeReconcileOutput = RoutineReconcileOutput<PrimeResult>;
+
+export interface PrimeReconcileOutput {
+  /** End the local run UI; the device owns all stopping. */
+  clearLocalPrime: boolean;
+  /** A watchdog-stopped run to surface as the paused modal, if any. */
+  showWatchdogModal: PrimeResult | null;
+  handledKeys: Set<string>;
+  awaitingConfirmation: boolean;
+}
 
 function mapOutcome(
   outcome: RoutineReconcileOutput<PrimeResult>,

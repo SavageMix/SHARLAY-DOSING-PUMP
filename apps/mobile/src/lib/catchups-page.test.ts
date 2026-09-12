@@ -316,7 +316,12 @@ describe('buildResolvedGroups', () => {
     const resolved = [
       missed({ id: 'md-pending', status: 'pending' }),
       missed({ id: 'md-confirmed', status: 'confirmed' }),
-      missed({ id: 'md-snoozed', status: 'snoozed' }),
+      // Snoozed is still pending with a future deferredUntil — never renders.
+      missed({
+        id: 'md-snoozed',
+        status: 'pending',
+        deferredUntil: '2026-08-25T06:00:00.000Z',
+      }),
       missed({ id: 'md-ok', status: 'dismissed' }),
     ];
     const scheduled = doseEvent({ id: 'ev-2', source: 'schedule' });
