@@ -15,6 +15,12 @@ export interface MissedDosesRepository {
   updateScheduleLastRunAt(id: string, lastRunAt: string): void;
   getSystemVolumeLitres(): number;
   getTodayDoseMl(pumpId: PumpId): number;
+  /**
+   * Most recent COMPLETED dose event for a pump across ALL sources
+   * (schedule, catchup, manual, prime), as ISO started_at — drives the
+   * shared catch-up eligibility gate.
+   */
+  getLastCompletedDoseAt(pumpId: PumpId): string | null;
   createMissedDose(
     missed: Omit<MissedDose, 'id' | 'createdAt'>,
   ): MissedDose;
@@ -146,7 +152,7 @@ export async function confirmMissedDose(
   repository: MissedDosesRepository,
   engine: MissedDosesEngine,
   id: string,
-): Promise<string> {
+): Promise<string | null> {
   const missed = repository.getMissedDoseById(id);
   if (!missed) {
     throw new Error(`Missed dose ${id} not found`);
@@ -175,6 +181,20 @@ export async function confirmMissedDose(
   // terminal state (completed/failed/interrupted) when the dose physically
   // finishes — a status write racing after that would resurrect it.
   repository.updateMissedDoseStatus(id, 'confirmed');
+
+  // Shared per-pump eligibility gate: if the pump dosed recently (any
+  // source), this catch-up must wait rather than fire early. It stays
+  // confirmed with confirmAfter set, and the queue-drain tick fires it once
+  // the pump's last dose is old enough. Never dropped, never fired early.
+  const now = new Date();
+  if (!isCatchupFireEligible(repository, missed.pumpId, now)) {
+    const eligibleAt = nextCatchupEligibleAt(repository, missed.pumpId, now);
+    repository.setMissedDoseConfirmAfter(
+      id,
+      new Date(eligibleAt).toISOString(),
+    );
+    return null;
+  }
 
   const jobId = await engine.submitDose(
     missed.pumpId,
@@ -321,6 +341,45 @@ const DEFAULT_SNOOZE_MINUTES = 60;
 const CATCH_UP_MIN_INTERVAL_MS = 30 * 60 * 1000;
 
 /**
+ * The single per-pump eligibility gate consulted at EVERY catch-up fire
+ * point — single confirmation, batch confirmation, and the queue-drain tick
+ * (which also covers boot). A catch-up may fire only when the pump's most
+ * recent COMPLETED dose event — of ANY source: schedule, catchup, manual,
+ * prime — is at least CATCH_UP_MIN_INTERVAL_MS old. Anything else led to
+ * production incidents: same-pump catch-ups minutes apart and catch-ups
+ * landing right before a scheduled dose because eligibility was computed
+ * from per-entry anchors instead of the pump's actual dosing history.
+ */
+export function isCatchupFireEligible(
+  repository: Pick<MissedDosesRepository, 'getLastCompletedDoseAt'>,
+  pumpId: PumpId,
+  now: Date,
+): boolean {
+  const lastIso = repository.getLastCompletedDoseAt(pumpId);
+  if (!lastIso) return true;
+  return (
+    now.getTime() - new Date(lastIso).getTime() >= CATCH_UP_MIN_INTERVAL_MS
+  );
+}
+
+/**
+ * The next instant a catch-up may fire for this pump given its actual dosing
+ * history (now, when the pump has never dosed).
+ */
+function nextCatchupEligibleAt(
+  repository: Pick<MissedDosesRepository, 'getLastCompletedDoseAt'>,
+  pumpId: PumpId,
+  now: Date,
+): number {
+  const lastIso = repository.getLastCompletedDoseAt(pumpId);
+  if (!lastIso) return now.getTime();
+  return Math.max(
+    now.getTime(),
+    new Date(lastIso).getTime() + CATCH_UP_MIN_INTERVAL_MS,
+  );
+}
+
+/**
  * "Decide later": hide every pending entry until `until`. The entries stay
  * pending on the device (source of truth), so the snooze survives app
  * restarts and works identically on web and native. Once the horizon passes,
@@ -377,8 +436,11 @@ export async function confirmMissedDoses(
   for (const [pumpId, list] of byPump) {
     list.sort((a, b) => a.scheduledFor.localeCompare(b.scheduledFor));
     let usedTodayMl = repository.getTodayDoseMl(pumpId);
-    // Next allowed fire instant for this pump (first dose fires immediately).
-    let nextFireAt = now.getTime();
+    // First fire instant for this pump: anchored to the pump's ACTUAL last
+    // completed dose (any source), not to `now` — a scheduled/manual dose 5
+    // minutes ago means the first catch-up waits the full 30 min from that
+    // dose. The queue-drain gate re-verifies this at fire time.
+    let nextFireAt = nextCatchupEligibleAt(repository, pumpId, now);
 
     for (const entry of list) {
       if (entry.volumeMl > limits.maxSingleDoseMl) {
@@ -440,6 +502,14 @@ export async function fireScheduledConfirmations(
 ): Promise<void> {
   const due = repository.getDueScheduledConfirmations(now);
   for (const entry of due) {
+    // Shared per-pump eligibility gate (measured from the pump's actual last
+    // completed dose of ANY source). Not eligible yet → the entry stays
+    // queued — confirmed, confirmAfter unchanged — and is re-checked on the
+    // next tick. Never dropped, never fired early.
+    if (!isCatchupFireEligible(repository, entry.pumpId, now)) {
+      continue;
+    }
+
     const limits = computeDoseLimits(repository.getSystemVolumeLitres());
     const todayMl = repository.getTodayDoseMl(entry.pumpId);
 

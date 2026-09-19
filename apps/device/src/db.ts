@@ -526,6 +526,22 @@ export class ReefDatabase
   }
 
   /**
+   * Most recent COMPLETED dose event for a pump across ALL sources
+   * (schedule, catchup, manual, prime) — the shared catch-up eligibility
+   * gate measures the stagger from actual delivered liquid, never from
+   * per-entry anchors.
+   */
+  getLastCompletedDoseAt(pumpId: PumpId): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT MAX(started_at) AS last_at FROM dose_events
+         WHERE pump_id = ? AND status = 'completed'`,
+      )
+      .get(pumpId) as { last_at: string | null } | undefined;
+    return row?.last_at ?? null;
+  }
+
+  /**
    * Read-only store for the boot-time integrity audit (see audit.ts). The
    * audit is strictly SELECT-only: it reports inconsistencies and never
    * repairs, fires, or dismisses anything.
