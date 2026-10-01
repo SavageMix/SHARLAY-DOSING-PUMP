@@ -117,11 +117,21 @@ function ResolvedSlot({ row }: { row: ResolvedSlotRow }) {
       </ThemedView>
     );
   }
+  if (row.outcome === 'expired') {
+    return (
+      <ThemedView style={styles.resolvedSlotRow}>
+        <Ionicons name="remove-circle-outline" size={16} color={Colors.danger} />
+        <ThemedText style={[styles.resolvedSlotText, styles.skippedText]}>
+          missed {when} · expired — never delivered ({row.ml.toFixed(2)} mL)
+        </ThemedText>
+      </ThemedView>
+    );
+  }
   return (
     <ThemedView style={styles.resolvedSlotRow}>
       <Ionicons name="remove-circle-outline" size={16} color={Colors.danger} />
       <ThemedText style={[styles.resolvedSlotText, styles.skippedText]}>
-        missed {when} · {row.outcome === 'expired' ? 'expired' : 'skipped'}
+        missed {when} · skipped
       </ThemedText>
     </ThemedView>
   );
@@ -184,8 +194,10 @@ export default function CatchupsScreen() {
       ]);
       setOffline(false);
       // nextModalList keeps the current list while the user is deciding;
-      // only an empty list (everything resolved) is refreshed.
-      setPending((prev) => nextModalList(false, prev, missed, Date.now()));
+      // only an empty list (everything resolved) is refreshed — and the
+      // fresh list is taken whole, snoozed entries included, so the page
+      // shows exactly what the pending count reports.
+      setPending((prev) => nextModalList(false, prev, missed));
       setPendingLoaded(true);
       setQueue(status.catchupQueue ?? { firing: null, queued: [] });
       setFired(history.events);

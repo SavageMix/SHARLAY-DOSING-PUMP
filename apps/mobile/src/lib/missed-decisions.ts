@@ -47,21 +47,23 @@ export function planDoseSelection<T extends { id: string }>(
 }
 
 /**
- * Decide whether a background poll may refresh the modal's entry list.
- * Only when the modal is fully closed (no open review, no visible entries)
- * does the poll take over — the user's in-progress selection is sacred.
+ * Decide which pending entries the decision list shows after a poll.
+ *
+ * Two rules:
+ * - FREEZE while a list is on screen (an open review, or a non-empty current
+ *   list): background polls must never mutate or re-render an in-progress
+ *   decision — a layout-shift mis-tap submitted a batch on hardware once.
+ * - Otherwise take the fresh pending list WHOLE. The Catch-ups page is the
+ *   always-available decision UI: snoozed ("Decide later") entries stay
+ *   listed and actionable on every visit, so the pending count and the
+ *   decisions shown always come from the same payload — a count can never
+ *   show entries the page can't display.
  */
-export function nextModalList<T extends { deferredUntil?: string | null }>(
+export function nextModalList<T>(
   reviewOpen: boolean,
   currentList: T[],
   freshPending: T[],
-  now: number,
 ): T[] {
   if (reviewOpen || currentList.length > 0) return currentList;
-  return freshPending.filter(
-    (m) =>
-      !m.deferredUntil ||
-      Number.isNaN(new Date(m.deferredUntil).getTime()) ||
-      new Date(m.deferredUntil).getTime() <= now,
-  );
+  return freshPending;
 }

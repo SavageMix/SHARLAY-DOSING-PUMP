@@ -51,7 +51,7 @@ describe('missed-dose decisions', () => {
     expect(planDoseSelection(entries, checked).selectedIds).toEqual([]);
   });
 
-  describe('nextModalList — polling never mutates an open modal', () => {
+  describe('nextModalList — polling never mutates an open decision', () => {
     const fresh = [
       { id: 'a', deferredUntil: null },
       { id: 'b', deferredUntil: '2999-01-01T00:00:00.000Z' },
@@ -59,27 +59,20 @@ describe('missed-dose decisions', () => {
 
     it('returns the current list untouched while entries are visible', () => {
       const current = [{ id: 'user-is-deciding', deferredUntil: null }];
-      expect(nextModalList(false, current, fresh, Date.now())).toBe(current);
+      expect(nextModalList(false, current, fresh)).toBe(current);
     });
 
     it('returns the current list untouched while a review is open', () => {
       const current: Array<{ id: string; deferredUntil?: string | null }> = [];
-      expect(nextModalList(true, current, fresh, Date.now())).toBe(current);
+      expect(nextModalList(true, current, fresh)).toBe(current);
     });
 
-    it('takes the fresh pending list only when the modal is closed', () => {
-      expect(nextModalList(false, [], fresh, Date.now())).toEqual([
-        { id: 'a', deferredUntil: null },
-      ]);
-    });
-
-    it('re-shows snoozed entries whose snooze has lapsed', () => {
-      const lapsed = [
-        { id: 'a', deferredUntil: null },
-        { id: 'b', deferredUntil: '2000-01-01T00:00:00.000Z' },
-      ];
-      const next = nextModalList(false, [], lapsed, Date.now());
-      expect(next.map((m) => m.id)).toEqual(['a', 'b']);
+    it('takes the fresh pending list whole when the list is empty — snoozed entries are decisions too', () => {
+      // The Catch-ups page is the always-available decision UI: entries
+      // snoozed via "Decide later" stay listed and actionable on every
+      // visit, so the pending count and the decisions shown come from the
+      // same payload and can never disagree.
+      expect(nextModalList(false, [], fresh)).toEqual(fresh);
     });
   });
 });
