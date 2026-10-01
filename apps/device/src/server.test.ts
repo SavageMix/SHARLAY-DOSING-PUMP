@@ -170,6 +170,104 @@ describe('Server endpoints', () => {
     }
   });
 
+  it('POST /api/system/volume updates status and limits immediately', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      const set = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/system/volume',
+        payload: { systemVolumeLitres: 250 },
+      });
+      expect(set.statusCode).toBe(200);
+      expect(JSON.parse(set.body).systemVolumeLitres).toBe(250);
+
+      const status = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      expect(JSON.parse(status.body).systemVolumeLitres).toBe(250);
+
+      const limits = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/limits',
+      });
+      const effective = JSON.parse(limits.body).effective;
+      expect(effective.systemVolumeLitres).toBe(250);
+      expect(effective.maxSingleDoseMl).toBeCloseTo(3.25, 10);
+      expect(effective.maxDailyDoseMlPerPump).toBeCloseTo(16.25, 10);
+      expect(db.getSystemVolumeLitres()).toBe(250);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/system/volume rejects out-of-bounds and malformed values', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      for (const bad of [
+        { systemVolumeLitres: 5 },
+        { systemVolumeLitres: 5001 },
+        { systemVolumeLitres: -50 },
+        { systemVolumeLitres: '380' },
+        {},
+      ]) {
+        const res = await server.fastify.inject({
+          method: 'POST',
+          url: '/api/system/volume',
+          payload: bad,
+        });
+        expect(res.statusCode).toBe(400);
+        expect(JSON.parse(res.body).error).toBeTruthy();
+      }
+      // Nothing was written by the rejected attempts.
+      expect(db.getSystemVolumeLitres()).toBe(380);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('system volume set via POST /api/system/volume survives a full server restart', async () => {
+    const tmpPath = join(
+      tmpdir(),
+      `reef-volume-persist-${process.pid}-${Date.now()}.db`,
+    );
+    const boot = async () => {
+      const db = new ReefDatabase(tmpPath);
+      const engine = createEngine(db);
+      const server = await createServer(db, engine);
+      return { db, server };
+    };
+    let instance = await boot();
+    try {
+      const set = await instance.server.fastify.inject({
+        method: 'POST',
+        url: '/api/system/volume',
+        payload: { systemVolumeLitres: 420 },
+      });
+      expect(set.statusCode).toBe(200);
+
+      await instance.server.close();
+      instance.db.close();
+
+      // Simulated restart against the same database file.
+      instance = await boot();
+      const status = await instance.server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      expect(JSON.parse(status.body).systemVolumeLitres).toBe(420);
+      expect(instance.db.getSystemVolumeLitres()).toBe(420);
+    } finally {
+      await instance.server.close();
+      instance.db.close();
+      for (const suffix of ['', '-wal', '-shm']) {
+        await unlink(tmpPath + suffix).catch(() => {});
+      }
+    }
+  });
+
   it('a schedule created via POST /api/schedules survives a full server restart', async () => {
     const tmpPath = join(
       tmpdir(),

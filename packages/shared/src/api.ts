@@ -151,6 +151,15 @@ export interface LimitsResponse {
   effective: ComputedDoseLimits;
 }
 
+/** Request for POST /api/system/volume. Bounds enforced device-side too. */
+export interface SetSystemVolumeRequest {
+  systemVolumeLitres: number;
+}
+
+export interface SetSystemVolumeResponse {
+  systemVolumeLitres: number;
+}
+
 export interface ListSchedulesResponse {
   schedules: DoseSchedule[];
 }

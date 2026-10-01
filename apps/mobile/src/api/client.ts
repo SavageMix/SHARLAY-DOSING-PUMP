@@ -33,6 +33,8 @@ import type {
   SnoozeMissedDosesRequest,
   SnoozeMissedDosesResponse,
   StatusResponse,
+  SetSystemVolumeRequest,
+  SetSystemVolumeResponse,
   SkipNextDoseResponse,
   UpdateScheduleRequest,
   UpdateScheduleResponse,
@@ -123,6 +125,18 @@ export async function postDose(
   body: DoseRequest,
 ): Promise<DoseResponse> {
   return request<DoseResponse>(baseUrl, 'POST', '/api/dose', body);
+}
+
+export async function setSystemVolume(
+  baseUrl: string,
+  body: SetSystemVolumeRequest,
+): Promise<SetSystemVolumeResponse> {
+  return request<SetSystemVolumeResponse>(
+    baseUrl,
+    'POST',
+    '/api/system/volume',
+    body,
+  );
 }
 
 export async function startCalibration(

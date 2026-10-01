@@ -22,6 +22,7 @@ import {
   resolveDeviceBaseUrl,
   saveCalibration,
   setDeviceBaseUrl,
+  setSystemVolume,
   skipNextDose,
   startCalibration,
   startPrime,
@@ -29,6 +30,7 @@ import {
   stopPrime,
 } from '@/src/api/client';
 import { buildCatchupsSummary } from '@/src/lib/catchups-page';
+import { validateSystemVolumeInput } from '@/src/lib/system-volume';
 import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
 import {
   isCalibrationGoneError,
@@ -474,9 +476,17 @@ export default function SettingsScreen() {
       skipNext: boolean;
     }[];
     queueDepth: number;
+    systemVolumeLitres: number | null;
   } | null>(null);
   const [wizardPump, setWizardPump] = useState<PumpId | null>(null);
   const [message, setMessage] = useState('');
+  // System volume editor. A change needs an explicit confirm because it
+  // changes dose-impact math (limits derive from volume on the device).
+  const [volumeInput, setVolumeInput] = useState('');
+  const [volumePending, setVolumePending] = useState<number | null>(null);
+  const [volumeError, setVolumeError] = useState('');
+  const [volumeSaved, setVolumeSaved] = useState('');
+  const [volumeSaving, setVolumeSaving] = useState(false);
   const [primingPump, setPrimingPump] = useState<PumpId | null>(null);
   const [primeStartTime, setPrimeStartTime] = useState<number | null>(null);
   const [primeElapsedMs, setPrimeElapsedMs] = useState(0);
@@ -535,6 +545,7 @@ export default function SettingsScreen() {
           skipNext: p.skipNext ?? false,
         })) ?? [],
         queueDepth: data?.queueDepth ?? 0,
+        systemVolumeLitres: data?.systemVolumeLitres ?? null,
       });
       setPrimeState(data?.prime ?? null);
       const queue = data?.catchupQueue ?? { firing: null, queued: [] };
@@ -563,6 +574,42 @@ export default function SettingsScreen() {
       setMessage('Saved');
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Failed');
+    }
+  };
+
+  const handleVolumeRequest = () => {
+    const result = validateSystemVolumeInput(volumeInput);
+    if (!result.ok) {
+      setVolumeError(result.error);
+      setVolumePending(null);
+      return;
+    }
+    setVolumeError('');
+    setVolumeSaved('');
+    setVolumePending(result.value);
+  };
+
+  const handleVolumeCancel = () => {
+    setVolumePending(null);
+    setVolumeError('');
+  };
+
+  const handleVolumeConfirm = async () => {
+    if (!savedUrl || volumePending == null || volumeSaving) return;
+    setVolumeSaving(true);
+    setVolumeError('');
+    try {
+      await setSystemVolume(savedUrl, { systemVolumeLitres: volumePending });
+      // The device applies it immediately (engine caps, catch-up caps,
+      // /api/limits) — refreshing status shows the new value everywhere.
+      setVolumeInput('');
+      setVolumePending(null);
+      setVolumeSaved(`System volume set to ${volumePending} L`);
+      await load();
+    } catch (err) {
+      setVolumeError(err instanceof Error ? err.message : 'Failed to save');
+    } finally {
+      setVolumeSaving(false);
     }
   };
 
@@ -786,6 +833,60 @@ export default function SettingsScreen() {
             <ThemedText style={styles.buttonText}>Save Device URL</ThemedText>
           </Pressable>
           {message ? <ThemedText style={styles.message}>{message}</ThemedText> : null}
+        </ThemedView>
+
+        <ThemedView style={styles.card}>
+          <ThemedText style={styles.label}>System volume</ThemedText>
+          <ThemedText style={styles.metric}>
+            Current:{' '}
+            {status?.systemVolumeLitres != null
+              ? `${status.systemVolumeLitres} L`
+              : '—'}{' '}
+            (display + sump)
+          </ThemedText>
+          <ThemedTextInput
+            style={styles.input}
+            value={volumeInput}
+            onChangeText={(text) => {
+              setVolumeInput(text);
+              setVolumePending(null);
+              setVolumeError('');
+            }}
+            placeholder="Litres"
+            placeholderTextColor={Colors.slate}
+            keyboardType="decimal-pad"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          {volumeError ? (
+            <ThemedText style={styles.errorText}>{volumeError}</ThemedText>
+          ) : null}
+          {volumeSaved ? (
+            <ThemedText style={styles.volumeSavedText}>{volumeSaved}</ThemedText>
+          ) : null}
+          {volumePending != null ? (
+            <>
+              <ThemedText style={styles.bodyText}>
+                Change system volume to {volumePending} L? Dose limits are
+                computed from this — it affects how much every pump may dose.
+              </ThemedText>
+              <Pressable
+                style={[styles.button, volumeSaving && styles.disabledButton]}
+                onPress={handleVolumeConfirm}
+                disabled={volumeSaving}>
+                <ThemedText style={styles.buttonText}>
+                  {volumeSaving ? 'Saving…' : 'Confirm change'}
+                </ThemedText>
+              </Pressable>
+              <Pressable onPress={handleVolumeCancel}>
+                <ThemedText style={styles.resetText}>Cancel</ThemedText>
+              </Pressable>
+            </>
+          ) : (
+            <Pressable style={styles.button} onPress={handleVolumeRequest}>
+              <ThemedText style={styles.buttonText}>Change volume</ThemedText>
+            </Pressable>
+          )}
         </ThemedView>
 
         <ThemedView style={styles.card}>
@@ -1325,6 +1426,11 @@ const styles = StyleSheet.create({
   errorText: {
     ...Typography.body,
     color: Colors.danger,
+    textAlign: 'center',
+  },
+  volumeSavedText: {
+    ...Typography.body,
+    color: Colors.success,
     textAlign: 'center',
   },
 });

@@ -17,6 +17,16 @@ export const HARD_LIMITS = {
 } as const;
 
 /**
+ * Acceptable range for the user's system volume setting (display + sump).
+ * The app validates input against these before sending; the device
+ * re-validates on POST /api/system/volume.
+ */
+export const SYSTEM_VOLUME_BOUNDS = {
+  minLitres: 10,
+  maxLitres: 5000,
+} as const;
+
+/**
  * Static hardware / safety constants. These are the fallback values shown
  * by the mobile app before a system volume is configured; the engine itself
  * uses computeDoseLimits() with the configured system volume.

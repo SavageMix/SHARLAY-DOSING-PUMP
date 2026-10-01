@@ -6,7 +6,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import { z } from 'zod';
-import { computeDoseLimits, getNextDueDate, LIMITS } from '@reef/shared';
+import { computeDoseLimits, getNextDueDate, LIMITS, SYSTEM_VOLUME_BOUNDS } from '@reef/shared';
 import type {
   ContainerInfo,
   IntegrityFinding,
@@ -115,6 +115,13 @@ const historyQuerySchema = z.object({
 const refillBodySchema = z.object({
   pumpId: pumpIdSchema,
   containerSizeMl: z.number().positive().optional(),
+});
+
+const systemVolumeBodySchema = z.object({
+  systemVolumeLitres: z
+    .number()
+    .min(SYSTEM_VOLUME_BOUNDS.minLitres)
+    .max(SYSTEM_VOLUME_BOUNDS.maxLitres),
 });
 
 function buildPumpState(db: ReefDatabase): PumpState[] {
@@ -605,6 +612,20 @@ export async function createServer(
     return {
       limits: LIMITS,
       effective: computeDoseLimits(db.getSystemVolumeLitres()),
+    };
+  });
+
+  // Editable system volume (display + sump). Takes effect immediately:
+  // every consumer (engine caps, catch-up caps, /api/limits, impact math)
+  // reads the value per request / per dose, so no restart is needed.
+  fastify.post('/api/system/volume', async (request, reply) => {
+    const body = systemVolumeBodySchema.safeParse(request.body);
+    if (!body.success) {
+      return reply.status(400).send({ error: firstZodMessage(body.error) });
+    }
+    db.setSystemVolumeLitres(body.data.systemVolumeLitres);
+    return {
+      systemVolumeLitres: db.getSystemVolumeLitres(),
     };
   });
 
