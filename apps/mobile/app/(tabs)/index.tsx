@@ -42,6 +42,10 @@ import { Theme } from '@/constants/Theme';
 import { describeCatchupQueue } from '@/src/lib/catchup-banner';
 import { isBlockingMissedDose } from '@/src/lib/catchups-page';
 import {
+  reconcileDoseStates,
+  type DoseTrackingState,
+} from '@/src/lib/dose-states';
+import {
   activeFindings,
   loadDismissedFindingIds,
 } from '@/src/lib/integrity-findings';
@@ -79,11 +83,7 @@ interface DashboardData {
   history: HistoryResponse;
 }
 
-interface DoseState {
-  status: 'idle' | 'queued' | 'running' | 'done' | 'error';
-  message: string;
-  eventId?: string;
-}
+interface DoseState extends DoseTrackingState {}
 
 function formatTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -904,51 +904,17 @@ export default function DashboardScreen() {
 
   useMemo(() => {
     if (!data?.status) return;
-    setDoseStates((prev) => {
-      const next = { ...prev };
-      for (const [pumpId, state] of Object.entries(prev)) {
-        if (
-          !state.eventId ||
-          (state.status !== 'queued' && state.status !== 'running')
-        ) {
-          continue;
-        }
-        const event =
-          data.status.currentDose?.id === state.eventId
-            ? data.status.currentDose
-            : data.status.queue?.find((e) => e.id === state.eventId);
-        if (!event) {
-          next[pumpId] = {
-            status: 'done',
-            message: 'Dose finished',
-            eventId: state.eventId,
-          };
-        } else if (event.status === 'running') {
-          next[pumpId] = {
-            status: 'running',
-            message: 'Dosing…',
-            eventId: state.eventId,
-          };
-        } else if (event.status === 'queued') {
-          const position =
-            (data.status.queue?.findIndex((e) => e.id === state.eventId) ??
-              -1) + 1;
-          next[pumpId] = {
-            status: 'queued',
-            message: `Queued #${position}`,
-            eventId: state.eventId,
-          };
-        } else {
-          next[pumpId] = {
-            status: 'done',
-            message: `Dose ${event.status}`,
-            eventId: state.eventId,
-          };
-        }
-      }
-      return next;
-    });
-  }, [data?.status]);
+    // /api/status + /api/history are the single source of truth: a dose is
+    // only 'done' when the record says completed, and a cap rejection shows
+    // the server's reason — never a tap-time guess (see lib/dose-states).
+    setDoseStates((prev) =>
+      reconcileDoseStates(prev, {
+        currentDose: data.status.currentDose ?? null,
+        queue: data.status.queue ?? [],
+        history: data.history.events,
+      }),
+    );
+  }, [data?.status, data?.history]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
