@@ -21,11 +21,14 @@ export function isBlockingMissedDose(missed: MissedDose, now: number): boolean {
 }
 
 /**
- * Forced-decision mode: the page cannot be left while any entry still needs
- * an explicit decision. Voluntary visits (forced=false) may always leave.
+ * Exiting the Catch-ups page (any mode) never dismisses anything — entries
+ * stay pending and the decision follows the user (Dashboard banner +
+ * Settings row keep counting them). A forced-mode exit is snoozed for 1h so
+ * leaving doesn't immediately re-trap the user on the next poll; voluntary
+ * exits leave the entries fully blocking so the alarm stays loud.
  */
-export function canCloseCatchups(forced: boolean, pendingCount: number): boolean {
-  return !forced || pendingCount === 0;
+export function shouldSnoozeOnExit(forced: boolean): boolean {
+  return forced;
 }
 
 export type CatchupsTone = 'amber' | 'aqua' | 'calm';

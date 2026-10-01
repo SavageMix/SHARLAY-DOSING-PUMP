@@ -4,12 +4,12 @@ import {
   buildCatchupsSummary,
   buildQueueSection,
   buildResolvedGroups,
-  canCloseCatchups,
   dayLabelFor,
   groupMissedByPump,
   groupResolvedByDay,
   isBlockingMissedDose,
   RESOLVED_WINDOW_HOURS,
+  shouldSnoozeOnExit,
 } from './catchups-page';
 
 // Day grouping must be pinned to a non-UTC zone: an entry at 23:30 local and
@@ -69,15 +69,35 @@ describe('isBlockingMissedDose', () => {
   });
 });
 
-describe('canCloseCatchups — forced-decision gating', () => {
-  it('blocks dismissal in forced mode while any entry is pending', () => {
-    expect(canCloseCatchups(true, 3)).toBe(false);
-    expect(canCloseCatchups(true, 1)).toBe(false);
-    expect(canCloseCatchups(true, 0)).toBe(true);
+describe('forced-screen escape — leaving never dismisses', () => {
+  it('forced exits are snoozed (no immediate re-trap); voluntary exits are not', () => {
+    expect(shouldSnoozeOnExit(true)).toBe(true);
+    expect(shouldSnoozeOnExit(false)).toBe(false);
   });
 
-  it('always allows leaving on voluntary visits', () => {
-    expect(canCloseCatchups(false, 5)).toBe(true);
+  it('escaped (snoozed) entries stay pending and keep showing in summaries', () => {
+    const now = Date.parse('2026-08-24T12:00:00.000Z');
+    const entry = missed({
+      id: 'a',
+      deferredUntil: '2026-08-24T13:00:00.000Z',
+    });
+    // Snoozed: no forced re-prompt, but the entry itself is untouched…
+    expect(isBlockingMissedDose(entry, now)).toBe(false);
+    expect(entry.status).toBe('pending');
+    // …and it still counts toward the Dashboard banner / Settings row.
+    const summary = buildCatchupsSummary(1, null, 0);
+    expect(summary.tone).toBe('amber');
+    expect(summary.pendingCount).toBe(1);
+  });
+
+  it('lapsed snooze blocks again — the decision follows the user', () => {
+    const now = Date.parse('2026-08-24T12:00:00.000Z');
+    expect(
+      isBlockingMissedDose(
+        missed({ id: 'a', deferredUntil: '2026-08-24T11:59:00.000Z' }),
+        now,
+      ),
+    ).toBe(true);
   });
 });
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -7,7 +7,6 @@ import {
   View,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { usePreventRemove } from '@react-navigation/core';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { OfflineCard } from '@/components/OfflineCard';
@@ -28,11 +27,11 @@ import { nextModalList, planDoseSelection, toggleChecked } from '@/src/lib/misse
 import {
   buildQueueSection,
   buildResolvedGroups,
-  canCloseCatchups,
   groupMissedByPump,
   groupResolvedByDay,
   RESOLVED_WINDOW_DAYS,
   RESOLVED_WINDOW_HOURS,
+  shouldSnoozeOnExit,
 } from '@/src/lib/catchups-page';
 import type { ResolvedSlotRow } from '@/src/lib/catchups-page';
 import {
@@ -160,7 +159,6 @@ export default function CatchupsScreen() {
   const [cardStates, setCardStates] = useState<Record<string, MissedCardState>>(
     {},
   );
-  const [decideLaterError, setDecideLaterError] = useState('');
 
   useEffect(() => {
     let mounted = true;
@@ -204,19 +202,12 @@ export default function CatchupsScreen() {
     return () => clearInterval(interval);
   }, [load]);
 
-  const canClose = canCloseCatchups(forced, pending.length);
-  const pendingCountRef = useRef(pending.length);
-  useEffect(() => {
-    pendingCountRef.current = pending.length;
-  }, [pending.length]);
-  // Forced mode: block navigation away (back button, swipe, browser back)
-  // until every pending entry has an explicit decision.
-  usePreventRemove(!canClose, (e) => {
-    // preventDefault is injected at runtime by the beforeRemove event emitter
-    // (the library's own implementation calls it too) but is missing from
-    // @react-navigation/core's callback type — hence the cast.
-    (e as { preventDefault?: () => void }).preventDefault?.();
-  });
+  // Forced mode used to block navigation away (usePreventRemove) until every
+  // entry was decided. That trapped users who needed to check the tank or
+  // History first. Now both the header buttons and "Decide later" leave
+  // freely; a forced exit snoozes 1h so the decision follows the user
+  // instead of re-trapping them on the next poll. Nothing is ever dismissed
+  // by leaving — entries stay pending and the Dashboard banner persists.
 
   // Forced mode exit: once nothing pending remains, leave automatically.
   useEffect(() => {
@@ -365,46 +356,58 @@ export default function CatchupsScreen() {
     }
   };
 
-  const handleDecideLater = async () => {
-    if (!baseUrl || forced) return;
-    setDecideLaterError('');
-    try {
-      await snoozeMissedDoses(baseUrl);
-    } catch (err) {
-      // Keep the page open rather than pretending the snooze worked.
-      setDecideLaterError(
-        err instanceof Error ? err.message : 'Failed to snooze',
-      );
-      return;
-    }
+  const leave = () => {
     if (router.canGoBack()) router.back();
     else router.replace('/(tabs)');
   };
 
+  // Leaving NEVER dismisses anything — entries stay pending and the decision
+  // follows the user (Dashboard banner + Settings row). Forced-mode exits
+  // snooze for 1h (see shouldSnoozeOnExit) so leaving doesn't immediately
+  // re-open the forced screen on the next poll.
+  const escapeForced = async () => {
+    if (baseUrl && shouldSnoozeOnExit(forced)) {
+      try {
+        await snoozeMissedDoses(baseUrl);
+      } catch {
+        // The snooze couldn't be recorded — still leave (nothing is
+        // destroyed either way); the forced screen simply reappears on a
+        // later poll instead of after the 1h snooze.
+      }
+    }
+    leave();
+  };
+
+  const handleDecideLater = () => {
+    void escapeForced();
+  };
+
   const close = () => {
-    if (!canClose) return;
-    if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)');
+    leave();
   };
 
   return (
     <ThemedView style={styles.container}>
       <ThemedView style={styles.headerRow}>
-        {canClose ? (
-          <Pressable style={styles.backButton} onPress={close}>
-            <Ionicons name="chevron-back" size={22} color={Colors.pearl} />
-          </Pressable>
-        ) : (
-          <View style={styles.backButton} />
-        )}
+        <Pressable
+          style={styles.backButton}
+          accessibilityLabel="Back"
+          onPress={() => {
+            // Forced exits snooze first so the user isn't re-trapped.
+            if (forced) void escapeForced();
+            else close();
+          }}>
+          <Ionicons name="chevron-back" size={22} color={Colors.pearl} />
+        </Pressable>
         <ThemedText style={styles.header}>Catch-ups</ThemedText>
-        {canClose ? (
-          <Pressable onPress={close} accessibilityLabel="Close catch-ups">
-            <ThemedText style={styles.doneText}>Done</ThemedText>
-          </Pressable>
-        ) : (
-          <View style={styles.doneSpacer} />
-        )}
+        <Pressable
+          onPress={() => {
+            if (forced) void escapeForced();
+            else close();
+          }}
+          accessibilityLabel="Close catch-ups">
+          <ThemedText style={styles.doneText}>Done</ThemedText>
+        </Pressable>
       </ThemedView>
 
       <ScrollView contentContainerStyle={styles.scroll}>
@@ -414,8 +417,10 @@ export default function CatchupsScreen() {
           <ThemedView style={styles.forcedCard}>
             <ThemedText style={styles.forcedText}>
               These doses were missed while the device was off. Dosing them is
-              optional — every entry needs an explicit decision (dose or
-              skip) before you can continue.
+              optional — nothing is ever skipped unless you explicitly skip
+              it. Decide now, or tap "Decide later" and come back within the
+              hour: the entries stay pending and the dashboard banner keeps
+              reminding you.
             </ThemedText>
           </ThemedView>
         ) : null}
@@ -539,22 +544,13 @@ export default function CatchupsScreen() {
                 </ThemedView>
               );
             })}
-            {!forced ? (
-              <>
-                <Pressable
-                  style={[styles.button, styles.decideLaterButton]}
-                  onPress={handleDecideLater}>
-                  <ThemedText style={styles.decideLaterText}>
-                    Decide later
-                  </ThemedText>
-                </Pressable>
-                {decideLaterError ? (
-                  <ThemedText style={styles.errorText}>
-                    {decideLaterError}
-                  </ThemedText>
-                ) : null}
-              </>
-            ) : null}
+            <Pressable
+              style={[styles.button, styles.decideLaterButton]}
+              onPress={handleDecideLater}>
+              <ThemedText style={styles.decideLaterText}>
+                Decide later
+              </ThemedText>
+            </Pressable>
           </ThemedView>
         ) : (
           <ThemedView style={styles.section}>
@@ -730,9 +726,6 @@ const styles = StyleSheet.create({
     color: Colors.aqua,
     width: 44,
     textAlign: 'right',
-  },
-  doneSpacer: {
-    width: 44,
   },
   scroll: {
     padding: Spacing.md,
