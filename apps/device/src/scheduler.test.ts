@@ -97,12 +97,15 @@ class FakeSchedulerRepository implements SchedulerRepository, MissedDosesReposit
     );
   }
 
-  expireMissedDosesBefore(threshold: string): void {
+  expireMissedDosesBefore(threshold: string): number {
+    let expired = 0;
     for (const missed of this.missedDoses) {
       if (missed.status === 'pending' && missed.createdAt < threshold) {
         missed.status = 'expired';
+        expired += 1;
       }
     }
+    return expired;
   }
 
   hasPendingMissedDoseForSlot(scheduleId: string, scheduledFor: string): boolean {

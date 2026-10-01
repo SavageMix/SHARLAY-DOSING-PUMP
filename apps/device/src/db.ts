@@ -787,14 +787,15 @@ export class ReefDatabase
     return rows.map((row) => this.mapMissedDoseRow(row));
   }
 
-  expireMissedDosesBefore(threshold: string): void {
-    this.db
+  expireMissedDosesBefore(threshold: string): number {
+    const result = this.db
       .prepare(
         `UPDATE missed_doses
          SET status = 'expired'
          WHERE status = 'pending' AND created_at < ?`,
       )
       .run(threshold);
+    return result.changes;
   }
 
   /**

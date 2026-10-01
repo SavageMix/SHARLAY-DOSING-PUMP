@@ -304,11 +304,14 @@ describe('buildResolvedGroups', () => {
 
   it('expired entries count as skipped and are labelled expired', () => {
     const resolved = [
-      missed({ id: 'md-ca', pumpId: 'ca', status: 'expired' }),
+      missed({ id: 'md-ca', pumpId: 'ca', status: 'expired', volumeMl: 2 }),
     ];
     const ca = buildResolvedGroups([], resolved, PUMP_ORDER)[1];
     expect(ca.skippedCount).toBe(1);
     expect(ca.rows[0].outcome).toBe('expired');
+    // The row must carry the original volume so the UI can say
+    // "expired — never delivered (2.00 mL)".
+    expect(ca.rows[0].ml).toBe(2);
   });
 
   it('failed entries are counted separately and carry the event error', () => {
@@ -497,5 +500,19 @@ describe('groupMissedByPump', () => {
     );
     expect(groups.map((g) => g.pumpId)).toEqual(['alk', 'po4']);
     expect(groups[0].entries.map((e) => e.id)).toEqual(['2', '3']);
+  });
+
+  it('never drops an entry — the pending count and the decisions shown stay equal', () => {
+    // Both the NEEDS DECISION list and the count/banner derive from one
+    // payload; grouping must be lossless or a count could show entries the
+    // page can't display.
+    const entries = [
+      missed({ id: '1', pumpId: 'alk', deferredUntil: '2999-01-01T00:00:00.000Z' }),
+      missed({ id: '2', pumpId: 'ca' }),
+      missed({ id: '3', pumpId: 'no3' }),
+      missed({ id: '4', pumpId: 'po4' }),
+    ];
+    const groups = groupMissedByPump(entries, PUMP_ORDER);
+    expect(groups.reduce((n, g) => n + g.entries.length, 0)).toBe(entries.length);
   });
 });

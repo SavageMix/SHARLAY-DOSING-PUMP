@@ -24,6 +24,7 @@ import {
   type MissedDosesEngine,
   type MissedDosesRepository,
 } from '../src/missed-doses.js';
+import { ReefDatabase } from '../src/db.js';
 
 class FakeMissedDosesRepository
   implements MissedDosesRepository
@@ -119,12 +120,15 @@ class FakeMissedDosesRepository
     );
   }
 
-  expireMissedDosesBefore(threshold: string): void {
+  expireMissedDosesBefore(threshold: string): number {
+    let expired = 0;
     for (const missed of this.missedDoses) {
       if (missed.status === 'pending' && missed.createdAt < threshold) {
         missed.status = 'expired';
+        expired += 1;
       }
     }
+    return expired;
   }
 
   hasPendingMissedDoseForSlot(
@@ -471,9 +475,110 @@ describe('expireStaleMissedDoses', () => {
       createdAt: '2026-08-23T09:30:00.000Z',
     });
 
-    expireStaleMissedDoses(repo, now);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      expireStaleMissedDoses(repo, now);
+    } finally {
+      logSpy.mockRestore();
+    }
 
     expect(repo.missedDoses[0].status).toBe('pending');
+    // Nothing expired — the sweep must stay silent.
+    expect(logSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('expired undelivered'),
+    );
+  });
+
+  it('writes a journal line per expired batch, visible in journalctl', () => {
+    const now = new Date('2026-08-24T10:00:00Z');
+    vi.setSystemTime(now);
+
+    const repo = new FakeMissedDosesRepository();
+    for (const id of ['missed-1', 'missed-2']) {
+      repo.missedDoses.push({
+        id,
+        scheduleId: 'sched-1',
+        pumpId: 'alk',
+        scheduledFor: '2026-08-23T09:00:00.000Z',
+        volumeMl: 1,
+        status: 'pending',
+        deferredUntil: null,
+        confirmAfter: null,
+        createdAt: '2026-08-23T09:30:00.000Z',
+      });
+    }
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      expireStaleMissedDoses(repo, now);
+      expect(logSpy).toHaveBeenCalledWith(
+        '[missed] 2 entries expired undelivered — owner never decided',
+      );
+
+      // A second pass expires nothing — no repeated line.
+      logSpy.mockClear();
+      expireStaleMissedDoses(repo, now);
+      expect(
+        logSpy.mock.calls.filter((args) =>
+          String(args[0]).includes('expired undelivered'),
+        ),
+      ).toHaveLength(0);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('expired entries leave the pending list, never inflate pending counts, and show in the resolved query', () => {
+    // End-to-end against the real database layer: the TTL sweep must not
+    // make entries vanish — they stay queryable as 'expired' for RESOLVED.
+    const db = new ReefDatabase(':memory:');
+    try {
+      // created_at is stamped from the system clock, so wind the fake clock
+      // back to plant an entry old enough to expire.
+      vi.setSystemTime(new Date('2026-08-23T09:30:00Z'));
+      db.createMissedDose({
+        scheduleId: 'sched-1',
+        pumpId: 'po4',
+        scheduledFor: '2026-08-23T09:00:00.000Z',
+        volumeMl: 2,
+        status: 'pending',
+        deferredUntil: null,
+        confirmAfter: null,
+      });
+      vi.setSystemTime(new Date('2026-08-24T09:30:00Z'));
+      db.createMissedDose({
+        scheduleId: 'sched-1',
+        pumpId: 'alk',
+        scheduledFor: '2026-08-24T09:00:00.000Z',
+        volumeMl: 1,
+        status: 'pending',
+        deferredUntil: null,
+        confirmAfter: null,
+      });
+
+      const now = new Date('2026-08-24T10:00:00Z');
+      vi.setSystemTime(now);
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        expireStaleMissedDoses(db, now);
+      } finally {
+        logSpy.mockRestore();
+      }
+
+      // Pending counts cover only the fresh entry…
+      expect(db.getPendingMissedDoses(now, true)).toHaveLength(1);
+      expect(db.getPendingMissedDoses(now, true)[0].pumpId).toBe('alk');
+      // …the expired one is terminal but still reported via the resolved
+      // endpoint payload (status 'expired', volume intact).
+      const resolved = db.getResolvedMissedDoses(now, 168);
+      expect(resolved).toHaveLength(1);
+      expect(resolved[0].status).toBe('expired');
+      expect(resolved[0].pumpId).toBe('po4');
+      expect(resolved[0].volumeMl).toBe(2);
+      expect(resolved[0].scheduledFor).toBe('2026-08-23T09:00:00.000Z');
+    } finally {
+      db.close();
+    }
   });
 });
 

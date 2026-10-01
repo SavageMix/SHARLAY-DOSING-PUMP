@@ -30,7 +30,8 @@ export interface MissedDosesRepository {
   snoozePendingMissedDoses(until: string): void;
   setMissedDoseConfirmAfter(id: string, confirmAfter: string | null): void;
   getDueScheduledConfirmations(now: Date): MissedDose[];
-  expireMissedDosesBefore(threshold: string): void;
+  /** Expires pending entries older than `threshold`; returns how many. */
+  expireMissedDosesBefore(threshold: string): number;
   hasPendingMissedDoseForSlot(
     scheduleId: string,
     scheduledFor: string,
@@ -227,7 +228,16 @@ export function expireStaleMissedDoses(
   lookbackHours: number = DEFAULT_LOOKBACK_HOURS,
 ): void {
   const cutoff = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
-  repository.expireMissedDosesBefore(cutoff.toISOString());
+  const expired = repository.expireMissedDosesBefore(cutoff.toISOString());
+  if (expired > 0) {
+    // Expiry is the correct safety rule — liquid is never dosed without an
+    // explicit owner decision — but it must never be silent. One journal
+    // line per batch, and the entries stay visible in the app's RESOLVED
+    // section as "expired — never delivered".
+    console.log(
+      `[missed] ${expired} ${expired === 1 ? 'entry' : 'entries'} expired undelivered — owner never decided`,
+    );
+  }
 }
 
 /**
