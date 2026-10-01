@@ -429,7 +429,16 @@ const TEST_PAGE_HTML = `<!DOCTYPE html>
 export async function createServer(
   db: ReefDatabase,
   engine: Engine,
-  options: { integrityFindings?: IntegrityFinding[] } = {},
+  options: {
+    /** Boot-time snapshot; used only when no live getter is supplied. */
+    integrityFindings?: IntegrityFinding[];
+    /**
+     * Live source: re-runs the (read-only) audit so findings clear as soon as
+     * the underlying records gain a resolution, instead of freezing the
+     * boot-time snapshot. Takes precedence over `integrityFindings`.
+     */
+    getIntegrityFindings?: () => IntegrityFinding[];
+  } = {},
 ) {
   const fastify = Fastify({
     logger: false,
@@ -583,9 +592,12 @@ export async function createServer(
         calibrating: isAnyPumpCalibrating(),
         lastResult: getLastCalibrationResult(),
       },
-      // Boot-time integrity audit findings (see audit.ts). Informational
-      // only — the audit is read-only and never repairs what it reports.
-      integrityFindings: options.integrityFindings ?? [],
+      // Integrity audit findings (see audit.ts). Informational only — the
+      // audit is read-only and never repairs what it reports. Served live
+      // when a getter is supplied so findings reflect current truth and
+      // clear once their slot gains a resolution, not a boot-time snapshot.
+      integrityFindings:
+        options.getIntegrityFindings?.() ?? options.integrityFindings ?? [],
     };
   });
 

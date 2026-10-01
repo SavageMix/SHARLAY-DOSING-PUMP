@@ -6,6 +6,10 @@ import { createServer } from './server.js';
 import { waitForClockSync } from './clock-sync.js';
 import { isCalibrating } from './calibrator.js';
 import { isPriming } from './primer.js';
+import {
+  detectMissedDoses,
+  detectMissedDosesWithUntrustedClock,
+} from './missed-doses.js';
 import { runIntegrityAudit } from './audit.js';
 
 // The default DB lives next to the compiled output (apps/device/reef-doser.db)
@@ -23,21 +27,6 @@ async function main(): Promise<void> {
   console.log(`Database: ${DB_PATH}`);
   const db = new ReefDatabase(DB_PATH);
 
-  // Boot-time integrity audit — a SELECT-only observer. Runs after the
-  // database's boot reconciliation (inside the constructor) so the
-  // 'stuck-confirmed' check verifies that pass actually ran. It never writes,
-  // never touches the engine, and never fires/repairs/dismisses anything.
-  const audit = runIntegrityAudit(db.createAuditStore(), new Date());
-  if (audit.findings.length === 0) {
-    console.log(
-      `[audit] integrity check passed — ${audit.verified} records verified`,
-    );
-  } else {
-    for (const finding of audit.findings) {
-      console.warn(`[audit] FINDING [${finding.check}] ${finding.message}`);
-    }
-  }
-
   const engine = createEngine(db, {
     // Global motor lock: prime and calibration own the motor outside the
     // dose queue; the engine waits for them before energising any driver.
@@ -46,8 +35,16 @@ async function main(): Promise<void> {
       (['alk', 'ca', 'no3', 'po4'] as const).some((id) => isCalibrating(id)),
   });
   const scheduler = createScheduler(db, engine);
+
+  // Integrity findings are served LIVE: the getter re-runs the SELECT-only
+  // audit on every /api/status request (the DB is ~1k records, so this is
+  // milliseconds). Findings therefore clear as soon as a slot gains a
+  // resolution (a missed-dose entry or a fired dose) instead of lingering
+  // as a boot-time snapshot, and new inconsistencies surface without a
+  // restart. The audit never writes, so this is safe to re-run.
   const server = await createServer(db, engine, {
-    integrityFindings: audit.findings,
+    getIntegrityFindings: () =>
+      runIntegrityAudit(db.createAuditStore(), new Date()).findings,
   });
 
   // Start the API server immediately so the app can connect and show status
@@ -65,6 +62,36 @@ async function main(): Promise<void> {
     console.log(
       'Clock NOT synchronized after 300s — treating intervening doses as missed',
     );
+  }
+
+  // Missed-dose detection MUST run before the integrity audit: detection
+  // resolves overdue slots by creating pending missed-dose entries for them,
+  // and the audit's 'unresolved-slot' check treats any missed_doses row as a
+  // resolution. Running the audit first raised findings for slots detection
+  // resolved ~30s later. This mirrors the detection scheduler.start()
+  // performs; that re-run is then a no-op because lastRunAt has advanced.
+  if (clockTrusted) {
+    detectMissedDoses(db, new Date());
+  } else {
+    detectMissedDosesWithUntrustedClock(db, new Date());
+  }
+
+  // Boot-time integrity audit — a SELECT-only observer. Runs after the
+  // database's boot reconciliation (inside the constructor) so the
+  // 'stuck-confirmed' check verifies that pass actually ran, and after
+  // missed-dose detection so check 3 sees the true post-detection state. It
+  // never writes, never touches the engine, and never fires/repairs/dismisses
+  // anything. Logged once here; /api/status serves findings live via the
+  // getter above.
+  const audit = runIntegrityAudit(db.createAuditStore(), new Date());
+  if (audit.findings.length === 0) {
+    console.log(
+      `[audit] integrity check passed — ${audit.verified} records verified`,
+    );
+  } else {
+    for (const finding of audit.findings) {
+      console.warn(`[audit] FINDING [${finding.check}] ${finding.message}`);
+    }
   }
 
   scheduler.start({ clockTrusted });

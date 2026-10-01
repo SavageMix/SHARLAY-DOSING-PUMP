@@ -10,6 +10,7 @@ import {
   runIntegrityAudit,
   type AuditResult,
 } from '../src/audit.js';
+import { detectMissedDoses } from '../src/missed-doses.js';
 
 // Wall-clock slots are computed device-locally; pin UTC so the fixtures below
 // are deterministic (same convention as scheduler.test.ts).
@@ -409,6 +410,85 @@ describe('boot-time integrity audit', () => {
       expect(result.findings).toHaveLength(2);
     } finally {
       rmQuietly(tmpPath);
+    }
+  });
+});
+
+
+describe('boot ordering: detection before audit, findings lifecycle', () => {
+  it('audit-before-detection flags slots that detection resolves moments later (old boot order)', () => {
+    const db = new ReefDatabase(':memory:');
+    try {
+      seedSchedule(db, '2026-09-11T06:00:00.000Z');
+
+      // OLD ordering — the audit ran at boot before the scheduler's
+      // detection. The unfired in-lookback slot has no resolution yet, so it
+      // is flagged: this is the false positive seen in the production
+      // journal (findings 17:12:51, detection 17:13:23).
+      const premature = auditDb(db);
+      expect(premature.findings.map((f) => f.check)).toContain(
+        'unresolved-slot',
+      );
+
+      // Detection then runs (as scheduler.start does) and creates the pending
+      // entry — which counts as a resolution for the audit's check 3.
+      detectMissedDoses(db, NOW);
+      expect(db.getPendingMissedDoses(NOW)).toHaveLength(1);
+
+      // NEW ordering — the same audit over the post-detection state is clean.
+      expect(auditDb(db).findings).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('unresolved-slot finding persists while uncovered and clears once the slot resolves', () => {
+    const db = new ReefDatabase(':memory:');
+    try {
+      const schedule = seedSchedule(db, '2026-09-11T06:00:00.000Z');
+      const slotIso = '2026-09-12T06:00:00.000Z';
+
+      // Slot detection has not covered (no entry, no event): the audit raises
+      // the finding, and re-runs keep raising it — findings reflect current
+      // truth on every recompute, not a one-shot boot snapshot.
+      const finding = auditDb(db).findings.find(
+        (f) => f.check === 'unresolved-slot',
+      );
+      expect(finding).toBeDefined();
+      expect(finding?.id).toBe(`unresolved-slot:${schedule.id}:${slotIso}`);
+      expect(auditDb(db).findings.map((f) => f.id)).toContain(finding?.id);
+
+      // The slot gains a resolution (detection created the missed-dose
+      // entry): the live re-run — what /api/status now serves — no longer
+      // reports it.
+      detectMissedDoses(db, NOW);
+      expect(db.getPendingMissedDoses(NOW)).toHaveLength(1);
+      expect(auditDb(db).findings.map((f) => f.id)).not.toContain(finding?.id);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('a slot resolved by a fired dose produces no finding before or after detection', () => {
+    const db = new ReefDatabase(':memory:');
+    try {
+      const schedule = seedSchedule(db, '2026-09-11T06:00:00.000Z');
+      db.saveDoseEvent(
+        event({
+          id: 'ev-fired',
+          pumpId: 'alk',
+          source: 'schedule',
+          scheduleId: schedule.id,
+          startedAt: '2026-09-12T06:00:30.000Z',
+          finishedAt: '2026-09-12T06:01:30.000Z',
+        }),
+      );
+
+      expect(auditDb(db).findings).toEqual([]);
+      detectMissedDoses(db, NOW);
+      expect(auditDb(db).findings).toEqual([]);
+    } finally {
+      db.close();
     }
   });
 });

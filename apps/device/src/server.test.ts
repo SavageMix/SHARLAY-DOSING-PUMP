@@ -111,6 +111,44 @@ describe('Server endpoints', () => {
     }
   });
 
+  it('GET /api/status re-runs a live findings getter so findings clear once resolved', async () => {
+    const findingsDb = new ReefDatabase(':memory:');
+    // The getter stands in for index.ts's live audit: it recomputes on every
+    // request, so a finding must disappear from /api/status the moment the
+    // underlying slot gains a resolution.
+    let current: import('@reef/shared').IntegrityFinding[] = [
+      {
+        id: 'unresolved-slot:sched-1:2026-09-12T06:00:00.000Z',
+        check: 'unresolved-slot',
+        message: 'The alk dose never fired and was never recorded as missed.',
+        pumpId: 'alk',
+        missedSlotIso: '2026-09-12T06:00:00.000Z',
+      },
+    ];
+    const server = await createServer(findingsDb, createEngine(findingsDb), {
+      getIntegrityFindings: () => current,
+    });
+    try {
+      const before = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      expect(JSON.parse(before.body).integrityFindings).toHaveLength(1);
+
+      // Slot resolved (detection created a missed-dose entry): the next poll
+      // must show no findings — never a stale boot snapshot.
+      current = [];
+      const after = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      expect(JSON.parse(after.body).integrityFindings).toEqual([]);
+    } finally {
+      await server.close();
+      findingsDb.close();
+    }
+  });
+
   it('GET /api/limits reflects a changed system volume', async () => {
     const { db, server, scheduler } = await buildServer();
     try {

@@ -109,7 +109,7 @@ export interface StatusResponse {
   queue: DoseEvent[];
   queueDepth: number;
   catchupQueue: CatchupQueueStatus;
-  /** Boot-time integrity audit findings; empty when the record agrees with itself. */
+  /** Live integrity audit findings; empty when the record agrees with itself. */
   integrityFindings: IntegrityFinding[];
   systemVolumeLitres: number;
   prime: {
