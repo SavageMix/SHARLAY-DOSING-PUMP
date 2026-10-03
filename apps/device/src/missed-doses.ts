@@ -21,6 +21,12 @@ export interface MissedDosesRepository {
    * shared catch-up eligibility gate.
    */
   getLastCompletedDoseAt(pumpId: PumpId): string | null;
+  /**
+   * Most recent dose START across all sources, counting in-flight doses.
+   * The catch-up gate anchors on this so a running dose blocks the next
+   * catch-up for the full interval from its start.
+   */
+  getLastDoseStartedAt(pumpId: PumpId): string | null;
   createMissedDose(
     missed: Omit<MissedDose, 'id' | 'createdAt'>,
   ): MissedDose;
@@ -354,18 +360,22 @@ const CATCH_UP_MIN_INTERVAL_MS = 30 * 60 * 1000;
  * The single per-pump eligibility gate consulted at EVERY catch-up fire
  * point — single confirmation, batch confirmation, and the queue-drain tick
  * (which also covers boot). A catch-up may fire only when the pump's most
- * recent COMPLETED dose event — of ANY source: schedule, catchup, manual,
- * prime — is at least CATCH_UP_MIN_INTERVAL_MS old. Anything else led to
- * production incidents: same-pump catch-ups minutes apart and catch-ups
- * landing right before a scheduled dose because eligibility was computed
- * from per-entry anchors instead of the pump's actual dosing history.
+ * recent dose START — of ANY source: schedule, catchup, manual, prime —
+ * including doses still RUNNING, is at least CATCH_UP_MIN_INTERVAL_MS old.
+ * Anything else led to production incidents: same-pump catch-ups minutes
+ * apart because the gate only saw COMPLETED doses and let the next catch-up
+ * through while the previous one was still in flight.
+ *
+ * Invariant: no two doses for the same pump ever start less than
+ * CATCH_UP_MIN_INTERVAL_MS apart, regardless of source and regardless of
+ * when eligibility was last checked (it is re-verified at fire time).
  */
 export function isCatchupFireEligible(
-  repository: Pick<MissedDosesRepository, 'getLastCompletedDoseAt'>,
+  repository: Pick<MissedDosesRepository, 'getLastDoseStartedAt'>,
   pumpId: PumpId,
   now: Date,
 ): boolean {
-  const lastIso = repository.getLastCompletedDoseAt(pumpId);
+  const lastIso = repository.getLastDoseStartedAt(pumpId);
   if (!lastIso) return true;
   return (
     now.getTime() - new Date(lastIso).getTime() >= CATCH_UP_MIN_INTERVAL_MS
@@ -374,14 +384,15 @@ export function isCatchupFireEligible(
 
 /**
  * The next instant a catch-up may fire for this pump given its actual dosing
- * history (now, when the pump has never dosed).
+ * history (now, when the pump has never dosed). Anchored on dose STARTS so
+ * an in-flight dose pushes the next eligible instant a full interval out.
  */
 function nextCatchupEligibleAt(
-  repository: Pick<MissedDosesRepository, 'getLastCompletedDoseAt'>,
+  repository: Pick<MissedDosesRepository, 'getLastDoseStartedAt'>,
   pumpId: PumpId,
   now: Date,
 ): number {
-  const lastIso = repository.getLastCompletedDoseAt(pumpId);
+  const lastIso = repository.getLastDoseStartedAt(pumpId);
   if (!lastIso) return now.getTime();
   return Math.max(
     now.getTime(),
@@ -511,12 +522,22 @@ export async function fireScheduledConfirmations(
   now: Date,
 ): Promise<void> {
   const due = repository.getDueScheduledConfirmations(now);
+  // A dose submitted THIS tick has no dose_events row until the engine
+  // starts it, so getLastDoseStartedAt cannot see it yet. Track those
+  // submits per pump: without this, two same-pump entries due in the same
+  // tick would both pass the gate and start back-to-back once the engine
+  // reaches them.
+  const justSubmittedAt = new Map<PumpId, number>();
   for (const entry of due) {
     // Shared per-pump eligibility gate (measured from the pump's actual last
-    // completed dose of ANY source). Not eligible yet → the entry stays
-    // queued — confirmed, confirmAfter unchanged — and is re-checked on the
-    // next tick. Never dropped, never fired early.
-    if (!isCatchupFireEligible(repository, entry.pumpId, now)) {
+    // dose START of ANY source, including in-flight doses). Not eligible
+    // yet → the entry stays queued — confirmed, confirmAfter unchanged — and
+    // is re-checked on the next tick. Never dropped, never fired early.
+    const lastSubmitted = justSubmittedAt.get(entry.pumpId) ?? 0;
+    const lastStartedIso = repository.getLastDoseStartedAt(entry.pumpId);
+    const lastStartedMs = lastStartedIso ? new Date(lastStartedIso).getTime() : 0;
+    const anchor = Math.max(lastSubmitted, lastStartedMs);
+    if (anchor > 0 && now.getTime() - anchor < CATCH_UP_MIN_INTERVAL_MS) {
       continue;
     }
 
@@ -542,6 +563,7 @@ export async function fireScheduledConfirmations(
       entry.scheduleId,
       entry.id,
     );
+    justSubmittedAt.set(entry.pumpId, now.getTime());
     // The engine closes the entry to a terminal state (completed/failed/
     // interrupted) atomically with the dose event; clearing confirmAfter here
     // only ensures the entry is not re-selected while the dose is in flight.

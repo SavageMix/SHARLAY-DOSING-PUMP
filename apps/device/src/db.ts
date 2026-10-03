@@ -542,6 +542,42 @@ export class ReefDatabase
   }
 
   /**
+   * Most recent dose START for a pump across ALL sources, counting IN-FLIGHT
+   * doses too. The catch-up stagger gate anchors on this — not on completed
+   * doses only — so a dose that is still running blocks the next catch-up
+   * for the full interval measured from its start. Without it, a catch-up
+   * whose delay elapsed while the previous dose was in flight fired the
+   * instant that dose completed (production: same-pump pairs 1m47s apart).
+   * 'skipped' events are excluded — no liquid ever moved.
+   */
+  getLastDoseStartedAt(pumpId: PumpId): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT MAX(started_at) AS last_at FROM dose_events
+         WHERE pump_id = ?
+           AND status IN ('running', 'completed', 'failed', 'interrupted')`,
+      )
+      .get(pumpId) as { last_at: string | null } | undefined;
+    return row?.last_at ?? null;
+  }
+
+  /**
+   * Drain progress across ALL confirmed catch-ups — including entries whose
+   * confirmAfter is still far in the future and which have not entered the
+   * engine queue yet. Read-only; feeds /api/status's catchupQueue so the app
+   * can show "N remaining, next dose ~HH:MM" during multi-hour drains.
+   */
+  getCatchupDrainSummary(): { remaining: number; nextFireAt: string | null } {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS remaining, MIN(confirm_after) AS next_fire_at
+         FROM missed_doses WHERE status = 'confirmed'`,
+      )
+      .get() as { remaining: number; next_fire_at: string | null };
+    return { remaining: row.remaining, nextFireAt: row.next_fire_at };
+  }
+
+  /**
    * Read-only store for the boot-time integrity audit (see audit.ts). The
    * audit is strictly SELECT-only: it reports inconsistencies and never
    * repairs, fires, or dismisses anything.

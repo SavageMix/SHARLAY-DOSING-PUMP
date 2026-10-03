@@ -70,6 +70,17 @@ class FakeMissedDosesRepository
     return completed.reduce((max, e) => (e.startedAt > max ? e.startedAt : max), '');
   }
 
+  getLastDoseStartedAt(pumpId: PumpId): string | null {
+    const started = this.events.filter(
+      (e) =>
+        e.pumpId === pumpId &&
+        e.startedAt !== '' &&
+        ['running', 'completed', 'failed', 'interrupted'].includes(e.status),
+    );
+    if (started.length === 0) return null;
+    return started.reduce((max, e) => (e.startedAt > max ? e.startedAt : max), '');
+  }
+
   createMissedDose(
     missed: Omit<MissedDose, 'id' | 'createdAt'>,
   ): MissedDose {
@@ -837,6 +848,128 @@ describe('catch-up eligibility gate (stagger from the pump actual last dose)', (
     return { engine, fires };
   }
 
+  /**
+   * Serial engine fake mirroring production timing: only ONE dose runs at a
+   * time, queued submits produce no dose_events row until the dose actually
+   * STARTS (so the eligibility gate cannot see them), and a dose takes a
+   * fixed wall-clock duration. Completing a dose atomically closes its
+   * missed_doses entry — exactly the contract the real engine honours.
+   */
+  class SerialCatchupEngine implements MissedDosesEngine {
+    private queue: Array<{
+      eventId: string;
+      pumpId: PumpId;
+      amountMl: number;
+      missedDoseId: string | null;
+    }> = [];
+    private current: {
+      eventId: string;
+      missedDoseId: string | null;
+      startedAtMs: number;
+      durationMs: number;
+    } | null = null;
+    private counter = 0;
+
+    constructor(
+      private readonly repo: FakeMissedDosesRepository,
+      private readonly catchupDurationMs: number,
+    ) {}
+
+    /** Seed an in-flight dose for a pump (e.g. a manual dose still running). */
+    preloadRunning(
+      pumpId: PumpId,
+      startedAt: Date,
+      durationMs: number,
+      source: 'manual' | 'schedule' = 'manual',
+    ): void {
+      const eventId = `ev-preload-${pumpId}`;
+      this.repo.events.push({
+        id: eventId,
+        pumpId,
+        requestedMl: 0,
+        actualMl: null,
+        status: 'running',
+        source,
+        scheduleId: null,
+        missedDoseId: null,
+        startedAt: startedAt.toISOString(),
+        finishedAt: null,
+        error: null,
+      });
+      this.current = {
+        eventId,
+        missedDoseId: null,
+        startedAtMs: startedAt.getTime(),
+        durationMs,
+      };
+    }
+
+    hasPendingWork(): boolean {
+      return this.current !== null || this.queue.length > 0;
+    }
+
+    async submitDose(
+      pumpId: PumpId,
+      amountMl: number,
+      _source: 'schedule' | 'catchup',
+      _scheduleId: string,
+      missedDoseId?: string | null,
+    ): Promise<string> {
+      const eventId = `ev-${++this.counter}`;
+      this.queue.push({
+        eventId,
+        pumpId,
+        amountMl,
+        missedDoseId: missedDoseId ?? null,
+      });
+      return eventId;
+    }
+
+    step(now: Date): void {
+      if (
+        this.current &&
+        now.getTime() - this.current.startedAtMs >= this.current.durationMs
+      ) {
+        const event = this.repo.events.find(
+          (e) => e.id === this.current!.eventId,
+        );
+        if (event) {
+          event.status = 'completed';
+          event.finishedAt = now.toISOString();
+        }
+        if (this.current.missedDoseId) {
+          this.repo.updateMissedDoseStatus(
+            this.current.missedDoseId,
+            'completed',
+          );
+        }
+        this.current = null;
+      }
+      if (this.current === null && this.queue.length > 0) {
+        const next = this.queue.shift()!;
+        this.repo.events.push({
+          id: next.eventId,
+          pumpId: next.pumpId,
+          requestedMl: next.amountMl,
+          actualMl: null,
+          status: 'running',
+          source: 'catchup',
+          scheduleId: null,
+          missedDoseId: next.missedDoseId,
+          startedAt: now.toISOString(),
+          finishedAt: null,
+          error: null,
+        });
+        this.current = {
+          eventId: next.eventId,
+          missedDoseId: next.missedDoseId,
+          startedAtMs: now.getTime(),
+          durationMs: this.catchupDurationMs,
+        };
+      }
+    }
+  }
+
   it('two confirmations 10 minutes apart on one pump fire 30 minutes apart', async () => {
     const t0 = new Date('2026-08-23T09:30:00Z');
     vi.setSystemTime(t0);
@@ -1031,5 +1164,125 @@ describe('catch-up eligibility gate (stagger from the pump actual last dose)', (
     vi.setSystemTime(due);
     await fireScheduledConfirmations(repo, engine, due);
     expect(engine.submitDose).toHaveBeenCalledTimes(1);
+  });
+
+  it('an in-flight dose blocks the next catch-up for the full interval measured from its start', async () => {
+    // The production incident (Oct 2): po4 catch-ups fired 1m47s apart —
+    // exactly one dose duration. The gate saw only COMPLETED doses, so while
+    // dose A was running, entry B passed eligibility and fired the instant A
+    // completed. The gate must anchor on dose STARTS, running ones included.
+    const t0 = new Date('2026-10-02T09:00:00Z');
+    vi.setSystemTime(t0);
+
+    const repo = new FakeMissedDosesRepository();
+    // ca: an ancient completed dose AND a dose IN FLIGHT since 09:00.
+    repo.events.push(
+      completedDose('ca', '2026-10-02T08:00:00Z'),
+      {
+        ...completedDose('ca', '2026-10-02T09:00:00Z'),
+        id: 'ev-ca-running',
+        status: 'running',
+        finishedAt: null,
+      },
+    );
+    repo.missedDoses.push(
+      makeMissedDose({
+        id: 'missed-1',
+        pumpId: 'ca',
+        scheduledFor: '2026-10-02T06:00:00.000Z',
+      }),
+    );
+    const { engine, fires } = recordingEngine(repo);
+
+    // In flight since 09:00 → not eligible at confirm time; held to 09:30
+    // measured from the START, not from whenever the dose completes.
+    await confirmMissedDoses(repo, engine, ['missed-1'], t0);
+    expect(fires).toEqual([]);
+    expect(repo.missedDoses[0].confirmAfter).toBe('2026-10-02T09:30:00.000Z');
+
+    // 09:29:59 — the completed-only gate would fire this (last completed
+    // 08:00, well over 30 min ago). Start-anchored gating holds it.
+    const early = new Date('2026-10-02T09:29:59Z');
+    vi.setSystemTime(early);
+    await fireScheduledConfirmations(repo, engine, early);
+    expect(fires).toEqual([]);
+
+    const due = new Date('2026-10-02T09:30:00Z');
+    vi.setSystemTime(due);
+    await fireScheduledConfirmations(repo, engine, due);
+    expect(fires).toEqual(['2026-10-02T09:30:00.000Z']);
+  });
+
+  it('9 confirmed catch-ups per pump never start less than 30 minutes apart, even with a busy engine completing doses late', async () => {
+    // Full-drain simulation with a serial engine: doses run ONE AT A TIME
+    // for 2 minutes each, and the dose_events row only appears when a dose
+    // STARTS (queued items are invisible), exactly like production. The
+    // engine starts busy with a 25-minute manual alk dose, so the first
+    // submitted catch-ups start LATE — after their planned anchor — the
+    // exact shape of the 1m47s-apart incident.
+    const start = new Date('2026-10-02T09:00:00Z');
+    vi.setSystemTime(start);
+
+    const repo = new FakeMissedDosesRepository();
+    const engine = new SerialCatchupEngine(repo, 2 * 60 * 1000);
+    engine.preloadRunning('alk', start, 25 * 60 * 1000);
+
+    const pumps: PumpId[] = ['alk', 'ca', 'no3', 'po4'];
+    const ids: string[] = [];
+    for (const pumpId of pumps) {
+      for (let i = 0; i < 9; i++) {
+        const entry = repo.createMissedDose({
+          scheduleId: 'sched-1',
+          pumpId,
+          scheduledFor: new Date(
+            start.getTime() - (40 - i) * 3_600_000,
+          ).toISOString(),
+          volumeMl: 1,
+          status: 'pending',
+          deferredUntil: null,
+          confirmAfter: null,
+        });
+        ids.push(entry.id);
+      }
+    }
+
+    await confirmMissedDoses(repo, engine, ids, start);
+
+    // Drain in one-minute ticks for up to 24 simulated hours.
+    const horizon = start.getTime() + 24 * 3_600_000;
+    let t = start.getTime();
+    while (t < horizon) {
+      t += 60_000;
+      const now = new Date(t);
+      vi.setSystemTime(now);
+      engine.step(now);
+      await fireScheduledConfirmations(repo, engine, now);
+      engine.step(now);
+      if (
+        !repo.missedDoses.some((m) => m.status === 'confirmed') &&
+        !engine.hasPendingWork()
+      ) {
+        break;
+      }
+    }
+
+    // Everything fired exactly once and reached a terminal state.
+    expect(repo.missedDoses.every((m) => m.status === 'completed')).toBe(true);
+
+    // The invariant: no two doses for the same pump start <30 min apart.
+    for (const pumpId of pumps) {
+      const starts = repo.events
+        .filter(
+          (e) => e.pumpId === pumpId && e.source === 'catchup' && e.startedAt,
+        )
+        .map((e) => new Date(e.startedAt).getTime())
+        .sort((a, b) => a - b);
+      expect(starts).toHaveLength(9);
+      for (let i = 1; i < starts.length; i++) {
+        expect(starts[i] - starts[i - 1]).toBeGreaterThanOrEqual(
+          30 * 60 * 1000,
+        );
+      }
+    }
   });
 });

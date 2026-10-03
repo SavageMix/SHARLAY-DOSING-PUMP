@@ -49,6 +49,20 @@ class FakeSchedulerRepository implements SchedulerRepository, MissedDosesReposit
     );
   }
 
+  getLastDoseStartedAt(pumpId: PumpId): string | null {
+    const started = this.events.filter(
+      (e) =>
+        e.pumpId === pumpId &&
+        e.startedAt !== '' &&
+        ['running', 'completed', 'failed', 'interrupted'].includes(e.status),
+    );
+    if (started.length === 0) return null;
+    return started.reduce(
+      (max, e) => (e.startedAt > max ? e.startedAt : max),
+      '',
+    );
+  }
+
   createMissedDose(missed: Omit<MissedDose, 'id' | 'createdAt'>): MissedDose {
     const entry: MissedDose = {
       ...missed,
