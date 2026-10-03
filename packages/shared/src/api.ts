@@ -261,6 +261,18 @@ export interface HistoryResponse {
   total: number;
 }
 
+/** Query params for GET /api/missed-doses. */
+export interface ListMissedDosesParams {
+  /** Include pending entries whose 1h snooze hasn't expired. */
+  includeSnoozed?: boolean;
+  /**
+   * Also return confirmed entries (catch-ups the user confirmed but which
+   * haven't fired yet) so the UI can show them as a removable queued state.
+   * Confirmed entries are never snooze-hidden.
+   */
+  includeConfirmed?: boolean;
+}
+
 export interface ListMissedDosesResponse {
   missedDoses: MissedDose[];
 }
@@ -272,6 +284,27 @@ export interface ConfirmMissedDoseResponse {
 
 export interface DismissMissedDoseResponse {
   missedDose: MissedDose;
+}
+
+/**
+ * Withdraw a confirmed-but-not-yet-fired catch-up. Terminal status is
+ * 'cancelled' (distinct from 'dismissed' = refused while pending) so History
+ * can tell "user changed their mind" from "user refused the dose". Rejected
+ * (409) when the entry is not confirmed or its dose is already firing.
+ */
+export interface CancelMissedDoseResponse {
+  missedDose: MissedDose;
+}
+
+/** Result of the bulk drain escape: POST /api/missed-doses/cancel-all. */
+export interface CancelAllMissedDosesResponse {
+  /** Entries withdrawn (now status 'cancelled'). */
+  cancelled: string[];
+  /**
+   * Confirmed entries whose dose was already firing and could NOT be
+   * withdrawn — they complete normally. The UI should refresh to show this.
+   */
+  inFlight: string[];
 }
 
 /** "Decide later": hide all pending entries until `until` (default +60 min). */

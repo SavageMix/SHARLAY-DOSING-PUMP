@@ -48,7 +48,13 @@ export type MissedDoseStatus =
   /** Terminal: the catch-up dose was submitted but failed (e.g. caps, hardware). */
   | 'failed'
   /** Terminal: the catch-up was interrupted mid-run by a process death. */
-  | 'interrupted';
+  | 'interrupted'
+  /**
+   * Terminal: the user withdrew a CONFIRMED catch-up before it fired.
+   * Distinct from 'dismissed' (refused while still pending) so History can
+   * tell "user changed their mind" apart from "user refused the dose".
+   */
+  | 'cancelled';
 
 export interface DoseEvent {
   id: string;
