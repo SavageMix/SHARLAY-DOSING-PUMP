@@ -10,6 +10,7 @@ import {
   isBlockingMissedDose,
   RESOLVED_WINDOW_HOURS,
   shouldSnoozeOnExit,
+  splitPendingAndQueued,
 } from './catchups-page';
 
 // Day grouping must be pinned to a non-UTC zone: an entry at 23:30 local and
@@ -245,8 +246,43 @@ describe('buildResolvedGroups', () => {
       expect(g.rows).toEqual([]);
       expect(g.deliveredCount).toBe(0);
       expect(g.skippedCount).toBe(0);
+      expect(g.cancelledCount).toBe(0);
       expect(g.totalMl).toBe(0);
     }
+  });
+
+  it('renders cancelled entries as their own outcome (withdrew after confirming)', () => {
+    const resolved = [
+      missed({ id: 'c1', status: 'cancelled' }),
+      missed({ id: 'c2', status: 'cancelled', pumpId: 'ca' }),
+      missed({ id: 'd1', status: 'dismissed' }),
+    ];
+    const groups = buildResolvedGroups([], resolved, PUMP_ORDER);
+    const alk = groups[0];
+    expect(alk.cancelledCount).toBe(1);
+    expect(alk.skippedCount).toBe(1); // dismissed, NOT merged with cancelled
+    expect(alk.rows.find((r) => r.key === 'resolved-c1')).toMatchObject({
+      outcome: 'cancelled',
+      deliveredKnown: false,
+    });
+    expect(groups[1].cancelledCount).toBe(1);
+    expect(groups[1].rows[0].outcome).toBe('cancelled');
+  });
+
+  it('splits the missed-doses list into pending and queued (confirmed) only', () => {
+    const list = [
+      missed({ id: 'p1', status: 'pending' }),
+      missed({ id: 'p2', status: 'pending', pumpId: 'ca' }),
+      missed({ id: 'q1', status: 'confirmed', confirmAfter: '2026-08-24T07:00:00.000Z' }),
+      missed({ id: 't1', status: 'completed' }),
+      missed({ id: 't2', status: 'cancelled' }),
+      missed({ id: 't3', status: 'dismissed' }),
+    ];
+    const { pending, queued } = splitPendingAndQueued(list);
+    expect(pending.map((m) => m.id)).toEqual(['p1', 'p2']);
+    expect(queued.map((m) => m.id)).toEqual(['q1']);
+    // Terminal entries never appear in either actionable state.
+    expect(queued.some((m) => m.id.startsWith('t'))).toBe(false);
   });
 
   it('computes summary counts and total mL per pump', () => {

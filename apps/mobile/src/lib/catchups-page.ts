@@ -129,7 +129,7 @@ export function buildQueueSection(
 export const RESOLVED_WINDOW_HOURS = 168; // 7 days
 export const RESOLVED_WINDOW_DAYS = 7;
 
-export type ResolvedOutcome = 'delivered' | 'skipped' | 'expired' | 'failed';
+export type ResolvedOutcome = 'delivered' | 'skipped' | 'expired' | 'failed' | 'cancelled';
 
 export interface ResolvedSlotRow {
   key: string;
@@ -156,6 +156,8 @@ export interface ResolvedPumpGroup {
   /** Includes expired entries (visually labelled 'expired'). */
   skippedCount: number;
   failedCount: number;
+  /** Withdrawn confirmed catch-ups ("removed from queue") — never dosed. */
+  cancelledCount: number;
   /** Sum of delivered rows' mL. */
   totalMl: number;
   /** Chronological (oldest missed slot first). */
@@ -192,6 +194,7 @@ export function buildResolvedGroups(
       deliveredCount: 0,
       skippedCount: 0,
       failedCount: 0,
+      cancelledCount: 0,
       totalMl: 0,
       rows: [],
     });
@@ -205,7 +208,8 @@ export function buildResolvedGroups(
       m.status !== 'dismissed' &&
       m.status !== 'expired' &&
       m.status !== 'failed' &&
-      m.status !== 'interrupted'
+      m.status !== 'interrupted' &&
+      m.status !== 'cancelled'
     ) {
       continue; // non-terminal entries never render here
     }
@@ -241,6 +245,17 @@ export function buildResolvedGroups(
       row = {
         key: `resolved-${m.id}`,
         outcome: 'expired',
+        missedSlotIso: m.scheduledFor,
+        ml: m.volumeMl,
+        deliveredKnown: false,
+        error: null,
+      };
+    } else if (m.status === 'cancelled') {
+      // User withdrew a confirmed catch-up before it fired — never dosed.
+      group.cancelledCount += 1;
+      row = {
+        key: `resolved-${m.id}`,
+        outcome: 'cancelled',
         missedSlotIso: m.scheduledFor,
         ml: m.volumeMl,
         deliveredKnown: false,
@@ -346,4 +361,23 @@ export function groupMissedByPump<T extends { pumpId: PumpId }>(
     if (list && list.length > 0) groups.push({ pumpId, entries: list });
   }
   return groups;
+}
+
+/**
+ * Split the missed-doses list (fetched with includeConfirmed) into the two
+ * actionable states. Pending entries need a dose/skip decision; confirmed
+ * ones are queued catch-ups the user can still withdraw. Everything else is
+ * terminal and belongs to the RESOLVED section, never here.
+ */
+export function splitPendingAndQueued(missedDoses: MissedDose[]): {
+  pending: MissedDose[];
+  queued: MissedDose[];
+} {
+  const pending: MissedDose[] = [];
+  const queued: MissedDose[] = [];
+  for (const m of missedDoses) {
+    if (m.status === 'pending') pending.push(m);
+    else if (m.status === 'confirmed') queued.push(m);
+  }
+  return { pending, queued };
 }

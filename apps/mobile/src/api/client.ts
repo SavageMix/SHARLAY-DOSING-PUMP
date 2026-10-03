@@ -6,6 +6,8 @@ import type {
   CalibrateStartResponse,
   CalibrateStopRequest,
   CalibrateStopResponse,
+  CancelAllMissedDosesResponse,
+  CancelMissedDoseResponse,
   ConfirmMissedDoseResponse,
   ConfirmMissedDosesRequest,
   ConfirmMissedDosesResponse,
@@ -269,12 +271,16 @@ export async function getLimits(
 
 export async function getMissedDoses(
   baseUrl: string,
-  options: { includeSnoozed?: boolean } = {},
+  options: { includeSnoozed?: boolean; includeConfirmed?: boolean } = {},
 ): Promise<MissedDose[]> {
+  const params = new URLSearchParams();
+  if (options.includeSnoozed) params.set('includeSnoozed', '1');
+  if (options.includeConfirmed) params.set('includeConfirmed', '1');
+  const qs = params.toString();
   const data = await request<ListMissedDosesResponse>(
     baseUrl,
     'GET',
-    options.includeSnoozed ? '/api/missed-doses?includeSnoozed=1' : '/api/missed-doses',
+    qs ? `/api/missed-doses?${qs}` : '/api/missed-doses',
   );
   return data.missedDoses;
 }
@@ -350,6 +356,33 @@ export async function dismissMissedDoses(
     'POST',
     '/api/missed-doses/dismiss',
     { ids } satisfies DismissMissedDosesRequest,
+  );
+}
+
+/**
+ * Withdraw one confirmed-but-not-yet-fired catch-up. 409 when it is not
+ * confirmed or already firing — the caller treats that as "refresh state",
+ * never as a raw error.
+ */
+export async function cancelMissedDose(
+  baseUrl: string,
+  id: string,
+): Promise<CancelMissedDoseResponse> {
+  return request<CancelMissedDoseResponse>(
+    baseUrl,
+    'POST',
+    `/api/missed-doses/${encodeURIComponent(id)}/cancel`,
+  );
+}
+
+/** Bulk drain escape: withdraw every queued catch-up at once. */
+export async function cancelAllMissedDoses(
+  baseUrl: string,
+): Promise<CancelAllMissedDosesResponse> {
+  return request<CancelAllMissedDosesResponse>(
+    baseUrl,
+    'POST',
+    '/api/missed-doses/cancel-all',
   );
 }
 

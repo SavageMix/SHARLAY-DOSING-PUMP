@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,6 +14,8 @@ import { OfflineCard } from '@/components/OfflineCard';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
 import {
+  cancelAllMissedDoses,
+  cancelMissedDose,
   confirmMissedDoses,
   dismissMissedDoses,
   getDeviceBaseUrl,
@@ -32,6 +35,7 @@ import {
   RESOLVED_WINDOW_DAYS,
   RESOLVED_WINDOW_HOURS,
   shouldSnoozeOnExit,
+  splitPendingAndQueued,
 } from '@/src/lib/catchups-page';
 import type { ResolvedSlotRow } from '@/src/lib/catchups-page';
 import {
@@ -127,6 +131,18 @@ function ResolvedSlot({ row }: { row: ResolvedSlotRow }) {
       </ThemedView>
     );
   }
+  if (row.outcome === 'cancelled') {
+    // Withdrawn after confirming — distinct from 'skipped' (refused while
+    // pending) so "user changed their mind" is visible in History.
+    return (
+      <ThemedView style={styles.resolvedSlotRow}>
+        <Ionicons name="arrow-undo-circle-outline" size={16} color={Colors.warning} />
+        <ThemedText style={[styles.resolvedSlotText, styles.skippedText]}>
+          missed {when} · cancelled — removed from queue, never dosed
+        </ThemedText>
+      </ThemedView>
+    );
+  }
   return (
     <ThemedView style={styles.resolvedSlotRow}>
       <Ionicons name="remove-circle-outline" size={16} color={Colors.danger} />
@@ -171,6 +187,16 @@ export default function CatchupsScreen() {
   const [cardStates, setCardStates] = useState<Record<string, MissedCardState>>(
     {},
   );
+  // Confirmed catch-ups awaiting fire — the removable queued state. Fetched
+  // with the pending list (includeConfirmed) but kept separate: these rows
+  // have no checkboxes, only a Remove action.
+  const [queued, setQueued] = useState<MissedDose[]>([]);
+  // Remove-from-queue confirmation dialog: one entry, or the bulk clear.
+  const [confirmCancel, setConfirmCancel] = useState<
+    { kind: 'one'; id: string } | { kind: 'all' } | null
+  >(null);
+  const [cancelAllBusy, setCancelAllBusy] = useState(false);
+  const [cancelAllNote, setCancelAllNote] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -189,7 +215,7 @@ export default function CatchupsScreen() {
     if (!baseUrl) return;
     try {
       const [missed, status, history, resolved] = await Promise.all([
-        getMissedDoses(baseUrl, { includeSnoozed: true }),
+        getMissedDoses(baseUrl, { includeSnoozed: true, includeConfirmed: true }),
         getStatus(baseUrl),
         getHistory(baseUrl, { days: RESOLVED_WINDOW_DAYS, limit: 200, offset: 0 }),
         getResolvedMissedDoses(baseUrl, RESOLVED_WINDOW_HOURS),
@@ -198,9 +224,13 @@ export default function CatchupsScreen() {
       // nextModalList keeps the current list while the user is deciding;
       // only an empty list (everything resolved) is refreshed — and the
       // fresh list is taken whole, snoozed entries included, so the page
-      // shows exactly what the pending count reports.
-      setPending((prev) => nextModalList(false, prev, missed));
+      // shows exactly what the pending count reports. Confirmed (queued)
+      // entries follow the same freeze discipline: they are display state
+      // with a Remove action, never auto-mutated mid-decision.
+      const split = splitPendingAndQueued(missed);
+      setPending((prev) => nextModalList(false, prev, split.pending));
       setPendingLoaded(true);
+      setQueued((prev) => nextModalList(false, prev, split.queued));
       setQueue(
         status.catchupQueue ?? {
           firing: null,
@@ -272,10 +302,41 @@ export default function CatchupsScreen() {
       return next;
     });
   };
-  const groups = useMemo(
-    () => groupMissedByPump(pending, PUMP_ORDER),
-    [pending],
-  );
+  /**
+   * NEEDS DECISION cards, three states in the same list: pending rows
+   * (checkbox + skip), queued rows (confirmed catch-ups, removable), and
+   * recently fired rows (read-only "Dosed ✓", from RESOLVED data — so a
+   * catch-up that fires never disappears from the card, it just turns done).
+   * A pump's card appears when it has ANY of the three.
+   */
+  const decisionGroups = useMemo(() => {
+    const pendingByPump = new Map(
+      groupMissedByPump(pending, PUMP_ORDER).map((g) => [g.pumpId, g.entries]),
+    );
+    const queuedByPump = new Map(
+      groupMissedByPump(queued, PUMP_ORDER).map((g) => [g.pumpId, g.entries]),
+    );
+    const recentCutoffMs = Date.now() - 24 * 3_600_000;
+    const firedByPump = new Map<PumpId, ResolvedSlotRow[]>();
+    for (const g of resolvedGroups) {
+      firedByPump.set(
+        g.pumpId,
+        g.rows.filter(
+          (r) =>
+            r.outcome === 'delivered' &&
+            new Date(r.missedSlotIso).getTime() >= recentCutoffMs,
+        ),
+      );
+    }
+    return PUMP_ORDER.map((pumpId) => ({
+      pumpId,
+      pending: pendingByPump.get(pumpId) ?? [],
+      queued: queuedByPump.get(pumpId) ?? [],
+      fired: firedByPump.get(pumpId) ?? [],
+    })).filter(
+      (g) => g.pending.length > 0 || g.queued.length > 0 || g.fired.length > 0,
+    );
+  }, [pending, queued, resolvedGroups]);
 
   const removeEntries = (ids: string[]) => {
     setPending((prev) => prev.filter((m) => !ids.includes(m.id)));
@@ -381,6 +442,69 @@ export default function CatchupsScreen() {
     }
   };
 
+  // Remove-from-queue flow. Submission happens ONLY via the explicit
+  // "Remove" button in the confirmation dialog — tapping the ✕ merely opens
+  // the dialog, exactly like the checkbox-never-submits rule for decisions.
+  const handleConfirmCancel = async () => {
+    if (!baseUrl || !confirmCancel) return;
+    const target = confirmCancel;
+    setConfirmCancel(null);
+
+    if (target.kind === 'one') {
+      const entry = queued.find((m) => m.id === target.id);
+      const pumpId = entry?.pumpId;
+      if (pumpId) {
+        setCardStates((s) => ({ ...s, [pumpId]: { loading: true, error: null } }));
+      }
+      try {
+        await cancelMissedDose(baseUrl, target.id);
+        setQueued((prev) => prev.filter((m) => m.id !== target.id));
+        load();
+      } catch (err) {
+        // 409 ("already firing" / "already ended") is a reconciliation
+        // signal, not a failure: refresh and show the true state. The inline
+        // message carries the server's reason without any red-error styling
+        // for the common race.
+        if (pumpId) {
+          setCardStates((s) => ({
+            ...s,
+            [pumpId]: { loading: false, error: null },
+          }));
+        }
+        setCancelAllNote(err instanceof Error ? err.message : 'Could not remove');
+        load();
+      } finally {
+        if (pumpId) {
+          setCardStates((s) => ({ ...s, [pumpId]: { loading: false } }));
+        }
+      }
+      return;
+    }
+
+    // Bulk: withdraw every queued catch-up. Doses already firing are left
+    // to complete and are reported so the drain doesn't look partial.
+    setCancelAllBusy(true);
+    setCancelAllNote(null);
+    try {
+      const result = await cancelAllMissedDoses(baseUrl);
+      setQueued((prev) =>
+        prev.filter((m) => !result.cancelled.includes(m.id)),
+      );
+      setCancelAllNote(
+        result.inFlight.length > 0
+          ? `${result.inFlight.length} dose${result.inFlight.length === 1 ? '' : 's'} already firing — left to complete`
+          : null,
+      );
+      load();
+    } catch (err) {
+      setCancelAllNote(
+        err instanceof Error ? err.message : 'Failed to clear the queue',
+      );
+    } finally {
+      setCancelAllBusy(false);
+    }
+  };
+
   const leave = () => {
     if (router.canGoBack()) router.back();
     else router.replace('/(tabs)');
@@ -451,10 +575,10 @@ export default function CatchupsScreen() {
         ) : null}
 
         {/* NEEDS DECISION ------------------------------------------------ */}
-        {groups.length > 0 ? (
+        {decisionGroups.length > 0 ? (
           <ThemedView style={styles.section}>
             <ThemedText style={styles.sectionTitle}>Needs decision</ThemedText>
-            {groups.map(({ pumpId, entries }) => {
+            {decisionGroups.map(({ pumpId, pending: entries, queued: queuedRows, fired: firedRows }) => {
               const card = cardStates[pumpId];
               const loading = card?.loading ?? false;
               const resolved = card?.resolved;
@@ -506,6 +630,54 @@ export default function CatchupsScreen() {
                         accessibilityRole="button">
                         <ThemedText style={styles.rowSkipText}>Skip</ThemedText>
                       </Pressable>
+                    </ThemedView>
+                  ))}
+
+                  {/* Queued catch-ups — confirmed, not yet fired, removable. */}
+                  {queuedRows.map((missed) => (
+                    <ThemedView key={missed.id} style={styles.queuedDoseRow}>
+                      <Ionicons
+                        name="time-outline"
+                        size={16}
+                        color={Colors.aqua}
+                      />
+                      <ThemedText style={styles.queuedDoseText}>
+                        Queued · fires{' '}
+                        {missed.confirmAfter
+                          ? `~${formatTime(new Date(missed.confirmAfter))}`
+                          : 'next'}{' '}
+                        ·{' '}
+                        {missed.volumeMl != null
+                          ? `${missed.volumeMl.toFixed(2)} mL`
+                          : '—'}
+                      </ThemedText>
+                      <Pressable
+                        style={styles.rowRemove}
+                        onPress={() =>
+                          setConfirmCancel({ kind: 'one', id: missed.id })
+                        }
+                        disabled={loading}
+                        accessibilityRole="button"
+                        accessibilityLabel="Remove from queue">
+                        <Ionicons
+                          name="close-circle-outline"
+                          size={20}
+                          color={Colors.titanium}
+                        />
+                      </Pressable>
+                    </ThemedView>
+                  ))}
+
+                  {/* Fired catch-ups — read-only done state, same card. */}
+                  {firedRows.map((row) => (
+                    <ThemedView key={row.key} style={styles.firedDoseRow}>
+                      <ThemedText style={styles.firedDoseText}>
+                        ✓ Dosed · missed{' '}
+                        {formatMissedWhen(row.missedSlotIso)} ·{' '}
+                        {row.deliveredKnown
+                          ? `${row.ml.toFixed(2)} mL delivered`
+                          : `${row.ml.toFixed(2)} mL`}
+                      </ThemedText>
                     </ThemedView>
                   ))}
 
@@ -569,6 +741,23 @@ export default function CatchupsScreen() {
                 </ThemedView>
               );
             })}
+            {queued.length > 0 ? (
+              <Pressable
+                style={[styles.button, styles.clearQueuedButton]}
+                onPress={() => setConfirmCancel({ kind: 'all' })}
+                disabled={cancelAllBusy}>
+                {cancelAllBusy ? (
+                  <ActivityIndicator color={Colors.danger} />
+                ) : (
+                  <ThemedText style={styles.clearQueuedText}>
+                    Clear all queued ({queued.length})
+                  </ThemedText>
+                )}
+              </Pressable>
+            ) : null}
+            {cancelAllNote ? (
+              <ThemedText style={styles.cancelAllNote}>{cancelAllNote}</ThemedText>
+            ) : null}
             <Pressable
               style={[styles.button, styles.decideLaterButton]}
               onPress={handleDecideLater}>
@@ -687,6 +876,10 @@ export default function CatchupsScreen() {
                 group.skippedCount
               } skipped${
                 group.failedCount > 0 ? ` · ${group.failedCount} failed` : ''
+              }${
+                group.cancelledCount > 0
+                  ? ` · ${group.cancelledCount} cancelled`
+                  : ''
               } · ${group.totalMl.toFixed(2)} mL total`;
               return (
                 <ThemedView key={group.pumpId} style={styles.resolvedCard}>
@@ -734,6 +927,42 @@ export default function CatchupsScreen() {
           )}
         </ThemedView>
       </ScrollView>
+
+      {/* REMOVE-FROM-QUEUE CONFIRMATION ---------------------------------- */}
+      <Modal
+        visible={confirmCancel !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setConfirmCancel(null)}>
+        <ThemedView style={styles.confirmOverlay}>
+          <ThemedView style={styles.confirmCard}>
+            <ThemedText style={styles.confirmTitle}>
+              {confirmCancel?.kind === 'all'
+                ? `Remove ${queued.length} queued catch-up${queued.length === 1 ? '' : 's'}?`
+                : 'Remove this catch-up?'}
+            </ThemedText>
+            <ThemedText style={styles.confirmBody}>
+              {confirmCancel?.kind === 'all'
+                ? 'They will not be dosed. Any dose already firing is left to complete.'
+                : 'It will not be dosed. You can always dose this pump manually later.'}
+            </ThemedText>
+            <ThemedView style={styles.confirmActions}>
+              <Pressable
+                style={[styles.button, styles.keepButton]}
+                onPress={() => setConfirmCancel(null)}
+                accessibilityRole="button">
+                <ThemedText style={styles.keepButtonText}>Keep</ThemedText>
+              </Pressable>
+              <Pressable
+                style={[styles.button, styles.removeButton]}
+                onPress={() => void handleConfirmCancel()}
+                accessibilityRole="button">
+                <ThemedText style={styles.removeButtonText}>Remove</ThemedText>
+              </Pressable>
+            </ThemedView>
+          </ThemedView>
+        </ThemedView>
+      </Modal>
     </ThemedView>
   );
 }
@@ -852,6 +1081,92 @@ const styles = StyleSheet.create({
   rowSkipText: {
     ...Typography.small,
     color: Colors.danger,
+  },
+  queuedDoseRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: Radius.sm,
+    backgroundColor: 'rgba(32, 227, 216, 0.08)',
+  },
+  queuedDoseText: {
+    ...Typography.small,
+    color: Colors.aqua,
+    flex: 1,
+  },
+  rowRemove: {
+    padding: Spacing.xs,
+  },
+  firedDoseRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: Spacing.sm,
+    paddingHorizontal: Spacing.sm,
+  },
+  firedDoseText: {
+    ...Typography.small,
+    color: Colors.success,
+    flex: 1,
+  },
+  clearQueuedButton: {
+    borderWidth: 1,
+    borderColor: Colors.danger,
+    marginTop: Spacing.sm,
+  },
+  clearQueuedText: {
+    ...Typography.body,
+    color: Colors.danger,
+  },
+  cancelAllNote: {
+    ...Typography.small,
+    color: Colors.titanium,
+    marginTop: Spacing.sm,
+    textAlign: 'center',
+  },
+  confirmOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'center',
+    padding: Spacing.lg,
+  },
+  confirmCard: {
+    backgroundColor: Colors.midnight,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(32, 227, 216, 0.2)',
+    padding: Spacing.lg,
+  },
+  confirmTitle: {
+    ...Typography.title,
+    color: Colors.pearl,
+    marginBottom: Spacing.sm,
+  },
+  confirmBody: {
+    ...Typography.body,
+    color: Colors.titanium,
+    marginBottom: Spacing.lg,
+  },
+  confirmActions: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+  },
+  keepButton: {
+    borderWidth: 1,
+    borderColor: Colors.slate,
+  },
+  keepButtonText: {
+    ...Typography.body,
+    color: Colors.titanium,
+  },
+  removeButton: {
+    backgroundColor: Colors.danger,
+  },
+  removeButtonText: {
+    ...Typography.body,
+    color: Colors.pearl,
   },
   errorText: {
     ...Typography.small,
