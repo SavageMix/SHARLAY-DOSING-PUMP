@@ -492,3 +492,37 @@ describe('boot ordering: detection before audit, findings lifecycle', () => {
     }
   });
 });
+
+describe('unresolved-slot grace window', () => {
+  it('a slot only 5 minutes overdue with no dose produces no finding', () => {
+    const db = new ReefDatabase(':memory:');
+    try {
+      seedSchedule(db, '2026-09-11T06:00:00.000Z');
+      // 06:00 slot, audited at 06:05 — a dose can legitimately still be
+      // gap-waiting or queued behind a busy motor at this point.
+      const result = auditDb(db, new Date('2026-09-12T06:05:00.000Z'));
+      expect(
+        result.findings.filter((f) => f.check === 'unresolved-slot'),
+      ).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('a slot 20 minutes overdue with no dose is flagged', () => {
+    const db = new ReefDatabase(':memory:');
+    try {
+      const schedule = seedSchedule(db, '2026-09-11T06:00:00.000Z');
+      const result = auditDb(db, new Date('2026-09-12T06:20:00.000Z'));
+      const finding = result.findings.find(
+        (f) => f.check === 'unresolved-slot',
+      );
+      expect(finding).toBeDefined();
+      expect(finding?.id).toBe(
+        `unresolved-slot:${schedule.id}:2026-09-12T06:00:00.000Z`,
+      );
+    } finally {
+      db.close();
+    }
+  });
+});

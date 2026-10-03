@@ -188,6 +188,14 @@ export function createAuditStore(conn: Database.Database): IntegrityAuditStore {
  */
 export const AUDIT_SLOT_LOOKBACK_HOURS = 24;
 
+/**
+ * Grace before a past-but-unfired slot counts as unresolved. Doses
+ * legitimately fire minutes late (motor busy with a prime, engine gap-wait,
+ * scheduler tick interval), so a slot only a few minutes overdue is normal
+ * in-flight latency, not a crack in the record.
+ */
+export const UNRESOLVED_SLOT_GRACE_MS = 15 * 60 * 1000;
+
 /** Backstop against a pathological lastRunAt anchor enumerating huge slot lists. */
 const MAX_SLOTS_PER_SCHEDULE = 500;
 
@@ -305,6 +313,9 @@ export function runIntegrityAudit(
     for (const slot of slots.slice(0, MAX_SLOTS_PER_SCHEDULE)) {
       verified += 1;
       const slotIso = slot.toISOString();
+      // Grace: a slot barely past its time is a dose legitimately firing
+      // late, not a missing resolution. Only flag once the grace has elapsed.
+      if (now.getTime() - slot.getTime() < UNRESOLVED_SLOT_GRACE_MS) continue;
       if (store.hasMissedDoseForSlotAnyStatus(schedule.id, slotIso)) continue;
 
       const after = new Date(slot.getTime() - 1).toISOString();
