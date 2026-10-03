@@ -25,6 +25,14 @@ export interface DoseRepository {
    */
   finalizeDoseEvent?(event: DoseEvent): void | Promise<void>;
   decrementContainer(pumpId: PumpId, amountMl: number): void | Promise<void>;
+  /**
+   * OPTIONAL. Current status of a missed_doses entry. The engine consults
+   * this before starting a catch-up dose so a user cancel that won the race
+   * against the queue can never be dosed anyway.
+   */
+  getMissedDoseStatus?(
+    missedDoseId: string,
+  ): string | null | Promise<string | null>;
 }
 
 interface QueueItem {
@@ -35,6 +43,9 @@ interface QueueItem {
   scheduleId: string | null;
   missedDoseId: string | null;
 }
+
+/** Internal sentinel: a catch-up the user cancelled after it left the queue. */
+class CancelledBeforeFireError extends Error {}
 
 export interface EngineStatus {
   current: DoseEvent | null;
@@ -113,6 +124,30 @@ export class Engine {
 
   getQueueDepth(): number {
     return this.queue.length + (this.active || this.current ? 1 : 0);
+  }
+
+  /**
+   * Remove a not-yet-started queued dose by its missed-dose link (the engine
+   * job ids are random UUIDs the missed-dose flow never sees). Only items
+   * still in the FIFO queue are removed — an active (gap-waiting) or current
+   * (executing) item is NOT, so a cancel mid-fire is rejected by the caller
+   * instead of silently dropping a dose that already started.
+   */
+  cancelQueuedByMissedDoseId(missedDoseId: string): boolean {
+    const index = this.queue.findIndex(
+      (item) => item.missedDoseId === missedDoseId,
+    );
+    if (index === -1) return false;
+    this.queue.splice(index, 1);
+    return true;
+  }
+
+  /** True when the dose for this missed-dose entry is active or executing. */
+  hasMissedDoseInProgress(missedDoseId: string): boolean {
+    return (
+      this.active?.missedDoseId === missedDoseId ||
+      this.current?.missedDoseId === missedDoseId
+    );
   }
 
   getStatus(): EngineStatus {
@@ -230,6 +265,24 @@ export class Engine {
         await this.sleep(500);
       }
 
+      // Catch-up cancellation race: the user may have withdrawn this catch-up
+      // in the window between it leaving the queue and the motor starting.
+      // The entry must win: a withdrawn catch-up never fires. Recorded as a
+      // deliberate 'skipped' (not a failure); finalizeDoseEvent only closes
+      // entries still 'confirmed', so a 'cancelled' entry is never touched.
+      if (
+        item.source === 'catchup' &&
+        item.missedDoseId !== null &&
+        this.repository.getMissedDoseStatus
+      ) {
+        const status = await this.repository.getMissedDoseStatus(
+          item.missedDoseId,
+        );
+        if (status !== 'confirmed') {
+          throw new CancelledBeforeFireError();
+        }
+      }
+
       const systemVolumeLitres =
         await this.repository.getSystemVolumeLitres();
       const limits = computeDoseLimits(systemVolumeLitres);
@@ -266,8 +319,13 @@ export class Engine {
         console.error('Failed to decrement container:', containerError);
       }
     } catch (error) {
-      event.status = 'failed';
-      event.error = error instanceof Error ? error.message : String(error);
+      if (error instanceof CancelledBeforeFireError) {
+        event.status = 'skipped';
+        event.error = 'Catch-up cancelled by user before it fired';
+      } else {
+        event.status = 'failed';
+        event.error = error instanceof Error ? error.message : String(error);
+      }
     } finally {
       // ------------------------------------------------------------------
       // Safety invariant: every execution path ends with drivers disabled.

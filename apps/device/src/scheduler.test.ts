@@ -111,6 +111,10 @@ class FakeSchedulerRepository implements SchedulerRepository, MissedDosesReposit
     );
   }
 
+  getConfirmedMissedDoses(): MissedDose[] {
+    return this.missedDoses.filter((m) => m.status === 'confirmed');
+  }
+
   expireMissedDosesBefore(threshold: string): number {
     let expired = 0;
     for (const missed of this.missedDoses) {

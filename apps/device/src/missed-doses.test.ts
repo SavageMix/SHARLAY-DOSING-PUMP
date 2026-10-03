@@ -13,6 +13,8 @@ import type {
   PumpId,
 } from '@reef/shared';
 import {
+  cancelAllMissedDoses,
+  cancelMissedDose,
   confirmMissedDose,
   confirmMissedDoses,
   detectMissedDoses,
@@ -129,6 +131,10 @@ class FakeMissedDosesRepository
         m.confirmAfter !== null &&
         m.confirmAfter <= nowIso,
     );
+  }
+
+  getConfirmedMissedDoses(): MissedDose[] {
+    return this.missedDoses.filter((m) => m.status === 'confirmed');
   }
 
   expireMissedDosesBefore(threshold: string): number {
@@ -1284,5 +1290,183 @@ describe('catch-up eligibility gate (stagger from the pump actual last dose)', (
         );
       }
     }
+  });
+});
+
+
+describe('cancelling confirmed catch-ups', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  /**
+   * Engine fake with just enough queue bookkeeping to exercise the cancel
+   * paths: submitted catch-ups land in `queued` (as they would in the real
+   * engine's FIFO), cancel removes them, and `inProgress` simulates a dose
+   * that is firing (executing or gap-waiting).
+   */
+  function cancellableEngine(options: { inProgress?: string[] } = {}): {
+    engine: MissedDosesEngine;
+    submitted: Array<{ pumpId: PumpId; missedDoseId: string | null }>;
+    queued: Set<string>;
+  } {
+    const submitted: Array<{ pumpId: PumpId; missedDoseId: string | null }> = [];
+    const queued = new Set<string>();
+    const inProgress = new Set(options.inProgress ?? []);
+    const engine: MissedDosesEngine = {
+      submitDose: vi.fn(
+        async (
+          pumpId: PumpId,
+          _amountMl: number,
+          _source: 'schedule' | 'catchup',
+          _scheduleId: string,
+          missedDoseId?: string | null,
+        ) => {
+          submitted.push({ pumpId, missedDoseId: missedDoseId ?? null });
+          if (missedDoseId) queued.add(missedDoseId);
+          return `job-${submitted.length}`;
+        },
+      ),
+      cancelQueuedByMissedDoseId: (id: string) => queued.delete(id),
+      hasMissedDoseInProgress: (id: string) => inProgress.has(id),
+    };
+    return { engine, submitted, queued };
+  }
+
+  function repoWithConfirmedEntry(
+    id: string,
+    overrides: Partial<MissedDose> = {},
+  ): {
+    repo: FakeMissedDosesRepository;
+    entry: MissedDose;
+    engine: MissedDosesEngine;
+    submitted: Array<{ pumpId: PumpId; missedDoseId: string | null }>;
+    queued: Set<string>;
+  } {
+    const repo = new FakeMissedDosesRepository();
+    repo.missedDoses.push(
+      makeMissedDose({ id, scheduledFor: '2026-10-02T06:00:00.000Z', ...overrides }),
+    );
+    const { engine, submitted, queued } = cancellableEngine();
+    return { repo, entry: repo.missedDoses[0], engine, submitted, queued };
+  }
+
+  it('cancel before fire removes the catch-up from the queue and it never doses', async () => {
+    vi.setSystemTime(new Date('2026-10-02T09:00:00Z'));
+    const { repo, engine, submitted, queued } = repoWithConfirmedEntry('missed-1');
+
+    await confirmMissedDoses(repo, engine, ['missed-1'], new Date());
+    expect(submitted).toHaveLength(1);
+    expect(queued.has('missed-1')).toBe(true);
+
+    const updated = await cancelMissedDose(repo, engine, 'missed-1');
+    expect(updated.status).toBe('cancelled');
+    expect(updated.confirmAfter).toBeNull();
+    expect(queued.has('missed-1')).toBe(false);
+
+    // A later scheduler tick must never pick it up again.
+    vi.setSystemTime(new Date('2026-10-02T10:00:00Z'));
+    await fireScheduledConfirmations(repo, engine, new Date());
+    expect(submitted).toHaveLength(1);
+  });
+
+  it('cancel is rejected while the dose is firing, and the entry survives', async () => {
+    vi.setSystemTime(new Date('2026-10-02T09:00:00Z'));
+    const { repo, engine, queued } = repoWithConfirmedEntry('missed-1');
+    await confirmMissedDoses(repo, engine, ['missed-1'], new Date());
+
+    // Simulate the engine taking the dose: it left the queue and is firing.
+    queued.delete('missed-1');
+    (engine.hasMissedDoseInProgress as (id: string) => boolean) = () => true;
+
+    await expect(cancelMissedDose(repo, engine, 'missed-1')).rejects.toThrow(
+      /already firing/i,
+    );
+    expect(repo.missedDoses[0].status).toBe('confirmed');
+  });
+
+  it('cancel loses the race when the engine takes the dose mid-cancel — refused, entry survives', async () => {
+    vi.setSystemTime(new Date('2026-10-02T09:00:00Z'));
+    const { repo, engine, queued } = repoWithConfirmedEntry('missed-1');
+    await confirmMissedDoses(repo, engine, ['missed-1'], new Date());
+
+    // Race shape: not in progress at the first check, but firing by the
+    // second check (the engine shifted it off the queue mid-cancel).
+    let checked = 0;
+    const originalCancel = engine.cancelQueuedByMissedDoseId!;
+    engine.hasMissedDoseInProgress = () => checked > 0;
+    engine.cancelQueuedByMissedDoseId = (id: string) => {
+      checked += 1;
+      return originalCancel(id);
+    };
+
+    await expect(cancelMissedDose(repo, engine, 'missed-1')).rejects.toThrow(
+      /already firing/i,
+    );
+    // The dose will fire and close the entry normally — it stays confirmed.
+    expect(repo.missedDoses[0].status).toBe('confirmed');
+    expect(queued.has('missed-1')).toBe(false);
+  });
+
+  it('cancel is rejected after the dose already fired', async () => {
+    vi.setSystemTime(new Date('2026-10-02T09:00:00Z'));
+    const { repo, engine } = repoWithConfirmedEntry('missed-1', {
+      status: 'completed',
+    });
+
+    await expect(cancelMissedDose(repo, engine, 'missed-1')).rejects.toThrow(
+      /already fired/i,
+    );
+    expect(repo.missedDoses[0].status).toBe('completed');
+  });
+
+  it('cancel is rejected for a pending (undecided) entry', async () => {
+    vi.setSystemTime(new Date('2026-10-02T09:00:00Z'));
+    const { repo, engine } = repoWithConfirmedEntry('missed-1', {
+      status: 'pending',
+    });
+
+    await expect(cancelMissedDose(repo, engine, 'missed-1')).rejects.toThrow(
+      /only confirmed/i,
+    );
+    expect(repo.missedDoses[0].status).toBe('pending');
+  });
+
+  it('cancel-all during an active drain removes the queue and leaves the firing dose untouched', async () => {
+    vi.setSystemTime(new Date('2026-10-02T09:00:00Z'));
+    const repo = new FakeMissedDosesRepository();
+    for (const [i, pumpId] of ['alk', 'ca', 'no3'].entries()) {
+      repo.missedDoses.push(
+        makeMissedDose({
+          id: `missed-${i + 1}`,
+          pumpId: pumpId as PumpId,
+          scheduledFor: `2026-10-02T0${i + 1}:00:00.000Z`,
+        }),
+      );
+    }
+    const { engine, submitted } = cancellableEngine({ inProgress: ['missed-1'] });
+
+    await confirmMissedDoses(
+      repo,
+      engine,
+      ['missed-1', 'missed-2', 'missed-3'],
+      new Date(),
+    );
+    expect(submitted).toHaveLength(3);
+
+    const result = await cancelAllMissedDoses(repo, engine);
+    expect(result.inFlight).toEqual(['missed-1']);
+    expect(result.cancelled.sort()).toEqual(['missed-2', 'missed-3']);
+
+    // In-flight dose completes normally; the rest are terminal-cancelled.
+    expect(repo.missedDoses[0].status).toBe('confirmed');
+    expect(repo.missedDoses[1].status).toBe('cancelled');
+    expect(repo.missedDoses[2].status).toBe('cancelled');
+
+    vi.setSystemTime(new Date('2026-10-02T10:00:00Z'));
+    await fireScheduledConfirmations(repo, engine, new Date());
+    // Only the in-flight entry could still fire (via the engine, not here);
+    // the cancelled ones are never re-selected.
+    expect(submitted).toHaveLength(3);
   });
 });

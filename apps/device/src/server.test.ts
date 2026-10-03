@@ -1865,4 +1865,192 @@ describe('Server endpoints', () => {
       db.close();
     }
   });
+
+  it('POST /api/missed-doses/:id/cancel withdraws a confirmed catch-up before it fires', async () => {
+    vi.setSystemTime(new Date('2026-08-24T01:00:00Z'));
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.updatePumpCalibration('alk', 100);
+      db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 1,
+        timesPerDay: 2,
+        startTime: '00:00',
+        repeatEveryNDays: 1,
+        enabled: true,
+        lastRunAt: '2026-08-22T00:00:00.000Z',
+      });
+      detectMissedDoses(db, new Date());
+      for (const s of db.getSchedules()) {
+        db.updateSchedule(s.id, { enabled: false });
+      }
+
+      const list = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/missed-doses',
+      });
+      const { missedDoses } = JSON.parse(list.body);
+      const confirm = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/missed-doses/confirm',
+        payload: { ids: missedDoses.map((m: { id: string }) => m.id) },
+      });
+      const { fired, scheduled } = JSON.parse(confirm.body);
+      expect(fired).toHaveLength(1);
+      expect(scheduled).toHaveLength(1);
+
+      // The held entry shows up only when the app asks for confirmed entries.
+      const plain = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/missed-doses',
+      });
+      expect(
+        JSON.parse(plain.body).missedDoses.map((m: { id: string }) => m.id),
+      ).not.toContain(scheduled[0]);
+      const withConfirmed = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/missed-doses?includeConfirmed=1',
+      });
+      const confirmedEntry = JSON.parse(withConfirmed.body).missedDoses.find(
+        (m: { id: string }) => m.id === scheduled[0],
+      );
+      expect(confirmedEntry.status).toBe('confirmed');
+
+      // Cancel it: 200, terminal 'cancelled', gone from the confirmed list.
+      const cancel = await server.fastify.inject({
+        method: 'POST',
+        url: `/api/missed-doses/${scheduled[0]}/cancel`,
+      });
+      expect(cancel.statusCode).toBe(200);
+      expect(JSON.parse(cancel.body).missedDose.status).toBe('cancelled');
+
+      // It must never fire: past its confirmAfter, a scheduler tick doses
+      // nothing new.
+      await vi.advanceTimersByTimeAsync(45 * 60 * 1000);
+      const catchups = db
+        .getHistory({})
+        .events.filter((e) => e.source === 'catchup');
+      expect(catchups).toHaveLength(1); // only the one that fired pre-cancel
+      expect(db.getMissedDoseById(scheduled[0])?.status).toBe('cancelled');
+
+      // RESOLVED includes it so "where did that dose go?" is answerable.
+      const resolved = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/missed-doses/resolved?sinceHours=24',
+      });
+      expect(
+        JSON.parse(resolved.body).missedDoses.map((m: { id: string }) => m.id),
+      ).toContain(scheduled[0]);
+
+      // Double-cancel is a clear 409, not a crash.
+      const again = await server.fastify.inject({
+        method: 'POST',
+        url: `/api/missed-doses/${scheduled[0]}/cancel`,
+      });
+      expect(again.statusCode).toBe(409);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/missed-doses/:id/cancel is rejected after the dose fired', async () => {
+    vi.setSystemTime(new Date('2026-08-24T01:00:00Z'));
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.updatePumpCalibration('alk', 100);
+      db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 1,
+        timesPerDay: 1,
+        startTime: '00:00',
+        repeatEveryNDays: 1,
+        enabled: true,
+        lastRunAt: '2026-08-22T00:00:00.000Z',
+      });
+      detectMissedDoses(db, new Date());
+      for (const s of db.getSchedules()) {
+        db.updateSchedule(s.id, { enabled: false });
+      }
+
+      const list = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/missed-doses',
+      });
+      const { missedDoses } = JSON.parse(list.body);
+      await server.fastify.inject({
+        method: 'POST',
+        url: '/api/missed-doses/confirm',
+        payload: { ids: [missedDoses[0].id] },
+      });
+      expect(db.getMissedDoseById(missedDoses[0].id)?.status).toBe('completed');
+
+      const cancel = await server.fastify.inject({
+        method: 'POST',
+        url: `/api/missed-doses/${missedDoses[0].id}/cancel`,
+      });
+      expect(cancel.statusCode).toBe(409);
+      expect(JSON.parse(cancel.body).error).toMatch(/already fired/i);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/missed-doses/cancel-all withdraws every queued catch-up', async () => {
+    vi.setSystemTime(new Date('2026-08-24T01:00:00Z'));
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.updatePumpCalibration('alk', 100);
+      db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 1,
+        timesPerDay: 2,
+        startTime: '00:00',
+        repeatEveryNDays: 1,
+        enabled: true,
+        lastRunAt: '2026-08-22T00:00:00.000Z',
+      });
+      detectMissedDoses(db, new Date());
+      for (const s of db.getSchedules()) {
+        db.updateSchedule(s.id, { enabled: false });
+      }
+
+      const list = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/missed-doses',
+      });
+      const { missedDoses } = JSON.parse(list.body);
+      const confirm = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/missed-doses/confirm',
+        payload: { ids: missedDoses.map((m: { id: string }) => m.id) },
+      });
+      const { fired, scheduled } = JSON.parse(confirm.body);
+      expect(scheduled).toHaveLength(1);
+
+      const cancelAll = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/missed-doses/cancel-all',
+      });
+      expect(cancelAll.statusCode).toBe(200);
+      const body = JSON.parse(cancelAll.body);
+      expect(body.cancelled).toEqual(scheduled);
+      expect(body.inFlight).toEqual([]);
+
+      // The queued catch-up is cancelled and never doses; the one that
+      // already fired stays completed.
+      expect(db.getMissedDoseById(scheduled[0])?.status).toBe('cancelled');
+      expect(db.getMissedDoseById(fired[0])?.status).toBe('completed');
+
+      await vi.advanceTimersByTimeAsync(45 * 60 * 1000);
+      const catchups = db
+        .getHistory({})
+        .events.filter((e) => e.source === 'catchup');
+      expect(catchups).toHaveLength(1);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
 });

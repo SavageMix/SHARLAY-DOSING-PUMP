@@ -278,4 +278,104 @@ describe('DoseEngine', () => {
     const finalEvent = vi.mocked(repo.saveDoseEvent).mock.calls[1]![0];
     expect(finalEvent.status).toBe('completed');
   });
+
+  it('removes a queued (not started) catch-up by missed-dose id', async () => {
+    const repo = createMockRepository();
+    const engine = createEngine(repo, { minInterDoseGapMs: 0 });
+
+    let resolveFirst: (() => void) | null = null;
+    vi.mocked(runSteps).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          // Only the FIRST run is held; later doses resolve immediately.
+          if (resolveFirst === null) resolveFirst = resolve;
+          else resolve();
+        }),
+    );
+
+    const first = engine.submitDose('alk', 1, 'manual');
+    await engine.submitDose('ca', 1, 'catchup', 'sched-1', 'missed-1');
+    // Wait until the first dose is actually inside runSteps.
+    await vi.waitFor(() => {
+      if (resolveFirst === null) throw new Error('first dose not started');
+    });
+
+    expect(engine.cancelQueuedByMissedDoseId('missed-1')).toBe(true);
+    expect(engine.getQueueDepth()).toBe(1); // only the running dose remains
+
+    resolveFirst!();
+    await first;
+    await waitForQueueDrain(engine);
+
+    // The cancelled catch-up never touched the hardware.
+    expect(vi.mocked(runSteps)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runSteps).mock.calls[0]![0]).toBe('alk');
+  });
+
+  it('refuses to remove a catch-up that is gap-waiting or executing', async () => {
+    const repo = createMockRepository();
+    const engine = createEngine(repo, { minInterDoseGapMs: 200 });
+
+    let resolveFirst: (() => void) | null = null;
+    vi.mocked(runSteps).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          // Only the FIRST run is held; later doses resolve immediately.
+          if (resolveFirst === null) resolveFirst = resolve;
+          else resolve();
+        }),
+    );
+
+    const first = engine.submitDose('alk', 1, 'manual');
+    await engine.submitDose('ca', 1, 'catchup', 'sched-1', 'missed-1');
+    await vi.waitFor(() => {
+      if (resolveFirst === null) throw new Error('first dose not started');
+    });
+    resolveFirst!();
+    await first;
+    // Give processQueue a beat to shift the catch-up into its gap wait.
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Dose 1 finished; the catch-up is now gap-waiting (active, not queued).
+    expect(engine.hasMissedDoseInProgress('missed-1')).toBe(true);
+    expect(engine.cancelQueuedByMissedDoseId('missed-1')).toBe(false);
+    expect(engine.getQueueDepth()).toBe(1);
+    // It still fires normally after the gap.
+    await waitForQueueDrain(engine);
+    expect(vi.mocked(runSteps).mock.calls.some((c) => c[0] === 'ca')).toBe(true);
+  });
+
+  it('never fires a catch-up whose entry was cancelled after queueing (race guard)', async () => {
+    // getMissedDoseStatus flips to 'cancelled' while the dose waits in the
+    // queue — the engine must see it at fire time and skip the hardware run.
+    const repo = createMockRepository({
+      getMissedDoseStatus: vi.fn().mockResolvedValue('cancelled'),
+    });
+    const engine = createEngine(repo, { minInterDoseGapMs: 0 });
+
+    await engine.submitDose('ca', 1, 'catchup', 'sched-1', 'missed-1');
+    await waitForQueueDrain(engine);
+
+    expect(runSteps).not.toHaveBeenCalled();
+    const calls = vi.mocked(repo.saveDoseEvent).mock.calls;
+    const finalEvent = calls[calls.length - 1]![0];
+    expect(finalEvent.status).toBe('skipped');
+    expect(finalEvent.error).toMatch(/cancelled/i);
+    expect(finalEvent.missedDoseId).toBe('missed-1');
+  });
+
+  it('fires a catch-up whose entry is still confirmed', async () => {
+    const repo = createMockRepository({
+      getMissedDoseStatus: vi.fn().mockResolvedValue('confirmed'),
+    });
+    const engine = createEngine(repo, { minInterDoseGapMs: 0 });
+
+    await engine.submitDose('ca', 1, 'catchup', 'sched-1', 'missed-1');
+    await waitForQueueDrain(engine);
+
+    expect(runSteps).toHaveBeenCalledTimes(1);
+    const calls = vi.mocked(repo.saveDoseEvent).mock.calls;
+    const finalEvent = calls[calls.length - 1]![0];
+    expect(finalEvent.status).toBe('completed');
+  });
 });

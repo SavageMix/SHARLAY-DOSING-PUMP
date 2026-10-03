@@ -756,6 +756,29 @@ export class ReefDatabase
     return rows.map((row) => this.mapMissedDoseRow(row));
   }
 
+  /**
+   * Confirmed catch-ups not yet terminal — the removable "queued" state.
+   */
+  getConfirmedMissedDoses(): MissedDose[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM missed_doses
+         WHERE status = 'confirmed'
+         ORDER BY scheduled_for ASC`,
+      )
+      .all() as Record<string, unknown>[];
+
+    return rows.map((row) => this.mapMissedDoseRow(row));
+  }
+
+  /** Current status of an entry, for the engine's cancel race guard. */
+  getMissedDoseStatus(id: string): MissedDoseStatus | null {
+    const row = this.db
+      .prepare('SELECT status FROM missed_doses WHERE id = ?')
+      .get(id) as { status: MissedDoseStatus } | undefined;
+    return row?.status ?? null;
+  }
+
   getMissedDoseById(id: string): MissedDose | undefined {
     const row = this.db
       .prepare('SELECT * FROM missed_doses WHERE id = ?')
@@ -777,7 +800,7 @@ export class ReefDatabase
     const rows = this.db
       .prepare(
         `SELECT * FROM missed_doses
-         WHERE status IN ('dismissed', 'expired', 'completed', 'failed', 'interrupted')
+         WHERE status IN ('dismissed', 'expired', 'completed', 'failed', 'interrupted', 'cancelled')
            AND created_at >= ?
          ORDER BY scheduled_for ASC`,
       )

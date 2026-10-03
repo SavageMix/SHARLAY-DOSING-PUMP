@@ -36,6 +36,11 @@ export interface MissedDosesRepository {
   snoozePendingMissedDoses(until: string): void;
   setMissedDoseConfirmAfter(id: string, confirmAfter: string | null): void;
   getDueScheduledConfirmations(now: Date): MissedDose[];
+  /**
+   * Confirmed catch-ups not yet terminal — the "queued" state the user can
+   * still withdraw via the cancel endpoints.
+   */
+  getConfirmedMissedDoses(): MissedDose[];
   /** Expires pending entries older than `threshold`; returns how many. */
   expireMissedDosesBefore(threshold: string): number;
   hasPendingMissedDoseForSlot(
@@ -52,6 +57,13 @@ export interface MissedDosesEngine {
     scheduleId: string,
     missedDoseId?: string | null,
   ): Promise<string>;
+  /**
+   * OPTIONAL. Remove a submitted-but-not-started dose from the engine queue
+   * by its missed-dose link. Must NOT touch an active/current (firing) dose.
+   */
+  cancelQueuedByMissedDoseId?(missedDoseId: string): boolean;
+  /** OPTIONAL. True when the dose for this missed-dose entry is firing. */
+  hasMissedDoseInProgress?(missedDoseId: string): boolean;
 }
 
 /**
@@ -569,4 +581,88 @@ export async function fireScheduledConfirmations(
     // only ensures the entry is not re-selected while the dose is in flight.
     repository.setMissedDoseConfirmAfter(entry.id, null);
   }
+}
+
+/**
+ * Withdraw a confirmed-but-not-yet-fired catch-up. Terminal status becomes
+ * 'cancelled' — distinct from 'dismissed' (refused while pending) so History
+ * can tell "user changed their mind" from "user refused the dose".
+ *
+ * Safety against the drain:
+ * - If the dose is already firing (executing or gap-waiting in the engine),
+ *   the cancel is REJECTED — an in-flight dose cannot be un-poured.
+ * - If it sits in the engine queue, it is removed so it never starts.
+ * - The double in-progress check closes the race where the engine takes the
+ *   item off the queue between our check and our removal: we then lose, throw,
+ *   and leave the entry 'confirmed' so the engine closes it normally.
+ * - The engine re-verifies the entry is still 'confirmed' at fire time, so a
+ *   cancel that lands first can never be dosed anyway.
+ *
+ * Throws with a user-facing message when the cancel must be refused.
+ */
+export async function cancelMissedDose(
+  repository: MissedDosesRepository,
+  engine: MissedDosesEngine,
+  id: string,
+): Promise<MissedDose> {
+  const entry = repository.getMissedDoseById(id);
+  if (!entry) {
+    throw new Error(`Missed dose ${id} not found`);
+  }
+  if (entry.status === 'cancelled') {
+    throw new Error('This catch-up was already removed from the queue');
+  }
+  if (entry.status !== 'confirmed') {
+    throw new Error(
+      entry.status === 'pending'
+        ? 'Only confirmed catch-ups can be removed from the queue'
+        : `This catch-up already ${entry.status === 'completed' ? 'fired' : `ended (${entry.status})`}`,
+    );
+  }
+
+  if (engine.hasMissedDoseInProgress?.(id)) {
+    throw new Error('This catch-up is already firing and cannot be removed');
+  }
+  engine.cancelQueuedByMissedDoseId?.(id);
+  // Race check: the engine may have taken the item off the queue (and be
+  // about to fire it) in the window above. If so we lost — refuse the cancel
+  // and let the UI refresh to the dose firing; the entry stays 'confirmed'
+  // and the engine closes it when the dose completes.
+  if (engine.hasMissedDoseInProgress?.(id)) {
+    throw new Error('This catch-up is already firing and cannot be removed');
+  }
+
+  repository.setMissedDoseConfirmAfter(id, null);
+  repository.updateMissedDoseStatus(id, 'cancelled');
+  console.log(
+    `[missed-doses] Catch-up ${id} (${entry.pumpId}, ${entry.volumeMl} mL) cancelled by user before firing`,
+  );
+  const updated = repository.getMissedDoseById(id);
+  if (!updated) throw new Error(`Missed dose ${id} not found`);
+  return updated;
+}
+
+/**
+ * Bulk drain escape: withdraw EVERY confirmed catch-up. Doses already firing
+ * are left alone (they complete normally) and are reported in `inFlight` so
+ * the UI can say so instead of looking like a partial failure.
+ */
+export async function cancelAllMissedDoses(
+  repository: MissedDosesRepository,
+  engine: MissedDosesEngine,
+): Promise<{ cancelled: string[]; inFlight: string[] }> {
+  const cancelled: string[] = [];
+  const inFlight: string[] = [];
+  for (const entry of repository.getConfirmedMissedDoses()) {
+    try {
+      await cancelMissedDose(repository, engine, entry.id);
+      cancelled.push(entry.id);
+    } catch {
+      inFlight.push(entry.id);
+    }
+  }
+  console.log(
+    `[missed-doses] Cancel-all: ${cancelled.length} catch-ups withdrawn, ${inFlight.length} already firing left to complete`,
+  );
+  return { cancelled, inFlight };
 }

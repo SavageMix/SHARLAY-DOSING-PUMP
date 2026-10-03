@@ -22,6 +22,8 @@ import {
   stopCalibration,
 } from './calibrator.js';
 import {
+  cancelAllMissedDoses,
+  cancelMissedDose,
   confirmMissedDose,
   confirmMissedDoses,
   dismissMissedDose,
@@ -873,12 +875,20 @@ export async function createServer(
 
   fastify.get('/api/missed-doses', async (request) => {
     const query = z
-      .object({ includeSnoozed: z.coerce.boolean().optional() })
+      .object({
+        includeSnoozed: z.coerce.boolean().optional(),
+        includeConfirmed: z.coerce.boolean().optional(),
+      })
       .safeParse(request.query);
     const includeSnoozed = query.success ? (query.data.includeSnoozed ?? false) : false;
-    return {
-      missedDoses: db.getPendingMissedDoses(new Date(), includeSnoozed),
-    };
+    const includeConfirmed = query.success
+      ? (query.data.includeConfirmed ?? false)
+      : false;
+    const pending = db.getPendingMissedDoses(new Date(), includeSnoozed);
+    // Confirmed catch-ups ride along so the UI can show the removable
+    // queued state; the app distinguishes them by status ('confirmed').
+    const confirmed = includeConfirmed ? db.getConfirmedMissedDoses() : [];
+    return { missedDoses: [...pending, ...confirmed] };
   });
 
   // Read-only feed for the Catch-ups page's RESOLVED section: terminal
@@ -969,6 +979,37 @@ export async function createServer(
     } catch (error) {
       return reply.status(409).send({
         error: error instanceof Error ? error.message : 'Failed to dismiss',
+      });
+    }
+  });
+
+  // Withdraw a confirmed-but-not-yet-fired catch-up. Rejected (409) when the
+  // entry is not confirmed or its dose is already firing — the UI treats a
+  // 409 as "refresh and see the current state", never as a raw error.
+  fastify.post('/api/missed-doses/:id/cancel', async (request, reply) => {
+    const params = missedDoseParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.status(400).send({ error: firstZodMessage(params.error) });
+    }
+
+    try {
+      const missedDose = await cancelMissedDose(db, engine, params.data.id);
+      return { missedDose };
+    } catch (error) {
+      return reply.status(409).send({
+        error: error instanceof Error ? error.message : 'Failed to cancel',
+      });
+    }
+  });
+
+  // Bulk drain escape: withdraw every confirmed catch-up at once. Doses
+  // already firing are reported in `inFlight` and complete normally.
+  fastify.post('/api/missed-doses/cancel-all', async (_request, reply) => {
+    try {
+      return await cancelAllMissedDoses(db, engine);
+    } catch (error) {
+      return reply.status(409).send({
+        error: error instanceof Error ? error.message : 'Failed to cancel',
       });
     }
   });
