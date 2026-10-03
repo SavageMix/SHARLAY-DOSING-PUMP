@@ -73,6 +73,19 @@ export interface CatchupQueueItem {
 export interface CatchupQueueStatus {
   firing: CatchupQueueItem | null;
   queued: CatchupQueueItem[];
+  /**
+   * Confirmed catch-ups not yet in a terminal state — in flight, in the
+   * engine queue, or scheduled at a future confirmAfter. Includes items not
+   * yet visible in `queued`, so the UI can show drain progress ("23 of 36
+   * remaining") during multi-hour staggered drains.
+   */
+  remaining: number;
+  /**
+   * Earliest upcoming fire time (minimum confirmAfter across confirmed
+   * entries), or null when nothing is scheduled — e.g. only an in-flight
+   * dose remains.
+   */
+  nextFireAt: string | null;
 }
 
 /**

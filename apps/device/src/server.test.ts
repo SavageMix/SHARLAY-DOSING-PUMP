@@ -1743,6 +1743,13 @@ describe('Server endpoints', () => {
       expect(queuedIds.length).toBeGreaterThanOrEqual(2);
       expect(queuedIds.length + (firingId ? 1 : 0) + doneIds.size).toBe(4);
 
+      // Drain progress: remaining counts every confirmed-not-terminal entry
+      // (in flight + queued), even ones already invisible to the queue view
+      // because their dose finished before the snapshot. All four were
+      // submitted at once, so none has a future confirmAfter left.
+      expect(body.catchupQueue.remaining).toBe(4 - doneIds.size);
+      expect(body.catchupQueue.nextFireAt).toBeNull();
+
       // Firing entry, when present, carries the original missed slot time.
       if (body.catchupQueue.firing) {
         expect(body.catchupQueue.firing.missedDoseScheduledFor).toBe(
@@ -1788,6 +1795,71 @@ describe('Server endpoints', () => {
       const afterBody = JSON.parse(after.body);
       expect(afterBody.catchupQueue.firing).toBeNull();
       expect(afterBody.catchupQueue.queued).toHaveLength(0);
+      expect(afterBody.catchupQueue.remaining).toBe(0);
+      expect(afterBody.catchupQueue.nextFireAt).toBeNull();
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('/api/status drain progress reports a scheduled (future confirmAfter) catch-up', async () => {
+    vi.setSystemTime(new Date('2026-08-24T01:00:00Z'));
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.updatePumpCalibration('alk', 100);
+      db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 1,
+        timesPerDay: 2,
+        startTime: '00:00',
+        repeatEveryNDays: 1,
+        enabled: true,
+        lastRunAt: '2026-08-22T00:00:00.000Z',
+      });
+      detectMissedDoses(db, new Date());
+      for (const s of db.getSchedules()) {
+        db.updateSchedule(s.id, { enabled: false });
+      }
+
+      // Empty state: no confirmed entries → zero remaining, no next fire.
+      const empty = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      const emptyBody = JSON.parse(empty.body);
+      expect(emptyBody.catchupQueue.remaining).toBe(0);
+      expect(emptyBody.catchupQueue.nextFireAt).toBeNull();
+
+      const list = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/missed-doses',
+      });
+      const { missedDoses } = JSON.parse(list.body);
+      expect(missedDoses).toHaveLength(2); // two same-pump slots
+
+      // Confirm both: the first fires immediately, the second is held with a
+      // confirmAfter 30 minutes out (per-pump minimum spacing).
+      const confirm = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/missed-doses/confirm',
+        payload: { ids: missedDoses.map((m: { id: string }) => m.id) },
+      });
+      expect(confirm.statusCode).toBe(200);
+      expect(JSON.parse(confirm.body).fired).toHaveLength(1);
+      expect(JSON.parse(confirm.body).scheduled).toHaveLength(1);
+
+      const status = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      const body = JSON.parse(status.body);
+      const scheduledId = JSON.parse(confirm.body).scheduled[0];
+      expect(body.catchupQueue.remaining).toBe(1);
+      expect(body.catchupQueue.nextFireAt).toBe(
+        db.getMissedDoseById(scheduledId)?.confirmAfter,
+      );
+      expect(body.catchupQueue.nextFireAt).not.toBeNull();
     } finally {
       scheduler.stop();
       db.close();

@@ -155,6 +155,8 @@ export default function CatchupsScreen() {
   const [queue, setQueue] = useState<CatchupQueueStatus>({
     firing: null,
     queued: [],
+    remaining: 0,
+    nextFireAt: null,
   });
   const [fired, setFired] = useState<DoseEvent[]>([]);
   const [resolvedMisses, setResolvedMisses] = useState<MissedDose[]>([]);
@@ -199,7 +201,14 @@ export default function CatchupsScreen() {
       // shows exactly what the pending count reports.
       setPending((prev) => nextModalList(false, prev, missed));
       setPendingLoaded(true);
-      setQueue(status.catchupQueue ?? { firing: null, queued: [] });
+      setQueue(
+        status.catchupQueue ?? {
+          firing: null,
+          queued: [],
+          remaining: 0,
+          nextFireAt: null,
+        },
+      );
       setFired(history.events);
       setResolvedMisses(resolved);
       setIntegrityFindings(status.integrityFindings ?? []);
@@ -229,7 +238,11 @@ export default function CatchupsScreen() {
   }, [forced, pendingLoaded, pending.length, router]);
 
   const queueSection = useMemo(
-    () => buildQueueSection(queue.firing, queue.queued),
+    () =>
+      buildQueueSection(queue.firing, queue.queued, {
+        remaining: queue.remaining ?? 0,
+        nextFireAt: queue.nextFireAt ?? null,
+      }),
     [queue],
   );
   const resolvedGroups = useMemo(
@@ -576,9 +589,23 @@ export default function CatchupsScreen() {
         )}
 
         {/* QUEUED / FIRING ----------------------------------------------- */}
-        {queueSection.firing || queueSection.queued.length > 0 ? (
+        {queueSection.firing ||
+        queueSection.queued.length > 0 ||
+        queueSection.remaining > 0 ? (
           <ThemedView style={styles.section}>
             <ThemedText style={styles.sectionTitle}>Queued / firing</ThemedText>
+            {queueSection.remaining > 0 ? (
+              <ThemedView style={styles.drainRow}>
+                <ActivityIndicator color={Colors.aqua} size="small" />
+                <ThemedText style={styles.drainText}>
+                  Catching up: {queueSection.remaining} dose
+                  {queueSection.remaining === 1 ? '' : 's'} remaining
+                  {queueSection.nextFireAt
+                    ? `, next ~${formatTime(new Date(queueSection.nextFireAt))}`
+                    : ' — finishing current dose'}
+                </ThemedText>
+              </ThemedView>
+            ) : null}
             {queueSection.firing ? (
               <ThemedView style={styles.firingRow}>
                 <View style={styles.firingDot} />
@@ -891,6 +918,20 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.aqua,
   },
   firingText: {
+    ...Typography.body,
+    color: Colors.aqua,
+    flexShrink: 1,
+  },
+  drainRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: 'rgba(32, 227, 216, 0.08)',
+    borderRadius: Radius.sm,
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
+  },
+  drainText: {
     ...Typography.body,
     color: Colors.aqua,
     flexShrink: 1,

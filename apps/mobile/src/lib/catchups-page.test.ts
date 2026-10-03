@@ -162,6 +162,34 @@ describe('buildQueueSection — refresh/remount derivation', () => {
     expect(drained.firing).toBeNull();
     expect(drained.queued).toEqual([]);
   });
+
+  it('defaults drain fields when the device omits them (older builds)', () => {
+    const section = buildQueueSection(statusPayload.firing, statusPayload.queued);
+    expect(section.remaining).toBe(0);
+    expect(section.nextFireAt).toBeNull();
+  });
+
+  it('passes drain progress through for the multi-hour drain indicator', () => {
+    const section = buildQueueSection(null, [], {
+      remaining: 23,
+      nextFireAt: '2026-08-24T07:50:00.000Z',
+    });
+    expect(section.remaining).toBe(23);
+    expect(section.nextFireAt).toBe('2026-08-24T07:50:00.000Z');
+  });
+
+  it('keeps the section non-empty during a far-future drain (nothing queued yet)', () => {
+    // All confirmed entries are scheduled minutes/hours ahead: firing and
+    // queued are empty, but remaining > 0 — the section must still render
+    // so the user sees the drain is happening and how much is left.
+    const section = buildQueueSection(null, [], {
+      remaining: 5,
+      nextFireAt: '2026-08-24T08:00:00.000Z',
+    });
+    expect(section.firing).toBeNull();
+    expect(section.queued).toEqual([]);
+    expect(section.remaining).toBeGreaterThan(0);
+  });
 });
 
 function doseEvent(partial: Partial<DoseEvent> & { id: string }): DoseEvent {

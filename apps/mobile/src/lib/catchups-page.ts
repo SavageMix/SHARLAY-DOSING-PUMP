@@ -91,6 +91,15 @@ export function buildCatchupsSummary(
 export interface QueueSectionModel {
   firing: CatchupQueueItem | null;
   queued: CatchupQueueItem[];
+  /**
+   * Confirmed catch-ups not yet terminal (in flight + queued + scheduled
+   * ahead). Lets the UI show drain progress during multi-hour drains even
+   * when nothing is in the engine queue yet. Defaults to 0 so older device
+   * builds (which omit the field) keep working.
+   */
+  remaining: number;
+  /** Earliest upcoming fire time, or null when nothing is scheduled. */
+  nextFireAt: string | null;
 }
 
 /**
@@ -101,10 +110,13 @@ export interface QueueSectionModel {
 export function buildQueueSection(
   firing: CatchupQueueItem | null,
   queued: CatchupQueueItem[],
+  drain?: { remaining: number; nextFireAt: string | null },
 ): QueueSectionModel {
   return {
     firing: firing ?? null,
     queued: Array.isArray(queued) ? [...queued] : [],
+    remaining: drain?.remaining ?? 0,
+    nextFireAt: drain?.nextFireAt ?? null,
   };
 }
 

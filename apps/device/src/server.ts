@@ -589,7 +589,7 @@ export async function createServer(
       currentDose,
       queue: status.current ? [status.current] : [],
       queueDepth: status.queueDepth,
-      catchupQueue: { firing, queued },
+      catchupQueue: { firing, queued, ...db.getCatchupDrainSummary() },
       systemVolumeLitres: db.getSystemVolumeLitres(),
       prime: {
         priming: isPriming(),

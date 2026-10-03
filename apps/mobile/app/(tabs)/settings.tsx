@@ -548,7 +548,12 @@ export default function SettingsScreen() {
         systemVolumeLitres: data?.systemVolumeLitres ?? null,
       });
       setPrimeState(data?.prime ?? null);
-      const queue = data?.catchupQueue ?? { firing: null, queued: [] };
+      const queue = data?.catchupQueue ?? {
+        firing: null,
+        queued: [],
+        remaining: 0,
+        nextFireAt: null,
+      };
       setCatchupsSummary(
         buildCatchupsSummary(missed.length, queue.firing, queue.queued.length),
       );
