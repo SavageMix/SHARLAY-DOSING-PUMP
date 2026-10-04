@@ -8,6 +8,7 @@ import {
   View,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 
 import { HistoryChart } from '@/components/HistoryChart';
 import { OfflineCard } from '@/components/OfflineCard';
@@ -18,7 +19,12 @@ import {
   getHistory,
   resolveDeviceBaseUrl,
 } from '@/src/api/client';
-import { historyRangeStart } from '@/src/lib/history-chart';
+import {
+  formatDayHeaderLabel,
+  groupEventsByDay,
+  historyRangeStart,
+  localDateKey,
+} from '@/src/lib/history-chart';
 import type { DoseEvent, PumpId } from '@reef/shared';
 import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
 
@@ -45,6 +51,17 @@ export default function HistoryScreen() {
   const [filter, setFilter] = useState<{ pumpId?: PumpId; days: number }>({
     days: 7,
   });
+  /**
+   * Drill-down: localDateKey of the day tapped on a 7d/30d bar, with the
+   * chart AND the list switched to that single day (hourly). Fourth state
+   * alongside the 1d/7d/30d pills — pills clear it, the pump filter carries
+   * through it unchanged.
+   */
+  const [drillDate, setDrillDate] = useState<string | null>(null);
+  /** Expand/collapse overrides; a day defaults to expanded only if newest. */
+  const [expandedOverrides, setExpandedOverrides] = useState<
+    Record<string, boolean>
+  >({});
 
   const load = useCallback(
     async (showRefresh = false) => {
@@ -96,9 +113,81 @@ export default function HistoryScreen() {
   const filteredEvents = useMemo(() => {
     return events.filter((e) => {
       if (filter.pumpId && e.pumpId !== filter.pumpId) return false;
+      // Drill-down wins over the pill range: the tapped day only. Same
+      // localDateKey definition the chart buckets by.
+      if (drillDate) {
+        return localDateKey(new Date(e.startedAt)) === drillDate;
+      }
       return isWithinDays(e.startedAt, filter.days);
     });
-  }, [events, filter]);
+  }, [events, filter, drillDate]);
+
+  // Day-grouped sections — same local-midnight split as the chart, so a
+  // header's "mL delivered" always equals that day's bar total.
+  const dayGroups = useMemo(() => groupEventsByDay(filteredEvents), [filteredEvents]);
+  const newestDayKey = dayGroups[0]?.key;
+
+  const toggleDay = (key: string) => {
+    setExpandedOverrides((prev) => ({ ...prev, [key]: !isDayExpanded(key) }));
+  };
+
+  function isDayExpanded(key: string): boolean {
+    return expandedOverrides[key] ?? key === newestDayKey;
+  }
+
+  const renderEventCard = (item: DoseEvent) => (
+    <ThemedView key={item.id} style={styles.eventCard}>
+      <ThemedView style={styles.row}>
+        <ThemedText style={styles.pumpTitle}>{item.pumpId}</ThemedText>
+        <ThemedView style={styles.badgeRow}>
+          {item.source === 'catchup' ? (
+            <ThemedText style={[styles.badge, styles.catchupBadge]}>
+              Catch-up
+            </ThemedText>
+          ) : (
+            <ThemedText
+              style={[
+                styles.badge,
+                styles.sourceBadge,
+                { backgroundColor: Colors.midnight },
+              ]}>
+              {item.source}
+            </ThemedText>
+          )}
+          <ThemedText
+            style={[
+              styles.badge,
+              item.status === 'completed'
+                ? styles.success
+                : item.status === 'running'
+                  ? styles.info
+                  : styles.error,
+            ]}>
+            {item.status}
+          </ThemedText>
+        </ThemedView>
+      </ThemedView>
+      {item.source === 'catchup' && item.missedDoseScheduledFor ? (
+        <ThemedText style={styles.catchupNote}>
+          Missed {new Date(item.missedDoseScheduledFor).toLocaleString()}
+        </ThemedText>
+      ) : null}
+      <ThemedText style={styles.metric}>
+        Requested: {item.requestedMl.toFixed(2)} mL
+      </ThemedText>
+      {item.actualMl !== null ? (
+        <ThemedText style={styles.metric}>
+          Actual: {item.actualMl.toFixed(2)} mL
+        </ThemedText>
+      ) : null}
+      <ThemedText style={styles.metric}>
+        {new Date(item.startedAt).toLocaleString()}
+      </ThemedText>
+      {item.error ? (
+        <ThemedText style={styles.errorText}>{item.error}</ThemedText>
+      ) : null}
+    </ThemedView>
+  );
 
   if (!baseUrl) {
     return (
@@ -114,8 +203,8 @@ export default function HistoryScreen() {
       <ThemedText style={styles.header}>History</ThemedText>
 
       <FlatList
-        data={filteredEvents}
-        keyExtractor={(item) => item.id}
+        data={dayGroups}
+        keyExtractor={(item) => item.key}
         contentContainerStyle={styles.list}
         refreshControl={
           <RefreshControl
@@ -131,6 +220,12 @@ export default function HistoryScreen() {
               events={events}
               days={filter.days}
               pumpId={filter.pumpId}
+              date={drillDate}
+              onSelectDay={(key) =>
+                // Toggle: tapping the already-selected day drills back out.
+                setDrillDate((prev) => (prev === key ? null : key))
+              }
+              onBack={() => setDrillDate(null)}
             />
 
             <ThemedView style={styles.filterCard}>
@@ -179,7 +274,11 @@ export default function HistoryScreen() {
                       styles.chip,
                       filter.days === days && styles.chipActive,
                     ]}
-                    onPress={() => setFilter((f) => ({ ...f, days }))}>
+                    onPress={() => {
+                      // Pills still pick the range; they exit any drill-down.
+                      setDrillDate(null);
+                      setFilter((f) => ({ ...f, days }));
+                    }}>
                     <ThemedText
                       style={[
                         filter.days === days
@@ -200,64 +299,52 @@ export default function HistoryScreen() {
             <ThemedText style={styles.count}>
               {filteredEvents.length} event
               {filteredEvents.length !== 1 ? 's' : ''}
-              {filter.days !== 30 ? ` in last ${filter.days}d` : ''}
+              {drillDate
+                ? ` on ${formatDayHeaderLabel(drillDate)}`
+                : filter.days !== 30
+                  ? ` in last ${filter.days}d`
+                  : ''}
             </ThemedText>
           </>
         }
-        renderItem={({ item }) => (
-          <ThemedView style={styles.eventCard}>
-            <ThemedView style={styles.row}>
-              <ThemedText style={styles.pumpTitle}>{item.pumpId}</ThemedText>
-              <ThemedView style={styles.badgeRow}>
-                {item.source === 'catchup' ? (
-                  <ThemedText style={[styles.badge, styles.catchupBadge]}>
-                    Catch-up
+        renderItem={({ item }) => {
+          const expanded = isDayExpanded(item.key);
+          return (
+            <ThemedView style={styles.daySection}>
+              <Pressable
+                style={styles.dayHeader}
+                onPress={() => toggleDay(item.key)}
+                accessibilityRole="button"
+                accessibilityState={{ expanded }}
+                accessibilityLabel={`${item.label}, ${item.eventCount} events`}>
+                <ThemedView style={styles.dayHeaderTextRow}>
+                  <ThemedText style={styles.dayHeaderTitle}>
+                    {item.label}
                   </ThemedText>
-                ) : (
-                  <ThemedText
-                    style={[
-                      styles.badge,
-                      styles.sourceBadge,
-                      { backgroundColor: Colors.midnight },
-                    ]}>
-                    {item.source}
+                  <ThemedText style={styles.dayHeaderSummary}>
+                    {item.eventCount} event{item.eventCount === 1 ? '' : 's'} ·{' '}
+                    {item.deliveredMl.toFixed(1)} mL delivered
                   </ThemedText>
-                )}
-                <ThemedText
-                  style={[
-                    styles.badge,
-                    item.status === 'completed'
-                      ? styles.success
-                      : item.status === 'running'
-                      ? styles.info
-                      : styles.error,
-                  ]}>
-                  {item.status}
-                </ThemedText>
-              </ThemedView>
+                </ThemedView>
+                <ThemedView style={styles.dayHeaderBadges}>
+                  {item.failedCount > 0 ? (
+                    <ThemedText style={styles.failedBadge}>
+                      {item.failedCount} failed
+                    </ThemedText>
+                  ) : null}
+                  <Ionicons
+                    name={expanded ? 'chevron-down' : 'chevron-forward'}
+                    size={18}
+                    color={Colors.titanium}
+                  />
+                </ThemedView>
+              </Pressable>
+              {expanded
+                ? item.events.map((event) => renderEventCard(event))
+                : null}
             </ThemedView>
-            {item.source === 'catchup' && item.missedDoseScheduledFor ? (
-              <ThemedText style={styles.catchupNote}>
-                Missed{' '}
-                {new Date(item.missedDoseScheduledFor).toLocaleString()}
-              </ThemedText>
-            ) : null}
-            <ThemedText style={styles.metric}>
-              Requested: {item.requestedMl.toFixed(2)} mL
-            </ThemedText>
-            {item.actualMl !== null ? (
-              <ThemedText style={styles.metric}>
-                Actual: {item.actualMl.toFixed(2)} mL
-              </ThemedText>
-            ) : null}
-            <ThemedText style={styles.metric}>
-              {new Date(item.startedAt).toLocaleString()}
-            </ThemedText>
-            {item.error ? (
-              <ThemedText style={styles.errorText}>{item.error}</ThemedText>
-            ) : null}
-          </ThemedView>
-        )}
+          );
+        }}
         ListEmptyComponent={
           !loading ? (
             <ThemedText style={styles.empty}>
@@ -332,11 +419,51 @@ const styles = StyleSheet.create({
   list: {
     paddingBottom: Spacing.xl,
   },
+  daySection: {
+    marginBottom: Spacing.sm,
+  },
+  dayHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
+    backgroundColor: Colors.abyss,
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
+  },
+  dayHeaderTextRow: {
+    flexShrink: 1,
+  },
+  dayHeaderTitle: {
+    ...Typography.h3,
+    color: Colors.pearl,
+  },
+  dayHeaderSummary: {
+    ...Typography.small,
+    color: Colors.titanium,
+    marginTop: 2,
+  },
+  dayHeaderBadges: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  failedBadge: {
+    ...Typography.caption,
+    color: Colors.pearl,
+    backgroundColor: Colors.danger,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 2,
+    borderRadius: Radius.sm,
+    overflow: 'hidden',
+  },
   eventCard: {
     backgroundColor: Colors.abyss,
     borderRadius: Radius.md,
     padding: Spacing.md,
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
+    marginLeft: Spacing.sm,
   },
   row: {
     flexDirection: 'row',

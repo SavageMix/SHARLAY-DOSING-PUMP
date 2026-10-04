@@ -82,18 +82,43 @@ export function historyRangeStart(days: number, now: Date): number {
  * Bucket `events` for the chart. When a specific pump is selected the caller
  * pre-filters the events (same data, subset) — this function stays pump-
  * agnostic so the "All" stacked view and the single-pump view share one path.
+ *
+ * `date` (a localDateKey) is the drill-down override: when set, the chart
+ * shows that calendar day's hourly buckets regardless of `days` — the parent
+ * range is kept so "Back to Last N days" knows where to return.
  */
 export function buildHistoryBuckets(
   events: DoseEvent[],
   days: number,
   now: Date,
+  date?: string | null,
 ): HistoryBucket[] {
-  if (days === 1) return buildHourlyBuckets(events, now);
+  if (date) return buildHourlyBuckets(events, date);
+  if (days === 1) return buildHourlyBuckets(events, localDateKey(now));
   return buildDailyBuckets(events, days, now);
 }
 
-function buildHourlyBuckets(events: DoseEvent[], now: Date): HistoryBucket[] {
-  const dayKey = localDateKey(now);
+/** Parse a localDateKey back into a device-local Date (local midnight). */
+export function parseLocalDateKey(key: string): Date {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+}
+
+/** 'Tue 30 Sep' — the day-section header / drill title format. */
+export function formatDayHeaderLabel(key: string): string {
+  return parseLocalDateKey(key).toLocaleDateString(undefined, {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+  });
+}
+
+/** Chart title while drilled into a specific day. */
+export function historyChartDrillTitle(date: string): string {
+  return `${formatDayHeaderLabel(date)}, hourly`;
+}
+
+function buildHourlyBuckets(events: DoseEvent[], dayKey: string): HistoryBucket[] {
   const buckets: HistoryBucket[] = [];
   for (let h = 0; h < 24; h++) {
     buckets.push({
@@ -156,4 +181,66 @@ export function bucketTotal(
     (sum, pumpId) => (visible[pumpId] ? sum + bucket.values[pumpId] : sum),
     0,
   );
+}
+
+/**
+ * Day-grouped event list, sharing the chart's exact local-midnight day
+ * definition (localDateKey). Groups are reverse-chronological (newest day
+ * first) and events within a group are reverse-chronological — the same
+ * order the flat list showed. The header summary deliberately uses the SAME
+ * delivered-mL rule as the chart buckets (completed + actualMl), so a day's
+ * "96.0 mL delivered" always equals that day's bar total.
+ */
+export interface HistoryDayGroup {
+  /** localDateKey — stable identity and sort order. */
+  key: string;
+  /** Header label, e.g. 'Tue 30 Sep' — device-local. */
+  label: string;
+  /** All events of the day, newest first. */
+  events: DoseEvent[];
+  /** Total events in the day, every status (this is a list, not a tally). */
+  eventCount: number;
+  /** Delivered mL — completed events with actualMl, same rule as the chart. */
+  deliveredMl: number;
+  /** failed + interrupted count — badges the header so a bad day is
+      visible without expanding. */
+  failedCount: number;
+}
+
+export function groupEventsByDay(events: DoseEvent[]): HistoryDayGroup[] {
+  const byKey = new Map<string, DoseEvent[]>();
+  for (const event of events) {
+    const t = new Date(event.startedAt).getTime();
+    if (Number.isNaN(t)) continue;
+    const key = localDateKey(new Date(t));
+    const list = byKey.get(key) ?? [];
+    list.push(event);
+    byKey.set(key, list);
+  }
+
+  const groups: HistoryDayGroup[] = [];
+  for (const [key, list] of byKey) {
+    // Newest first within the day; localDateKey strings also sort
+    // lexicographically into chronological order across days.
+    list.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+    let deliveredMl = 0;
+    let failedCount = 0;
+    for (const e of list) {
+      if (e.status === 'failed' || e.status === 'interrupted') {
+        failedCount += 1;
+      } else if (e.status === 'completed' && e.actualMl !== null) {
+        deliveredMl += e.actualMl;
+      }
+    }
+    groups.push({
+      key,
+      label: formatDayHeaderLabel(key),
+      events: list,
+      eventCount: list.length,
+      deliveredMl,
+      failedCount,
+    });
+  }
+  groups.sort((a, b) => b.key.localeCompare(a.key));
+  return groups;
 }

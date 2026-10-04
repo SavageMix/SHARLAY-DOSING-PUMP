@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import Svg, { Circle, G, Rect, Text as SvgText } from 'react-native-svg';
+import { Ionicons } from '@expo/vector-icons';
 
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/Themed';
@@ -8,6 +9,7 @@ import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
 import {
   bucketTotal,
   buildHistoryBuckets,
+  historyChartDrillTitle,
   historyChartTitle,
 } from '@/src/lib/history-chart';
 import type { DoseEvent, PumpId } from '@reef/shared';
@@ -29,9 +31,27 @@ interface HistoryChartProps {
   days: number;
   /** Pump filter from the screen — set: single-pump series, legend hidden. */
   pumpId?: PumpId;
+  /**
+   * Drill-down state: a localDateKey the user tapped in a 7d/30d bar. When
+   * set, the chart shows that day's hourly buckets; `days` is kept so the
+   * back affordance can name the range it returns to.
+   */
+  date?: string | null;
+  /** Range-mode bar tap (drill in; the parent toggles — tapping the
+      already-selected day drills back out). */
+  onSelectDay?: (dateKey: string) => void;
+  /** Back affordance — only rendered while `date` is set. */
+  onBack?: () => void;
 }
 
-export function HistoryChart({ events, days, pumpId }: HistoryChartProps) {
+export function HistoryChart({
+  events,
+  days,
+  pumpId,
+  date,
+  onSelectDay,
+  onBack,
+}: HistoryChartProps) {
   const [visible, setVisible] = useState<Record<PumpId, boolean>>({
     alk: true,
     ca: true,
@@ -46,21 +66,25 @@ export function HistoryChart({ events, days, pumpId }: HistoryChartProps) {
     const relevant = pumpId
       ? events.filter((e) => e.pumpId === pumpId)
       : events;
-    const buckets = buildHistoryBuckets(relevant, days, new Date());
+    const buckets = buildHistoryBuckets(relevant, days, new Date(), date);
     const maxTotal = Math.max(
       ...buckets.map((b) => bucketTotal(b, visible)),
       1,
     );
     return { buckets, maxTotal };
-  }, [events, days, pumpId, visible]);
+  }, [events, days, pumpId, date, visible]);
 
   const plotWidth = Math.max(0, width - MARGIN.left - MARGIN.right);
   const plotHeight = CHART_HEIGHT - MARGIN.top - MARGIN.bottom;
   const slot = buckets.length > 0 ? plotWidth / buckets.length : 0;
   const barWidth = Math.max(4, slot * 0.65);
   const yScale = plotHeight / maxTotal;
+  const hourly = date != null || days === 1;
   // 24 hourly labels don't fit rotated — show every 3rd hour (00, 03, …).
-  const labelEvery = days === 1 ? 3 : 1;
+  const labelEvery = hourly ? 3 : 1;
+  // Only daily bars are tappable — 1d is already hourly, and while drilled
+  // in there is a single day on screen (the back affordance exits).
+  const tapTarget = date == null && days !== 1 ? onSelectDay : undefined;
 
   const yTicks = useMemo(() => {
     const tickCount = 4;
@@ -74,7 +98,22 @@ export function HistoryChart({ events, days, pumpId }: HistoryChartProps) {
 
   return (
     <ThemedView style={styles.container}>
-      <ThemedText style={styles.title}>{historyChartTitle(days)}</ThemedText>
+      <ThemedText style={styles.title}>
+        {date ? historyChartDrillTitle(date) : historyChartTitle(days)}
+      </ThemedText>
+
+      {date ? (
+        <Pressable
+          style={styles.backRow}
+          onPress={onBack}
+          accessibilityRole="button"
+          accessibilityLabel={`Back to last ${days} days`}>
+          <Ionicons name="arrow-back" size={16} color={Colors.aqua} />
+          <ThemedText style={styles.backText}>
+            Back to Last {days} days
+          </ThemedText>
+        </Pressable>
+      ) : null}
 
       {!pumpId ? (
         <View style={styles.legend}>
@@ -120,13 +159,29 @@ export function HistoryChart({ events, days, pumpId }: HistoryChartProps) {
             })}
 
             {/* Bars — stacked per pump; empty buckets render as zero height,
-                never as a gap in the axis. */}
+                never as a gap in the axis. In 7d/30d each bar is a tap
+                target for drilling into that day. */}
             {buckets.map((bucket, index) => {
               const x = MARGIN.left + index * slot + (slot - barWidth) / 2;
               let y = MARGIN.top + plotHeight;
+              const isDrilled = date === bucket.key;
 
               return (
-                <G key={bucket.key}>
+                <G
+                  key={bucket.key}
+                  onPress={
+                    tapTarget ? () => tapTarget(bucket.key) : undefined
+                  }>
+                  {isDrilled ? (
+                    <Rect
+                      x={x - 2}
+                      y={MARGIN.top}
+                      width={barWidth + 4}
+                      height={plotHeight}
+                      fill="rgba(32, 227, 216, 0.12)"
+                      rx={3}
+                    />
+                  ) : null}
                   {PUMP_ORDER.map((pumpId) => {
                     if (!visible[pumpId]) return null;
                     const amount = bucket.values[pumpId];
@@ -196,6 +251,17 @@ const styles = StyleSheet.create({
     ...Typography.h3,
     color: Colors.pearl,
     marginBottom: Spacing.sm,
+  },
+  backRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    marginBottom: Spacing.sm,
+    paddingVertical: Spacing.xs,
+  },
+  backText: {
+    ...Typography.body,
+    color: Colors.aqua,
   },
   legend: {
     flexDirection: 'row',

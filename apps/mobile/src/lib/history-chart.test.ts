@@ -3,6 +3,9 @@ import type { DoseEvent, PumpId } from '@reef/shared';
 import {
   buildHistoryBuckets,
   bucketTotal,
+  formatDayHeaderLabel,
+  groupEventsByDay,
+  historyChartDrillTitle,
   historyChartTitle,
   historyRangeStart,
   localDateKey,
@@ -237,5 +240,127 @@ describe('history chart bucketing', () => {
     );
     expect(buckets[11].values.alk).toBe(0);
     expect(buckets[11].failed).toBe(false);
+  });
+});
+
+describe('drill-down', () => {
+  const now = local(2026, 9, 26, 12, 0);
+  const events = [
+    doseEvent(local(2026, 9, 24, 6, 0), { actualMl: 1 }),
+    doseEvent(local(2026, 9, 24, 14, 30), { actualMl: 2, pumpId: 'ca' }),
+    doseEvent(local(2026, 9, 25, 6, 0), { actualMl: 4 }),
+  ];
+
+  it('a tapped date buckets hourly for THAT day only, other days excluded', () => {
+    const buckets = buildHistoryBuckets(events, 7, now, '2026-09-24');
+    expect(buckets).toHaveLength(24);
+    expect(buckets[6].values.alk).toBe(1);
+    expect(buckets[14].values.ca).toBe(2);
+    expect(totalOf(buckets)).toBe(3); // the 9/25 dose is not in this day
+  });
+
+  it('the drill title names the day and the hourly granularity', () => {
+    const title = historyChartDrillTitle('2026-09-24');
+    expect(title).toContain('24');
+    expect(title.endsWith(', hourly')).toBe(true);
+    // Same label the day sections use — chart and list agree on the day name.
+    expect(title).toBe(`${formatDayHeaderLabel('2026-09-24')}, hourly`);
+  });
+
+  it('clearing the date restores the prior range view and its totals', () => {
+    // Mirror of the back affordance: setDate(null) → range buckets again.
+    const drilled = buildHistoryBuckets(events, 7, now, '2026-09-24');
+    expect(totalOf(drilled)).toBe(3);
+    const restored = buildHistoryBuckets(events, 7, now, null);
+    expect(restored).toHaveLength(7);
+    expect(totalOf(restored)).toBe(7); // all three events again
+  });
+
+  it('pump filter applies inside the drill (pre-filtered events)', () => {
+    const caOnly = events.filter((e) => e.pumpId === 'ca');
+    const buckets = buildHistoryBuckets(caOnly, 7, now, '2026-09-24');
+    expect(totalOf(buckets)).toBe(2);
+    expect(buckets[6].values.alk).toBe(0);
+  });
+});
+
+describe('day-grouped event list', () => {
+  it('groups by device-local day, newest day first, newest event first within a day', () => {
+    const events = [
+      doseEvent(local(2026, 9, 24, 6, 0), { id: 'old', actualMl: 1 }),
+      doseEvent(local(2026, 9, 26, 6, 0), { id: 'newer', actualMl: 2 }),
+      doseEvent(local(2026, 9, 26, 18, 0), { id: 'newest', actualMl: 3 }),
+      doseEvent(local(2026, 9, 25, 12, 0), { id: 'mid', actualMl: 4 }),
+    ];
+    const groups = groupEventsByDay(events);
+    expect(groups.map((g) => g.key)).toEqual([
+      '2026-09-26',
+      '2026-09-25',
+      '2026-09-24',
+    ]);
+    expect(groups[0].events.map((e) => e.id)).toEqual(['newest', 'newer']);
+    expect(groups[0].eventCount).toBe(2);
+    expect(groups[0].deliveredMl).toBe(5);
+  });
+
+  it('day group delivered mL matches the chart bucket sums for the same day', () => {
+    const now = local(2026, 9, 26, 12, 0);
+    const events = [
+      doseEvent(local(2026, 9, 24, 6, 0), { actualMl: 1.5, pumpId: 'alk' }),
+      doseEvent(local(2026, 9, 24, 18, 0), { actualMl: 2.5, pumpId: 'ca' }),
+      doseEvent(local(2026, 9, 25, 6, 0), { actualMl: 4, pumpId: 'no3' }),
+      doseEvent(local(2026, 9, 26, 6, 0), { actualMl: 8, pumpId: 'po4' }),
+    ];
+    const groups = groupEventsByDay(events);
+    const buckets = buildHistoryBuckets(events, 7, now);
+    for (const group of groups) {
+      const bucket = buckets.find((b) => b.key === group.key)!;
+      expect(group.deliveredMl).toBeCloseTo(bucketTotal(bucket, ALL_VISIBLE));
+    }
+  });
+
+  it('a day with a failed/interrupted event badges the header but delivered mL excludes it', () => {
+    const events = [
+      doseEvent(local(2026, 9, 25, 6, 0), { actualMl: 2 }),
+      doseEvent(local(2026, 9, 25, 18, 0), {
+        status: 'failed',
+        actualMl: null,
+        error: 'stalled',
+      }),
+      doseEvent(local(2026, 9, 25, 20, 0), {
+        status: 'interrupted',
+        actualMl: null,
+        error: 'Power lost during dose — unknown volume delivered',
+      }),
+      doseEvent(local(2026, 9, 26, 6, 0), { actualMl: 1 }),
+    ];
+    const groups = groupEventsByDay(events);
+    const badDay = groups.find((g) => g.key === '2026-09-25')!;
+    expect(badDay.failedCount).toBe(2); // failed + interrupted
+    expect(badDay.deliveredMl).toBe(2); // only the completed dose counts
+    expect(badDay.eventCount).toBe(3); // the list still shows all three
+    const goodDay = groups.find((g) => g.key === '2026-09-26')!;
+    expect(goodDay.failedCount).toBe(0);
+  });
+
+  it('pump filter applies to groups: only the selected pump appears', () => {
+    const events = [
+      doseEvent(local(2026, 9, 26, 6, 0), { actualMl: 2, pumpId: 'alk' }),
+      doseEvent(local(2026, 9, 26, 8, 0), { actualMl: 3, pumpId: 'ca' }),
+    ];
+    const caOnly = groupEventsByDay(events.filter((e) => e.pumpId === 'ca'));
+    expect(caOnly).toHaveLength(1);
+    expect(caOnly[0].events.every((e) => e.pumpId === 'ca')).toBe(true);
+    expect(caOnly[0].deliveredMl).toBe(3);
+  });
+
+  it('ignores events with unparseable timestamps', () => {
+    const events = [
+      doseEvent(local(2026, 9, 26, 6, 0), { actualMl: 1 }),
+      doseEvent(local(2026, 9, 26, 7, 0), { startedAt: 'not-a-date' }),
+    ];
+    const groups = groupEventsByDay(events);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].eventCount).toBe(1);
   });
 });
