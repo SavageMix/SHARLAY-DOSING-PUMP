@@ -381,3 +381,34 @@ export function splitPendingAndQueued(missedDoses: MissedDose[]): {
   }
   return { pending, queued };
 }
+
+/**
+ * Every card mutation on the Catch-ups page MUST resolve — a user action can
+ * never end in an infinite loading state. This wrapper guarantees it: the
+ * outcome is either 'updated' (carrying the response value) or 'noted'
+ * (carrying the server's message, e.g. a 409 reconciliation signal). The
+ * caller always clears its spinner and refreshes, whatever the outcome.
+ *
+ * Bug this prevents: the skip handlers only cleared `loading` on their happy
+ * path. That was invisible while a emptied card unmounted — but once queued
+ * catch-ups keep the card alive, the spinner froze forever even though the
+ * dismiss had succeeded.
+ */
+export type CardMutationOutcome<T> =
+  | { kind: 'updated'; value: T }
+  | { kind: 'noted'; note: string };
+
+export async function settleCardMutation<T>(
+  request: Promise<T>,
+  fallbackNote: string,
+): Promise<CardMutationOutcome<T>> {
+  try {
+    const value = await request;
+    return { kind: 'updated', value };
+  } catch (err) {
+    return {
+      kind: 'noted',
+      note: err instanceof Error ? err.message : fallbackNote,
+    };
+  }
+}

@@ -10,6 +10,7 @@ import {
   isBlockingMissedDose,
   RESOLVED_WINDOW_HOURS,
   shouldSnoozeOnExit,
+  settleCardMutation,
   splitPendingAndQueued,
 } from './catchups-page';
 
@@ -283,6 +284,73 @@ describe('buildResolvedGroups', () => {
     expect(queued.map((m) => m.id)).toEqual(['q1']);
     // Terminal entries never appear in either actionable state.
     expect(queued.some((m) => m.id.startsWith('t'))).toBe(false);
+  });
+
+  describe('settleCardMutation — every action resolves (no infinite loading)', () => {
+    it('mixed pending+queued skip-all: success resolves the spinner and leaves queued rows alone', async () => {
+      // Mirrors the page's handleSkipAll sequence against the exact bug
+      // repro: pending entries dismissed while a queued catch-up keeps the
+      // card mounted. The old code never reached a loading:false write on
+      // this path — the spinner froze until a manual refresh.
+      let cardState = { loading: false, error: null as string | null };
+      let pendingList = ['p1', 'p2'];
+      const queuedList = ['q1'];
+      const sent: string[][] = [];
+      const dismiss = async (ids: string[]) => {
+        sent.push(ids);
+      };
+
+      const pumpPending = pendingList.filter((id) => !queuedList.includes(id));
+      cardState = { loading: true, error: null };
+      const outcome = await settleCardMutation(dismiss(pumpPending), 'Failed to skip');
+      cardState = {
+        loading: false,
+        error: outcome.kind === 'noted' ? outcome.note : null,
+      };
+      if (outcome.kind === 'updated') {
+        pendingList = pendingList.filter((id) => !pumpPending.includes(id));
+      }
+
+      expect(sent).toEqual([['p1', 'p2']]); // only pending ids sent
+      expect(pendingList).toEqual([]); // pending emptied…
+      expect(queuedList).toEqual(['q1']); // …queued untouched, card stays mounted
+      expect(cardState).toEqual({ loading: false, error: null }); // …and the spinner resolved
+    });
+
+    it('a 409 on the dismiss batch resolves to a note, never a hang', async () => {
+      let cardState = { loading: true, error: null as string | null };
+      const outcome = await settleCardMutation(
+        Promise.reject(new Error('Missed dose p1 not found')),
+        'Failed to skip',
+      );
+      cardState = {
+        loading: false,
+        error: outcome.kind === 'noted' ? outcome.note : null,
+      };
+      expect(cardState).toEqual({
+        loading: false,
+        error: 'Missed dose p1 not found',
+      });
+    });
+
+    it('returns the response value on success (dropped/cancelled info survives)', async () => {
+      const outcome = await settleCardMutation(
+        Promise.resolve({ fired: ['a'], dropped: [{ id: 'b', reason: 'cap' }] }),
+        'Failed to dose',
+      );
+      expect(outcome).toEqual({
+        kind: 'updated',
+        value: { fired: ['a'], dropped: [{ id: 'b', reason: 'cap' }] },
+      });
+    });
+
+    it('non-Error rejections fall back to the caller label', async () => {
+      const outcome = await settleCardMutation(
+        Promise.reject('string failure'),
+        'Failed to skip',
+      );
+      expect(outcome).toEqual({ kind: 'noted', note: 'Failed to skip' });
+    });
   });
 
   it('computes summary counts and total mL per pump', () => {

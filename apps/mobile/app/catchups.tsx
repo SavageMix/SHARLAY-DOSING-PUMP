@@ -34,6 +34,7 @@ import {
   groupResolvedByDay,
   RESOLVED_WINDOW_DAYS,
   RESOLVED_WINDOW_HOURS,
+  settleCardMutation,
   shouldSnoozeOnExit,
   splitPendingAndQueued,
 } from '@/src/lib/catchups-page';
@@ -358,88 +359,92 @@ export default function CatchupsScreen() {
     const plan = planDoseSelection(pumpMisses, checkedIds);
     if (plan.selectedIds.length === 0) return;
     setCardStates((s) => ({ ...s, [pumpId]: { loading: true, error: null } }));
-    try {
-      const result = await confirmMissedDoses(baseUrl, plan.selectedIds);
-      const selectedIds = new Set(plan.selectedIds);
-      const remaining = pumpMisses.filter((m) => !selectedIds.has(m.id));
-      const dropped =
-        result.dropped && result.dropped.length > 0 ? result.dropped : undefined;
-      if (remaining.length === 0) {
-        // Whole pump resolved: brief "Dosed ✓", then the card comes out.
-        setCardStates((s) => ({
-          ...s,
-          [pumpId]: { loading: false, resolved: 'dosed', dropped },
-        }));
-        setTimeout(() => {
-          removeEntries(plan.selectedIds);
-          load();
-        }, dropped ? 2000 : 900);
-      } else {
-        // Partial selection: confirmed doses leave the card immediately; the
-        // unticked entries remain for an explicit decision (dose or skip).
-        setCardStates((s) => ({
-          ...s,
-          [pumpId]: { loading: false, error: null, dropped },
-        }));
-        removeEntries(plan.selectedIds);
-        load();
-      }
-    } catch (err) {
+    const outcome = await settleCardMutation(
+      confirmMissedDoses(baseUrl, plan.selectedIds),
+      'Failed to dose',
+    );
+    if (outcome.kind === 'noted') {
+      // Reconciliation signal or failure — either way: clear the spinner,
+      // show the server's message, refresh to current device state.
       setCardStates((s) => ({
         ...s,
-        [pumpId]: {
-          loading: false,
-          error: err instanceof Error ? err.message : 'Failed to dose',
-        },
+        [pumpId]: { loading: false, error: outcome.note },
       }));
+      load();
+      return;
+    }
+    const result = outcome.value;
+    const selectedIds = new Set(plan.selectedIds);
+    const remaining = pumpMisses.filter((m) => !selectedIds.has(m.id));
+    const dropped =
+      result.dropped && result.dropped.length > 0 ? result.dropped : undefined;
+    if (remaining.length === 0) {
+      // Whole pump resolved: brief "Dosed ✓", then the card comes out.
+      setCardStates((s) => ({
+        ...s,
+        [pumpId]: { loading: false, resolved: 'dosed', dropped },
+      }));
+      setTimeout(() => {
+        removeEntries(plan.selectedIds);
+        load();
+      }, dropped ? 2000 : 900);
+    } else {
+      // Partial selection: confirmed doses leave the card immediately; the
+      // unticked entries remain for an explicit decision (dose or skip).
+      setCardStates((s) => ({
+        ...s,
+        [pumpId]: { loading: false, error: null, dropped },
+      }));
+      removeEntries(plan.selectedIds);
+      load();
     }
   };
 
   // Explicit per-dose dismissal — the ONLY way a single entry is skipped.
+  // Invariant: every path out of here clears the card's loading state and
+  // refreshes — a 409 means "state moved on", show the note and reconcile.
   const handleSkipDose = async (id: string) => {
     if (!baseUrl) return;
     const entry = pending.find((m) => m.id === id);
     if (!entry) return;
+    const pumpId = entry.pumpId;
+    setCardStates((s) => ({ ...s, [pumpId]: { loading: true, error: null } }));
+    const outcome = await settleCardMutation(
+      dismissMissedDoses(baseUrl, [id]),
+      'Failed to skip',
+    );
     setCardStates((s) => ({
       ...s,
-      [entry.pumpId]: { loading: true, error: null },
+      [pumpId]: { loading: false, error: outcome.kind === 'noted' ? outcome.note : null },
     }));
-    try {
-      await dismissMissedDoses(baseUrl, [id]);
-      removeEntries([id]);
-      load();
-    } catch (err) {
-      setCardStates((s) => ({
-        ...s,
-        [entry.pumpId]: {
-          loading: false,
-          error: err instanceof Error ? err.message : 'Failed to skip',
-        },
-      }));
-    }
+    if (outcome.kind === 'updated') removeEntries([id]);
+    load();
   };
 
   const handleSkipAll = async (pumpId: PumpId) => {
     if (!baseUrl) return;
+    // Only PENDING ids are sent — never queued (confirmed) entries, which
+    // the dismiss endpoint would refuse and 409 the whole batch.
     const pumpMisses = pending.filter((m) => m.pumpId === pumpId);
     if (pumpMisses.length === 0) return;
     setCardStates((s) => ({ ...s, [pumpId]: { loading: true, error: null } }));
-    try {
-      await dismissMissedDoses(
+    const outcome = await settleCardMutation(
+      dismissMissedDoses(
         baseUrl,
         pumpMisses.map((m) => m.id),
-      );
+      ),
+      'Failed to skip',
+    );
+    // ALWAYS reached — spinner resolves even when queued rows keep the card
+    // mounted after pending empties (the frozen-spinner bug).
+    setCardStates((s) => ({
+      ...s,
+      [pumpId]: { loading: false, error: outcome.kind === 'noted' ? outcome.note : null },
+    }));
+    if (outcome.kind === 'updated') {
       removeEntries(pumpMisses.map((m) => m.id));
-      load();
-    } catch (err) {
-      setCardStates((s) => ({
-        ...s,
-        [pumpId]: {
-          loading: false,
-          error: err instanceof Error ? err.message : 'Failed to skip',
-        },
-      }));
     }
+    load();
   };
 
   // Remove-from-queue flow. Submission happens ONLY via the explicit
@@ -456,28 +461,22 @@ export default function CatchupsScreen() {
       if (pumpId) {
         setCardStates((s) => ({ ...s, [pumpId]: { loading: true, error: null } }));
       }
-      try {
-        await cancelMissedDose(baseUrl, target.id);
-        setQueued((prev) => prev.filter((m) => m.id !== target.id));
-        load();
-      } catch (err) {
-        // 409 ("already firing" / "already ended") is a reconciliation
-        // signal, not a failure: refresh and show the true state. The inline
-        // message carries the server's reason without any red-error styling
-        // for the common race.
-        if (pumpId) {
-          setCardStates((s) => ({
-            ...s,
-            [pumpId]: { loading: false, error: null },
-          }));
-        }
-        setCancelAllNote(err instanceof Error ? err.message : 'Could not remove');
-        load();
-      } finally {
-        if (pumpId) {
-          setCardStates((s) => ({ ...s, [pumpId]: { loading: false } }));
-        }
+      // A 409 ("already firing" / "already ended") is a reconciliation
+      // signal, not a failure: the note carries the server's reason and the
+      // refresh shows the true state. Loading clears on every path.
+      const outcome = await settleCardMutation(
+        cancelMissedDose(baseUrl, target.id),
+        'Could not remove',
+      );
+      if (pumpId) {
+        setCardStates((s) => ({ ...s, [pumpId]: { loading: false } }));
       }
+      if (outcome.kind === 'updated') {
+        setQueued((prev) => prev.filter((m) => m.id !== target.id));
+      } else {
+        setCancelAllNote(outcome.note);
+      }
+      load();
       return;
     }
 
