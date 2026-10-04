@@ -7,7 +7,7 @@
  *    checkbox produces selection state only — no plan, no request.
  * 2. Omission never dismisses. "Dose selected" confirms ONLY the ticked
  *    entries; unticked entries stay pending. Dismissal exists solely in the
- *    explicit Skip paths (per-dose and per-pump).
+ *    explicit Skip paths (per-dose, and "Skip selected" on the ticked set).
  * 3. While the decision modal is open, background polling must not mutate
  *    the in-progress list or close the modal.
  */
@@ -30,6 +30,43 @@ export function toggleChecked(
   value: boolean,
 ): Record<string, boolean> {
   return { ...checked, [id]: value };
+}
+
+/** Selection state of a pump's pending list, driving the tri-state "Select all" checkbox. */
+export type SectionSelection = 'all' | 'some' | 'none';
+
+/**
+ * Tri-state summary of a pump's pending list: 'none' (nothing ticked, or
+ * nothing pending), 'all', or 'some' (partial selection).
+ */
+export function sectionSelection(
+  ids: string[],
+  checked: Record<string, boolean>,
+): SectionSelection {
+  if (ids.length === 0) return 'none';
+  const ticked = ids.filter((id) => checked[id]).length;
+  if (ticked === 0) return 'none';
+  if (ticked === ids.length) return 'all';
+  return 'some';
+}
+
+/**
+ * Toggle for the "Select all" checkbox. From 'none' or 'some' it ticks every
+ * id in the section; from 'all' it clears the section. Pure selection-state
+ * change — it never submits and never dismisses anything (HARD RULES 1–2):
+ * "skip everything" still requires the explicit "Skip selected (N)" press.
+ */
+export function toggleSelectAll(
+  ids: string[],
+  checked: Record<string, boolean>,
+): Record<string, boolean> {
+  const next = { ...checked };
+  if (sectionSelection(ids, checked) === 'all') {
+    for (const id of ids) delete next[id];
+  } else {
+    for (const id of ids) next[id] = true;
+  }
+  return next;
 }
 
 /**

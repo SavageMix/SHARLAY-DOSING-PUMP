@@ -26,7 +26,13 @@ import {
   resolveDeviceBaseUrl,
   snoozeMissedDoses,
 } from '@/src/api/client';
-import { nextModalList, planDoseSelection, toggleChecked } from '@/src/lib/missed-decisions';
+import {
+  nextModalList,
+  planDoseSelection,
+  sectionSelection,
+  toggleChecked,
+  toggleSelectAll,
+} from '@/src/lib/missed-decisions';
 import {
   buildQueueSection,
   buildResolvedGroups,
@@ -71,6 +77,8 @@ interface MissedCardState {
   loading: boolean;
   resolved?: 'dosed' | 'skipped';
   error?: string | null;
+  /** Brief success note, e.g. "2 skipped" after a partial skip-selected. */
+  note?: string;
   /** Entries the server refused to fire (cap exceeded), with the reason. */
   dropped?: Array<{ id: string; reason: string }>;
 }
@@ -421,30 +429,59 @@ export default function CatchupsScreen() {
     load();
   };
 
-  const handleSkipAll = async (pumpId: PumpId) => {
+  // "Select all" — a pure selection-state toggle (HARD RULE: ticking never
+  // submits). From 'none'/'some' it ticks the whole section, from 'all' it
+  // clears it; skipping everything still needs the explicit "Skip selected"
+  // press, so a single tap can never nuke a pump's list by accident.
+  const handleSelectAll = (pumpId: PumpId) => {
+    const ids = pending.filter((m) => m.pumpId === pumpId).map((m) => m.id);
+    setCheckedIds((s) => toggleSelectAll(ids, s));
+  };
+
+  // Explicit batch dismissal of exactly the ticked pending entries. Only
+  // PENDING ids are sent — never queued (confirmed) entries, which the
+  // dismiss endpoint would refuse and 409 the whole batch. Invariant: every
+  // path out clears the spinner and refreshes (the frozen-spinner bug).
+  const handleSkipSelected = async (pumpId: PumpId) => {
     if (!baseUrl) return;
-    // Only PENDING ids are sent — never queued (confirmed) entries, which
-    // the dismiss endpoint would refuse and 409 the whole batch.
     const pumpMisses = pending.filter((m) => m.pumpId === pumpId);
-    if (pumpMisses.length === 0) return;
+    const plan = planDoseSelection(pumpMisses, checkedIds);
+    if (plan.selectedIds.length === 0) return;
     setCardStates((s) => ({ ...s, [pumpId]: { loading: true, error: null } }));
     const outcome = await settleCardMutation(
-      dismissMissedDoses(
-        baseUrl,
-        pumpMisses.map((m) => m.id),
-      ),
+      dismissMissedDoses(baseUrl, plan.selectedIds),
       'Failed to skip',
     );
-    // ALWAYS reached — spinner resolves even when queued rows keep the card
-    // mounted after pending empties (the frozen-spinner bug).
-    setCardStates((s) => ({
-      ...s,
-      [pumpId]: { loading: false, error: outcome.kind === 'noted' ? outcome.note : null },
-    }));
-    if (outcome.kind === 'updated') {
-      removeEntries(pumpMisses.map((m) => m.id));
+    if (outcome.kind === 'noted') {
+      setCardStates((s) => ({
+        ...s,
+        [pumpId]: { loading: false, error: outcome.note },
+      }));
+      load();
+      return;
     }
-    load();
+    const selectedIds = new Set(plan.selectedIds);
+    const remaining = pumpMisses.filter((m) => !selectedIds.has(m.id));
+    if (remaining.length === 0) {
+      // Whole pump skipped: brief "Skipped", then the card comes out.
+      setCardStates((s) => ({
+        ...s,
+        [pumpId]: { loading: false, resolved: 'skipped' },
+      }));
+      setTimeout(() => {
+        removeEntries(plan.selectedIds);
+        load();
+      }, 900);
+    } else {
+      // Partial selection: dismissed entries leave the card immediately with
+      // a one-line note; the unticked entries remain for an explicit decision.
+      setCardStates((s) => ({
+        ...s,
+        [pumpId]: { loading: false, note: `${plan.selectedIds.length} skipped` },
+      }));
+      removeEntries(plan.selectedIds);
+      load();
+    }
   };
 
   // Remove-from-queue flow. Submission happens ONLY via the explicit
@@ -584,6 +621,10 @@ export default function CatchupsScreen() {
               const selectedCount = entries.filter(
                 (d) => checkedIds[d.id],
               ).length;
+              const sectionSel = sectionSelection(
+                entries.map((d) => d.id),
+                checkedIds,
+              );
               return (
                 <ThemedView key={pumpId} style={styles.pumpCard}>
                   <ThemedView style={styles.pumpCardHeader}>
@@ -594,6 +635,35 @@ export default function CatchupsScreen() {
                       {entries.length === 1 ? '' : 's'}
                     </ThemedText>
                   </ThemedView>
+
+                  {/* Select all — tri-state header checkbox. Selection state
+                      only; ticking never submits (HARD RULE). */}
+                  {entries.length > 0 ? (
+                    <Pressable
+                      style={styles.selectAllRow}
+                      onPress={() => handleSelectAll(pumpId)}
+                      disabled={loading || resolved != null}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: sectionSel === 'all' }}
+                      accessibilityLabel="Select all">
+                      <ThemedView
+                        style={[
+                          styles.checkbox,
+                          sectionSel === 'all' && styles.checkboxChecked,
+                        ]}>
+                        {sectionSel === 'all' ? (
+                          <ThemedText style={styles.checkmark}>✓</ThemedText>
+                        ) : sectionSel === 'some' ? (
+                          <ThemedText style={styles.checkmarkPartial}>
+                            –
+                          </ThemedText>
+                        ) : null}
+                      </ThemedView>
+                      <ThemedText style={styles.selectAllText}>
+                        Select all
+                      </ThemedText>
+                    </Pressable>
+                  ) : null}
 
                   {entries.map((missed) => (
                     <ThemedView key={missed.id} style={styles.doseRow}>
@@ -683,6 +753,9 @@ export default function CatchupsScreen() {
                   {card?.error ? (
                     <ThemedText style={styles.errorText}>{card.error}</ThemedText>
                   ) : null}
+                  {card?.note ? (
+                    <ThemedText style={styles.cardNote}>{card.note}</ThemedText>
+                  ) : null}
                   {card?.dropped && card.dropped.length > 0 ? (
                     <ThemedText style={styles.errorText}>
                       {card.dropped.length} dose
@@ -707,15 +780,19 @@ export default function CatchupsScreen() {
 
                   <ThemedView style={styles.cardActions}>
                     <Pressable
-                      style={[styles.button, styles.skipButton]}
-                      onPress={() => handleSkipAll(pumpId)}
-                      disabled={loading}>
+                      style={[
+                        styles.button,
+                        styles.skipButton,
+                        selectedCount === 0 && styles.buttonDisabled,
+                      ]}
+                      onPress={() => handleSkipSelected(pumpId)}
+                      disabled={loading || resolved != null || selectedCount === 0}>
                       {loading ? (
                         <ActivityIndicator color={Colors.danger} />
                       ) : (
                         <ThemedText
                           style={[styles.skipButtonText, styles.buttonText]}>
-                          Skip all for {pumpId.toUpperCase()}
+                          Skip selected ({selectedCount})
                         </ThemedText>
                       )}
                     </Pressable>
@@ -726,7 +803,7 @@ export default function CatchupsScreen() {
                         selectedCount === 0 && styles.buttonDisabled,
                       ]}
                       onPress={() => handleDoseSelected(pumpId)}
-                      disabled={loading || selectedCount === 0}>
+                      disabled={loading || resolved != null || selectedCount === 0}>
                       {loading ? (
                         <ActivityIndicator color={Colors.obsidian} />
                       ) : (
@@ -1062,6 +1139,29 @@ const styles = StyleSheet.create({
     color: Colors.obsidian,
     fontSize: 14,
     fontWeight: '700',
+  },
+  checkmarkPartial: {
+    color: Colors.titanium,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  selectAllRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+    paddingBottom: Spacing.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(198, 206, 216, 0.12)',
+  },
+  selectAllText: {
+    ...Typography.small,
+    color: Colors.titanium,
+  },
+  cardNote: {
+    ...Typography.small,
+    color: Colors.titanium,
+    marginTop: Spacing.sm,
   },
   doseTime: {
     ...Typography.small,

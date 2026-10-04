@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   nextModalList,
   planDoseSelection,
+  sectionSelection,
   toggleChecked,
+  toggleSelectAll,
 } from './missed-decisions';
 
 const entries = Array.from({ length: 8 }, (_, i) => ({ id: `md-${i}` }));
@@ -49,6 +51,56 @@ describe('missed-dose decisions', () => {
     let checked = toggleChecked({}, 'md-0', true);
     checked = toggleChecked(checked, 'md-0', false);
     expect(planDoseSelection(entries, checked).selectedIds).toEqual([]);
+  });
+
+  describe('select all — tri-state toggle, selection state only', () => {
+    const ids = entries.map((e) => e.id);
+
+    it('sectionSelection reports none / some / all', () => {
+      expect(sectionSelection(ids, {})).toBe('none');
+      expect(sectionSelection(ids, { 'md-0': true, 'md-1': true })).toBe('some');
+      const all: Record<string, boolean> = {};
+      for (const id of ids) all[id] = true;
+      expect(sectionSelection(ids, all)).toBe('all');
+      // Empty section is 'none', never 'all'.
+      expect(sectionSelection([], all)).toBe('none');
+    });
+
+    it('toggleSelectAll from none ticks every id in the section', () => {
+      const next = toggleSelectAll(ids, {});
+      expect(sectionSelection(ids, next)).toBe('all');
+      expect(planDoseSelection(entries, next).selectedIds).toEqual(ids);
+    });
+
+    it('toggleSelectAll from all clears the section', () => {
+      const all: Record<string, boolean> = {};
+      for (const id of ids) all[id] = true;
+      const next = toggleSelectAll(ids, all);
+      expect(sectionSelection(ids, next)).toBe('none');
+      expect(planDoseSelection(entries, next).selectedIds).toEqual([]);
+    });
+
+    it('toggleSelectAll from partial toggles TO all (not to none)', () => {
+      const next = toggleSelectAll(ids, { 'md-0': true, 'md-1': true });
+      expect(sectionSelection(ids, next)).toBe('all');
+    });
+
+    it('toggling selects only that section — other pumps untouched', () => {
+      const checked = { 'other-pump-1': true };
+      const next = toggleSelectAll(ids, checked);
+      // The other pump's selection is preserved…
+      expect(next['other-pump-1']).toBe(true);
+      // …and this section is fully ticked.
+      expect(sectionSelection(ids, next)).toBe('all');
+    });
+
+    it('toggling alone never submits or dismisses — pure selection state', () => {
+      const before = JSON.stringify({});
+      const next = toggleSelectAll(ids, {});
+      expect(JSON.stringify(next)).not.toBe(before);
+      // The only plan derivable is "what a later explicit button press fires".
+      expect(planDoseSelection(entries, next).dismissIds).toEqual([]);
+    });
   });
 
   describe('nextModalList — polling never mutates an open decision', () => {

@@ -13,6 +13,11 @@ import {
   settleCardMutation,
   splitPendingAndQueued,
 } from './catchups-page';
+import {
+  planDoseSelection,
+  toggleChecked,
+  toggleSelectAll,
+} from './missed-decisions';
 
 // Day grouping must be pinned to a non-UTC zone: an entry at 23:30 local and
 // one at 00:30 local the next morning share a UTC date and would be silently
@@ -287,34 +292,116 @@ describe('buildResolvedGroups', () => {
   });
 
   describe('settleCardMutation — every action resolves (no infinite loading)', () => {
-    it('mixed pending+queued skip-all: success resolves the spinner and leaves queued rows alone', async () => {
-      // Mirrors the page's handleSkipAll sequence against the exact bug
-      // repro: pending entries dismissed while a queued catch-up keeps the
-      // card mounted. The old code never reached a loading:false write on
-      // this path — the spinner froze until a manual refresh.
-      let cardState = { loading: false, error: null as string | null };
-      let pendingList = ['p1', 'p2'];
+    it('partial selection + skip-selected dismisses only the chosen ids, notes, and clears selection', async () => {
+      // Mirrors the page's handleSkipSelected sequence against the exact
+      // mixed-state repro: pending entries dismissed while a queued catch-up
+      // keeps the card mounted. Old skip-all behaviour is gone — only the
+      // ticked ids are sent, the spinner always resolves, the unticked stay
+      // pending.
+      let cardState: {
+        loading: boolean;
+        error: string | null;
+        note?: string;
+        resolved?: string;
+      } = { loading: false, error: null };
+      let pendingList = ['p1', 'p2', 'p3'];
       const queuedList = ['q1'];
+      let checked: Record<string, boolean> = {};
       const sent: string[][] = [];
       const dismiss = async (ids: string[]) => {
         sent.push(ids);
       };
 
-      const pumpPending = pendingList.filter((id) => !queuedList.includes(id));
+      // User taps "Select all", then unticks p3 — selection state only.
+      checked = toggleSelectAll(pendingList, checked);
+      checked = toggleChecked(checked, 'p3', false);
+      // …then presses "Skip selected (2)".
+      const plan = planDoseSelection(
+        pendingList.map((id) => ({ id })),
+        checked,
+      );
       cardState = { loading: true, error: null };
-      const outcome = await settleCardMutation(dismiss(pumpPending), 'Failed to skip');
-      cardState = {
-        loading: false,
-        error: outcome.kind === 'noted' ? outcome.note : null,
-      };
-      if (outcome.kind === 'updated') {
-        pendingList = pendingList.filter((id) => !pumpPending.includes(id));
+      const outcome = await settleCardMutation(dismiss(plan.selectedIds), 'Failed to skip');
+      if (outcome.kind === 'noted') {
+        cardState = { loading: false, error: outcome.note };
+      } else {
+        const remaining = pendingList.filter(
+          (id) => !plan.selectedIds.includes(id),
+        );
+        cardState =
+          remaining.length === 0
+            ? { loading: false, error: null, resolved: 'skipped' }
+            : {
+                loading: false,
+                error: null,
+                note: `${plan.selectedIds.length} skipped`,
+              };
+        pendingList = remaining;
+        for (const id of plan.selectedIds) delete checked[id];
       }
 
-      expect(sent).toEqual([['p1', 'p2']]); // only pending ids sent
-      expect(pendingList).toEqual([]); // pending emptied…
-      expect(queuedList).toEqual(['q1']); // …queued untouched, card stays mounted
-      expect(cardState).toEqual({ loading: false, error: null }); // …and the spinner resolved
+      expect(sent).toEqual([['p1', 'p2']]); // only the ticked ids
+      expect(pendingList).toEqual(['p3']); // unticked stays pending
+      // Selection cleared: no ticked id remains (removeEntries deletes the
+      // dismissed ids; an inert `false` entry for p3 is left behind, exactly
+      // like the page).
+      expect(Object.keys(checked).filter((k) => checked[k])).toEqual([]);
+      expect(cardState).toEqual({ loading: false, error: null, note: '2 skipped' });
+      expect(queuedList).toEqual(['q1']); // queued untouched, card stays mounted
+    });
+
+    it('skip-selected over a fully selected section flashes "skipped" and removes the card', async () => {
+      // Mirrors the page's whole-pump branch: resolved flash first, then
+      // removeEntries + load() fire after the brief display timeout.
+      let pendingList = ['p1', 'p2'];
+      let resolved: string | undefined;
+      let refreshCount = 0;
+      let checked: Record<string, boolean> = toggleSelectAll(pendingList, {});
+      const sent: string[][] = [];
+      const dismiss = async (ids: string[]) => {
+        sent.push(ids);
+      };
+
+      const plan = planDoseSelection(
+        pendingList.map((id) => ({ id })),
+        checked,
+      );
+      const outcome = await settleCardMutation(dismiss(plan.selectedIds), 'Failed to skip');
+      if (outcome.kind === 'updated') {
+        const remaining = pendingList.filter(
+          (id) => !plan.selectedIds.includes(id),
+        );
+        if (remaining.length === 0) {
+          resolved = 'skipped';
+          // setTimeout(900) body, run inline for the assertion:
+          pendingList = remaining;
+          refreshCount += 1;
+        }
+      }
+      for (const id of plan.selectedIds) delete checked[id];
+
+      expect(sent).toEqual([['p1', 'p2']]);
+      expect(resolved).toBe('skipped');
+      expect(pendingList).toEqual([]); // card comes out
+      expect(refreshCount).toBe(1);
+      expect(checked).toEqual({});
+    });
+
+    it('zero selection sends nothing — the bulk buttons stay disabled and the handler guards', () => {
+      const pendingList = ['p1', 'p2'];
+      const checked: Record<string, boolean> = {};
+      const selectedCount = pendingList.filter((id) => checked[id]).length;
+      // The UI disables both buttons at selectedCount === 0; the handler
+      // guard is the second line of defence — no request may ever go out.
+      const plan = planDoseSelection(
+        pendingList.map((id) => ({ id })),
+        checked,
+      );
+      let sent = 0;
+      if (selectedCount > 0 && plan.selectedIds.length > 0) sent += 1;
+      expect(selectedCount).toBe(0);
+      expect(plan.selectedIds).toEqual([]);
+      expect(sent).toBe(0);
     });
 
     it('a 409 on the dismiss batch resolves to a note, never a hang', async () => {
