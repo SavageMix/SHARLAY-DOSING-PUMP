@@ -77,12 +77,11 @@ async function main(): Promise<void> {
   }
 
   // Boot-time integrity audit — a SELECT-only observer. Runs after the
-  // database's boot reconciliation (inside the constructor) so the
-  // 'stuck-confirmed' check verifies that pass actually ran, and after
-  // missed-dose detection so check 3 sees the true post-detection state. It
-  // never writes, never touches the engine, and never fires/repairs/dismisses
-  // anything. Logged once here; /api/status serves findings live via the
-  // getter above.
+  // database's boot reconciliation (inside the constructor) and after
+  // missed-dose detection so the unresolved-slot check sees the true
+  // post-detection state. It never writes, never touches the engine, and
+  // never fires/repairs/dismisses anything. Logged once here; /api/status
+  // serves findings live via the getter above.
   const audit = runIntegrityAudit(db.createAuditStore(), new Date());
   if (audit.findings.length === 0) {
     console.log(

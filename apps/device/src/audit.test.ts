@@ -264,71 +264,25 @@ describe('boot-time integrity audit', () => {
     }
   });
 
-  it('a confirmed row surviving boot reconciliation is stuck-confirmed', () => {
-    const tmpPath = path.join(
-      os.tmpdir(),
-      `reef-audit-confirmed-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
-    );
+  it('a confirmed row created AFTER boot (legitimate owner action) is not flagged', () => {
+    // Boot reconciliation reverts every confirmed-but-unfired entry to
+    // 'pending', so a confirmed row visible after boot was confirmed after
+    // boot — a healthy queue, not a stuck state. The old 'stuck-confirmed'
+    // check flagged exactly this in production.
+    const db = new ReefDatabase(':memory:');
     try {
-      // Plant via raw SQL: a confirmed missed row whose linked event is in a
-      // NON-terminal status that is not running/queued — the one combination
-      // boot reconciliation deliberately leaves untouched (unknown future
-      // status), so it survives to the audit.
-      const raw = new Database(tmpPath);
-      raw.exec(`
-        CREATE TABLE missed_doses (
-          id TEXT PRIMARY KEY,
-          schedule_id TEXT NOT NULL,
-          pump_id TEXT NOT NULL,
-          scheduled_for TEXT NOT NULL,
-          volume_ml REAL NOT NULL,
-          status TEXT NOT NULL,
-          created_at TEXT NOT NULL,
-          deferred_until TEXT,
-          confirm_after TEXT
-        );
-        CREATE TABLE dose_events (
-          id TEXT PRIMARY KEY,
-          pump_id TEXT NOT NULL,
-          requested_ml REAL NOT NULL,
-          actual_ml REAL,
-          status TEXT NOT NULL,
-          source TEXT NOT NULL,
-          schedule_id TEXT,
-          missed_dose_id TEXT,
-          started_at TEXT NOT NULL,
-          finished_at TEXT,
-          error TEXT
-        );
-        INSERT INTO missed_doses VALUES (
-          'md-stuck', 'sched-1', 'no3',
-          '2026-09-11T06:00:00.000Z', 1.5, 'confirmed',
-          '2026-09-11T06:05:00.000Z', NULL, NULL
-        );
-        INSERT INTO dose_events VALUES (
-          'ev-weird', 'no3', 1.5, NULL, 'custom-status', 'catchup',
-          'sched-1', 'md-stuck',
-          '2026-09-11T06:06:00.000Z', NULL, NULL
-        );
-      `);
-      raw.close();
-
-      // Opening through ReefDatabase runs the real boot reconciliation.
-      const db = new ReefDatabase(tmpPath);
-      try {
-        const result = auditDb(db);
-        expect(result.findings).toHaveLength(1);
-        expect(result.findings[0]).toMatchObject({
-          check: 'stuck-confirmed',
-          pumpId: 'no3',
-          missedSlotIso: '2026-09-11T06:00:00.000Z',
-        });
-        expect(result.findings[0].message).toContain('still marked confirmed');
-      } finally {
-        db.close();
-      }
+      db.createMissedDose({
+        scheduleId: 'sched-1',
+        pumpId: 'alk',
+        scheduledFor: '2026-09-12T06:00:00.000Z',
+        volumeMl: 1.5,
+        status: 'confirmed',
+        deferredUntil: null,
+        confirmAfter: '2026-09-12T06:30:00.000Z',
+      });
+      expect(auditDb(db).findings).toEqual([]);
     } finally {
-      rmQuietly(tmpPath);
+      db.close();
     }
   });
 

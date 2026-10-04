@@ -100,9 +100,7 @@ export type IntegrityCheckKind =
   /** dose_events source 'catchup' with no matching missed_doses row. */
   | 'orphan-catchup-event'
   /** A past schedule slot has neither a handled dose event nor a missed-dose entry. */
-  | 'unresolved-slot'
-  /** A missed_doses row is still 'confirmed' after boot reconciliation. */
-  | 'stuck-confirmed';
+  | 'unresolved-slot';
 
 export interface IntegrityFinding {
   /** Stable key, e.g. "completed-without-event:<missedDoseId>". */

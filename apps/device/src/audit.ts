@@ -216,8 +216,14 @@ function slotLabel(iso: string): string {
 }
 
 /**
- * Run all four checks. `now` is injectable for tests; the audit reads nothing
+ * Run all three checks. `now` is injectable for tests; the audit reads nothing
  * but the store and never mutates either.
+ *
+ * There is deliberately NO 'still confirmed' check: boot reconciliation
+ * (ReefDatabase constructor) reverts every confirmed-but-unfired entry to
+ * 'pending', so any confirmed row visible after boot was confirmed AFTER
+ * boot — a legitimate owner action, not a stuck state. Flagging it produced
+ * false positives against healthy post-boot queues in production.
  */
 export function runIntegrityAudit(
   store: IntegrityAuditStore,
@@ -337,24 +343,6 @@ export function runIntegrityAudit(
         missedSlotIso: slotIso,
       });
     }
-  }
-
-  // --- Check 4: boot reconciliation (which runs in the ReefDatabase
-  // constructor, before the audit) must have left no 'confirmed' rows — a
-  // stuck row means a catch-up is eligible to fire without the engine having
-  // closed it. The audit only VERIFIES that pass ran; it does not perform it.
-  for (const m of missed) {
-    if (m.status !== 'confirmed') continue;
-    findings.push({
-      id: `stuck-confirmed:${m.id}`,
-      check: 'stuck-confirmed',
-      message:
-        `The ${m.pumpId.toUpperCase()} catch-up for the missed ${slotLabel(m.scheduledFor)} ` +
-        `dose is still marked confirmed after boot reconciliation — it may be eligible ` +
-        `to fire without a recorded outcome.`,
-      pumpId: m.pumpId,
-      missedSlotIso: m.scheduledFor,
-    });
   }
 
   return { findings, verified };
