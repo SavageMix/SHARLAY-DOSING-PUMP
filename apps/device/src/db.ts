@@ -39,19 +39,37 @@ export class ReefDatabase
    * Dose events left with status 'running'/'queued' by a process that died
    * mid-dose never close themselves: the pump physically stopped when the
    * process died, but the record said 'running' forever. On boot, close them
-   * as 'interrupted' so History is honest, they do not count toward daily
-   * totals as completed (getTodayDoseMl only sums 'completed'), and
-   * missed-dose logic treats the slot conservatively (under-delivered).
+   * as 'interrupted' — with an honest note, since History is where the user
+   * looks to answer "did that dose happen?" They do not count toward daily
+   * totals as completed (getTodayDoseMl only sums 'completed'), are never
+   * auto-retried, and missed-dose logic treats the slot conservatively
+   * (under-delivered). finishedAt is stamped with the boot time: the true
+   * finish instant is unknowable, and "closed at boot" is the honest claim.
    */
   private reconcileInterruptedDoses(): void {
-    const result = this.db
+    const finishedAt = new Date().toISOString();
+    const running = this.db
       .prepare(
-        "UPDATE dose_events SET status = 'interrupted' WHERE status IN ('running', 'queued')",
+        `UPDATE dose_events
+         SET status = 'interrupted',
+             error = 'Power lost during dose — unknown volume delivered',
+             finished_at = ?
+         WHERE status = 'running'`,
       )
-      .run();
-    if (result.changes > 0) {
+      .run(finishedAt);
+    const queued = this.db
+      .prepare(
+        `UPDATE dose_events
+         SET status = 'interrupted',
+             error = 'Power lost before dose started — dose never ran',
+             finished_at = ?
+         WHERE status = 'queued'`,
+      )
+      .run(finishedAt);
+    const changes = running.changes + queued.changes;
+    if (changes > 0) {
       console.log(
-        `[db] Marked ${result.changes} dose event(s) as interrupted (left running/queued by a previous run)`,
+        `[db] Marked ${changes} dose event(s) as interrupted (left running/queued by a previous run)`,
       );
     }
   }

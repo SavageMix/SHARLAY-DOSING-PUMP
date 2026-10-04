@@ -263,7 +263,16 @@ describe('ReefDatabase smoke', () => {
         expect(interrupted.find((e) => e.id === 'event-1')).toMatchObject({
           pumpId: 'no3',
           actualMl: 0.4, // partial delivery stays visible for the record
+          error: 'Power lost during dose — unknown volume delivered',
         });
+        // Closed at boot: the true finish instant is unknowable, so the
+        // event must not sit with a null finishedAt forever.
+        expect(
+          interrupted.every((e) => e.finishedAt != null),
+        ).toBe(true);
+        expect(interrupted.find((e) => e.id === 'event-2')?.error).toBe(
+          'Power lost before dose started — dose never ran',
+        );
 
         // An interrupted dose under-delivered: it must NOT count toward
         // today's total as if it completed.
@@ -543,6 +552,110 @@ describe('ReefDatabase smoke', () => {
         const entry = reopened.getMissedDoseById(missed.id);
         expect(entry?.status).toBe('pending');
         expect(entry?.confirmAfter).toBeNull();
+        expect(
+          reopened.getDueScheduledConfirmations(new Date('2026-08-23T12:00:00Z')),
+        ).toHaveLength(0);
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      fs.unlinkSync(tmpPath);
+    }
+  });
+
+  it('kill -9 mid-drain: fired catch-ups close, the in-flight dose is interrupted, unfired entries revert to pending — nothing auto-fires', () => {
+    const tmpPath = path.join(
+      os.tmpdir(),
+      `reef-kill-mid-drain-${Date.now()}.db`,
+    );
+
+    try {
+      // Live drain: three catch-ups confirmed. The first fired and
+      // finalized; the second was physically mid-dose when the process was
+      // killed (running event, partially delivered); the third was queued
+      // behind it, never started. All three entries still say 'confirmed'.
+      const db = new ReefDatabase(tmpPath);
+      const fired = db.createMissedDose({
+        scheduleId: 'sched-1',
+        pumpId: 'alk',
+        scheduledFor: '2026-08-23T06:00:00.000Z',
+        volumeMl: 1,
+        status: 'confirmed',
+        deferredUntil: null,
+        confirmAfter: null,
+      });
+      const midFlight = db.createMissedDose({
+        scheduleId: 'sched-1',
+        pumpId: 'alk',
+        scheduledFor: '2026-08-23T07:00:00.000Z',
+        volumeMl: 1,
+        status: 'confirmed',
+        deferredUntil: null,
+        confirmAfter: null,
+      });
+      const unfired = db.createMissedDose({
+        scheduleId: 'sched-1',
+        pumpId: 'alk',
+        scheduledFor: '2026-08-23T08:00:00.000Z',
+        volumeMl: 1,
+        status: 'confirmed',
+        deferredUntil: null,
+        confirmAfter: '2026-08-23T08:30:00.000Z',
+      });
+      db.saveDoseEvent({
+        id: 'ev-fired',
+        pumpId: 'alk',
+        requestedMl: 1,
+        actualMl: 1,
+        status: 'completed',
+        source: 'catchup',
+        scheduleId: 'sched-1',
+        missedDoseId: fired.id,
+        startedAt: '2026-08-23T06:00:10.000Z',
+        finishedAt: '2026-08-23T06:00:40.000Z',
+        error: null,
+      });
+      db.saveDoseEvent({
+        id: 'ev-midflight',
+        pumpId: 'alk',
+        requestedMl: 1,
+        actualMl: 0.3,
+        status: 'running',
+        source: 'catchup',
+        scheduleId: 'sched-1',
+        missedDoseId: midFlight.id,
+        startedAt: '2026-08-23T07:00:05.000Z',
+        finishedAt: null,
+        error: null,
+      });
+      db.close(); // the "kill" — no clean shutdown ran
+
+      // Boot: reconciliation, not the engine, owns recovery. Nothing may
+      // auto-fire; every entry reaches a state the user can reason about.
+      const reopened = new ReefDatabase(tmpPath);
+      try {
+        // Fired pre-kill: closed from its completed event.
+        expect(reopened.getMissedDoseById(fired.id)?.status).toBe('completed');
+        // Mid-flight at the kill: the event is interrupted with an honest
+        // note, and the entry is interrupted too (it under-delivered — the
+        // owner decides what to do, the system never re-fires it).
+        const midEvent = reopened
+          .getHistory({})
+          .events.find((e) => e.id === 'ev-midflight');
+        expect(midEvent?.status).toBe('interrupted');
+        expect(midEvent?.error).toBe(
+          'Power lost during dose — unknown volume delivered',
+        );
+        expect(
+          reopened.getMissedDoseById(midFlight.id)?.status,
+        ).toBe('interrupted');
+        // Unfired: the decision goes back to the user — never re-queued.
+        const unfiredEntry = reopened.getMissedDoseById(unfired.id);
+        expect(unfiredEntry?.status).toBe('pending');
+        expect(unfiredEntry?.confirmAfter).toBeNull();
+
+        // No auto-fire: no new events appeared and nothing is due.
+        expect(reopened.getHistory({}).events).toHaveLength(2);
         expect(
           reopened.getDueScheduledConfirmations(new Date('2026-08-23T12:00:00Z')),
         ).toHaveLength(0);
