@@ -80,8 +80,9 @@ export function HistoryChart({
   const barWidth = Math.max(4, slot * 0.65);
   const yScale = plotHeight / maxTotal;
   const hourly = date != null || days === 1;
-  // 24 hourly labels don't fit rotated — show every 3rd hour (00, 03, …).
-  const labelEvery = hourly ? 3 : 1;
+  // X-axis thinning: 24 hourly labels don't fit rotated (every 3rd hour),
+  // and 90 daily bars get weekly ticks; 7/30d label every day.
+  const labelEvery = hourly ? 3 : days >= 90 ? 7 : 1;
   // Only daily bars are tappable — 1d is already hourly, and while drilled
   // in there is a single day on screen (the back affordance exits).
   const tapTarget = date == null && days !== 1 ? onSelectDay : undefined;
