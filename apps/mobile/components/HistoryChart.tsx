@@ -1,10 +1,15 @@
 import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
-import Svg, { G, Rect, Text as SvgText } from 'react-native-svg';
+import Svg, { Circle, G, Rect, Text as SvgText } from 'react-native-svg';
 
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/Themed';
 import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
+import {
+  bucketTotal,
+  buildHistoryBuckets,
+  historyChartTitle,
+} from '@/src/lib/history-chart';
 import type { DoseEvent, PumpId } from '@reef/shared';
 
 const PUMP_ORDER: PumpId[] = ['alk', 'ca', 'no3', 'po4'];
@@ -17,36 +22,16 @@ const PUMP_COLORS: Record<PumpId, string> = {
 };
 
 const CHART_HEIGHT = 220;
-const MARGIN = { top: 8, right: 8, bottom: 32, left: 40 };
+const MARGIN = { top: 14, right: 8, bottom: 32, left: 40 };
 
 interface HistoryChartProps {
   events: DoseEvent[];
   days: number;
+  /** Pump filter from the screen — set: single-pump series, legend hidden. */
+  pumpId?: PumpId;
 }
 
-function toLocalDateString(iso: string): string {
-  const d = new Date(iso);
-  const offset = d.getTimezoneOffset() * 60_000;
-  return new Date(d.getTime() - offset).toISOString().slice(0, 10);
-}
-
-function buildDayLabels(days: number): string[] {
-  const labels: string[] = [];
-  const now = new Date();
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - i);
-    labels.push(d.toISOString().slice(0, 10));
-  }
-  return labels;
-}
-
-function formatDay(label: string): string {
-  const d = new Date(label + 'T00:00:00');
-  return d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
-}
-
-export function HistoryChart({ events, days }: HistoryChartProps) {
+export function HistoryChart({ events, days, pumpId }: HistoryChartProps) {
   const [visible, setVisible] = useState<Record<PumpId, boolean>>({
     alk: true,
     ca: true,
@@ -55,40 +40,27 @@ export function HistoryChart({ events, days }: HistoryChartProps) {
   });
   const [width, setWidth] = useState(0);
 
-  const { labels, data, maxTotal } = useMemo(() => {
-    const labels = buildDayLabels(days);
-    const totals = new Map<string, Record<PumpId, number>>();
-
-    for (const label of labels) {
-      totals.set(label, { alk: 0, ca: 0, no3: 0, po4: 0 });
-    }
-
-    for (const event of events) {
-      if (event.status !== 'completed' || event.actualMl === null) continue;
-      const day = toLocalDateString(event.startedAt);
-      const dayTotals = totals.get(day);
-      if (dayTotals) {
-        dayTotals[event.pumpId] += event.actualMl;
-      }
-    }
-
-    const data = labels.map((label) => ({
-      label,
-      values: { ...totals.get(label)! },
-      total: PUMP_ORDER.reduce((sum, pumpId) => {
-        return visible[pumpId] ? sum + totals.get(label)![pumpId] : sum;
-      }, 0),
-    }));
-
-    const maxTotal = Math.max(...data.map((d) => d.total), 1);
-    return { labels, data, maxTotal };
-  }, [events, days, visible]);
+  const { buckets, maxTotal } = useMemo(() => {
+    // Same data as the events list — the pump filter only narrows which
+    // events feed the series, there is no separate fetch.
+    const relevant = pumpId
+      ? events.filter((e) => e.pumpId === pumpId)
+      : events;
+    const buckets = buildHistoryBuckets(relevant, days, new Date());
+    const maxTotal = Math.max(
+      ...buckets.map((b) => bucketTotal(b, visible)),
+      1,
+    );
+    return { buckets, maxTotal };
+  }, [events, days, pumpId, visible]);
 
   const plotWidth = Math.max(0, width - MARGIN.left - MARGIN.right);
   const plotHeight = CHART_HEIGHT - MARGIN.top - MARGIN.bottom;
-  const barSlot = labels.length > 0 ? plotWidth / labels.length : 0;
-  const barWidth = Math.max(4, barSlot * 0.65);
+  const slot = buckets.length > 0 ? plotWidth / buckets.length : 0;
+  const barWidth = Math.max(4, slot * 0.65);
   const yScale = plotHeight / maxTotal;
+  // 24 hourly labels don't fit rotated — show every 3rd hour (00, 03, …).
+  const labelEvery = days === 1 ? 3 : 1;
 
   const yTicks = useMemo(() => {
     const tickCount = 4;
@@ -102,19 +74,21 @@ export function HistoryChart({ events, days }: HistoryChartProps) {
 
   return (
     <ThemedView style={styles.container}>
-      <ThemedText style={styles.title}>Last {days} days</ThemedText>
+      <ThemedText style={styles.title}>{historyChartTitle(days)}</ThemedText>
 
-      <View style={styles.legend}>
-        {PUMP_ORDER.map((pumpId) => (
-          <Pressable
-            key={pumpId}
-            style={[styles.legendChip, !visible[pumpId] && styles.legendChipDimmed]}
-            onPress={() => togglePump(pumpId)}>
-            <View style={[styles.dot, { backgroundColor: PUMP_COLORS[pumpId] }]} />
-            <ThemedText style={styles.legendText}>{pumpId}</ThemedText>
-          </Pressable>
-        ))}
-      </View>
+      {!pumpId ? (
+        <View style={styles.legend}>
+          {PUMP_ORDER.map((pumpId) => (
+            <Pressable
+              key={pumpId}
+              style={[styles.legendChip, !visible[pumpId] && styles.legendChipDimmed]}
+              onPress={() => togglePump(pumpId)}>
+              <View style={[styles.dot, { backgroundColor: PUMP_COLORS[pumpId] }]} />
+              <ThemedText style={styles.legendText}>{pumpId}</ThemedText>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
 
       <View
         style={styles.chartArea}
@@ -139,22 +113,23 @@ export function HistoryChart({ events, days }: HistoryChartProps) {
                     fill={Colors.titanium}
                     fontSize={10}
                     textAnchor="end">
-                    {Math.round(tick)}
+                    {tick.toFixed(1)}
                   </SvgText>
                 </G>
               );
             })}
 
-            {/* Bars */}
-            {data.map((day, index) => {
-              const x = MARGIN.left + index * barSlot + (barSlot - barWidth) / 2;
+            {/* Bars — stacked per pump; empty buckets render as zero height,
+                never as a gap in the axis. */}
+            {buckets.map((bucket, index) => {
+              const x = MARGIN.left + index * slot + (slot - barWidth) / 2;
               let y = MARGIN.top + plotHeight;
 
               return (
-                <G key={day.label}>
+                <G key={bucket.key}>
                   {PUMP_ORDER.map((pumpId) => {
                     if (!visible[pumpId]) return null;
-                    const amount = day.values[pumpId];
+                    const amount = bucket.values[pumpId];
                     const h = amount * yScale;
                     const segmentY = y - h;
                     y = segmentY;
@@ -171,15 +146,28 @@ export function HistoryChart({ events, days }: HistoryChartProps) {
                       />
                     ) : null;
                   })}
-                  <SvgText
-                    x={x + barWidth / 2}
-                    y={CHART_HEIGHT - 8}
-                    fill={Colors.titanium}
-                    fontSize={9}
-                    textAnchor="middle"
-                    transform={`rotate(-35, ${x + barWidth / 2}, ${CHART_HEIGHT - 8})`}>
-                    {formatDay(day.label)}
-                  </SvgText>
+                  {/* Failed/interrupted marker: the bucket is visible even
+                      when its delivered total is zero — a bad day must not
+                      read as a quiet no-dose day. */}
+                  {bucket.failed ? (
+                    <Circle
+                      cx={x + barWidth / 2}
+                      cy={Math.max(y - 6, MARGIN.top + 3)}
+                      r={3}
+                      fill={Colors.danger}
+                    />
+                  ) : null}
+                  {index % labelEvery === 0 ? (
+                    <SvgText
+                      x={x + barWidth / 2}
+                      y={CHART_HEIGHT - 8}
+                      fill={Colors.titanium}
+                      fontSize={9}
+                      textAnchor="middle"
+                      transform={`rotate(-35, ${x + barWidth / 2}, ${CHART_HEIGHT - 8})`}>
+                      {bucket.label}
+                    </SvgText>
+                  ) : null}
                 </G>
               );
             })}

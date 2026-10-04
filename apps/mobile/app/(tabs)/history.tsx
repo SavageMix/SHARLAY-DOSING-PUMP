@@ -18,22 +18,21 @@ import {
   getHistory,
   resolveDeviceBaseUrl,
 } from '@/src/api/client';
+import { historyRangeStart } from '@/src/lib/history-chart';
 import type { DoseEvent, PumpId } from '@reef/shared';
 import { Colors, Radius, Spacing, Typography } from '@/constants/Theme';
 
 const PUMP_ORDER: PumpId[] = ['alk', 'ca', 'no3', 'po4'];
 const DAYS_OPTIONS = [1, 7, 30];
 
-function toLocalDateString(iso: string): string {
-  const d = new Date(iso);
-  const offset = d.getTimezoneOffset() * 60_000;
-  return new Date(d.getTime() - offset).toISOString().slice(0, 10);
-}
-
+/**
+ * "Last N days" = since the start of the device-local calendar day
+ * (today-(N-1)). Shared with the chart (historyRangeStart) so the graph
+ * totals and this list always agree — one range definition for the screen.
+ */
 function isWithinDays(iso: string, days: number): boolean {
-  const then = new Date(iso).getTime();
-  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-  return then >= cutoff;
+  const t = new Date(iso).getTime();
+  return !Number.isNaN(t) && t >= historyRangeStart(days, new Date());
 }
 
 export default function HistoryScreen() {
@@ -55,8 +54,9 @@ export default function HistoryScreen() {
         else setLoading(true);
         setOffline(false);
 
-        // Fetch the full 30-day window once; the chart always uses 30 days,
-        // and the list is filtered client-side for responsiveness.
+        // Fetch the full 30-day window once; both the chart and the list
+        // derive from it client-side — the range/pump controls filter the
+        // same data, there is no separate hardcoded fetch.
         const data = await getHistory(baseUrl, {
           days: 30,
           limit: 10000,
@@ -127,7 +127,11 @@ export default function HistoryScreen() {
         }
         ListHeaderComponent={
           <>
-            <HistoryChart events={events} days={30} />
+            <HistoryChart
+              events={events}
+              days={filter.days}
+              pumpId={filter.pumpId}
+            />
 
             <ThemedView style={styles.filterCard}>
               <ThemedText style={styles.label}>Pump</ThemedText>
