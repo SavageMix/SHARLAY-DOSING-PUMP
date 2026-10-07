@@ -114,6 +114,10 @@ const historyQuerySchema = z.object({
   offset: z.coerce.number().int().nonnegative().optional().default(0),
 });
 
+const doseCancelParamsSchema = z.object({
+  jobId: z.string().min(1),
+});
+
 const refillBodySchema = z.object({
   pumpId: pumpIdSchema,
   containerSizeMl: z.number().positive().optional(),
@@ -585,12 +589,22 @@ export async function createServer(
           : null,
         estimatedFireAt: item.estimatedFireAt,
       }));
+    // Full engine FIFO (every source) with job ids, in firing order — the
+    // app's queue panel and queued-manual-dose state derive purely from this.
+    const queueItems = engine.getQueueSnapshot().map((item) => ({
+      id: item.id,
+      pumpId: item.pumpId,
+      amountMl: item.amountMl,
+      source: item.source,
+      estimatedFireAt: item.estimatedFireAt,
+    }));
     return {
       pumps: buildPumpState(db),
       containers: buildContainerInfo(db),
       currentDose,
       queue: status.current ? [status.current] : [],
       queueDepth: status.queueDepth,
+      queueItems,
       catchupQueue: { firing, queued, ...db.getCatchupDrainSummary() },
       systemVolumeLitres: db.getSystemVolumeLitres(),
       prime: {
@@ -649,6 +663,56 @@ export async function createServer(
       'manual',
     );
     return reply.status(202).send({ jobId });
+  });
+
+  /**
+   * Cancel a queued (not yet firing) manual dose — mirrors the catch-up
+   * cancel semantics. 200 + the cancelled job when the withdrawal wins;
+   * 409 when the engine already picked the dose up ("refresh and see") or it
+   * finished; 404 for an unknown job id. The DB write is INSERT OR IGNORE —
+   * a cancelled dose can never overwrite an already-started one.
+   */
+  fastify.post('/api/dose/:jobId/cancel', async (request, reply) => {
+    const params = doseCancelParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.status(400).send({ error: firstZodMessage(params.error) });
+    }
+    const { jobId } = params.data;
+
+    const withdrawn = engine.cancelQueuedById(jobId);
+    if (withdrawn) {
+      const now = new Date().toISOString();
+      db.recordCancelledDoseEvent({
+        id: withdrawn.id,
+        pumpId: withdrawn.pumpId,
+        requestedMl: withdrawn.amountMl,
+        actualMl: null,
+        status: 'cancelled',
+        source: withdrawn.source,
+        scheduleId: null,
+        missedDoseId: null,
+        startedAt: now,
+        finishedAt: now,
+        error: 'Cancelled by user before it fired',
+      });
+      console.log(
+        `[dose] Cancelled queued ${withdrawn.source} dose ${withdrawn.id} (${withdrawn.pumpId}, ${withdrawn.amountMl} mL)`,
+      );
+      return { jobId, cancelled: true };
+    }
+
+    if (engine.isExecuting(jobId)) {
+      return reply.status(409).send({
+        error: 'This dose is already firing and cannot be cancelled',
+      });
+    }
+    const existing = db.getDoseEventById(jobId);
+    if (existing) {
+      return reply.status(409).send({
+        error: `Dose already finished (${existing.status})`,
+      });
+    }
+    return reply.status(404).send({ error: 'Unknown dose job' });
   });
 
   fastify.post('/api/pumps/:id/skip-next', async (request, reply) => {

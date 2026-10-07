@@ -53,6 +53,23 @@ describe('Server endpoints', () => {
     return { db, server, scheduler };
   }
 
+  // Poll /api/status until the given job id is the executing dose. Needed when
+  // runSteps is held: the engine reaches 'running' after a few microtasks.
+  async function waitForCurrentDose(
+    server: { fastify: { inject: (o: unknown) => Promise<{ body: string }> } },
+    jobId: string,
+  ) {
+    await vi.waitFor(async () => {
+      const res = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      if (JSON.parse(res.body).currentDose?.id !== jobId) {
+        throw new Error(`dose ${jobId} not running yet`);
+      }
+    });
+  }
+
   it('GET /api/limits returns static LIMITS and effective volume-based caps', async () => {
     const { db, server, scheduler } = await buildServer();
     try {
@@ -2048,6 +2065,192 @@ describe('Server endpoints', () => {
         .getHistory({})
         .events.filter((e) => e.source === 'catchup');
       expect(catchups).toHaveLength(1);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/dose/:jobId/cancel withdraws a queued manual dose before it fires', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.updatePumpCalibration('alk', 100);
+      db.updatePumpCalibration('ca', 100);
+      // Hold the first dose so the second stays queued behind it.
+      vi.mocked(runSteps).mockImplementation(() => new Promise(() => {}));
+
+      const first = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/dose',
+        payload: { pumpId: 'alk', volumeMl: 1 },
+      });
+      const second = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/dose',
+        payload: { pumpId: 'ca', volumeMl: 2 },
+      });
+      const firstJobId = JSON.parse(first.body).jobId;
+      const secondJobId = JSON.parse(second.body).jobId;
+      await waitForCurrentDose(server, firstJobId);
+
+      const cancel = await server.fastify.inject({
+        method: 'POST',
+        url: `/api/dose/${secondJobId}/cancel`,
+      });
+      expect(cancel.statusCode).toBe(200);
+      expect(JSON.parse(cancel.body)).toEqual({
+        jobId: secondJobId,
+        cancelled: true,
+      });
+
+      // History carries exactly one row for the cancelled job — the
+      // 'cancelled' record — and no running/completed row for that id.
+      const history = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/history',
+      });
+      const events = JSON.parse(history.body).events.filter(
+        (e: { id: string }) => e.id === secondJobId,
+      );
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        id: secondJobId,
+        pumpId: 'ca',
+        requestedMl: 2,
+        actualMl: null,
+        status: 'cancelled',
+        source: 'manual',
+      });
+      expect(events[0].error).toMatch(/cancelled/i);
+
+      // The queue view no longer advertises the withdrawn job.
+      const status = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      const queueItems = JSON.parse(status.body).queueItems;
+      expect(
+        queueItems.map((q: { id: string }) => q.id),
+      ).not.toContain(secondJobId);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/dose/:jobId/cancel is refused while the dose is firing', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.updatePumpCalibration('alk', 100);
+      // Never-resolving runSteps keeps the dose executing indefinitely.
+      vi.mocked(runSteps).mockImplementation(() => new Promise(() => {}));
+
+      const dose = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/dose',
+        payload: { pumpId: 'alk', volumeMl: 1 },
+      });
+      const jobId = JSON.parse(dose.body).jobId;
+      await waitForCurrentDose(server, jobId);
+
+      const cancel = await server.fastify.inject({
+        method: 'POST',
+        url: `/api/dose/${jobId}/cancel`,
+      });
+      expect(cancel.statusCode).toBe(409);
+      expect(JSON.parse(cancel.body).error).toMatch(/already firing/i);
+
+      // The dose is untouched and still running.
+      const event = db.getDoseEventById(jobId);
+      expect(event?.status).toBe('running');
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/dose/:jobId/cancel is refused after the dose finished', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      db.updatePumpCalibration('alk', 100);
+      // beforeEach's runSteps mock resolves: the dose completes immediately.
+
+      const dose = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/dose',
+        payload: { pumpId: 'alk', volumeMl: 1 },
+      });
+      const jobId = JSON.parse(dose.body).jobId;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(db.getDoseEventById(jobId)?.status).toBe('completed');
+
+      const cancel = await server.fastify.inject({
+        method: 'POST',
+        url: `/api/dose/${jobId}/cancel`,
+      });
+      expect(cancel.statusCode).toBe(409);
+      expect(JSON.parse(cancel.body).error).toMatch(/completed/i);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/dose/:jobId/cancel returns 404 for an unknown job id', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      const cancel = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/dose/no-such-job/cancel',
+      });
+      expect(cancel.statusCode).toBe(404);
+      expect(JSON.parse(cancel.body).error).toBeTruthy();
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('GET /api/status exposes queueItems: empty when idle, populated when a dose is queued', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      const idle = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      expect(JSON.parse(idle.body).queueItems).toEqual([]);
+
+      db.updatePumpCalibration('alk', 100);
+      db.updatePumpCalibration('ca', 100);
+      vi.mocked(runSteps).mockImplementation(() => new Promise(() => {}));
+
+      const first = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/dose',
+        payload: { pumpId: 'alk', volumeMl: 1 },
+      });
+      const second = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/dose',
+        payload: { pumpId: 'ca', volumeMl: 2 },
+      });
+      const firstJobId = JSON.parse(first.body).jobId;
+      const secondJobId = JSON.parse(second.body).jobId;
+      await waitForCurrentDose(server, firstJobId);
+
+      const status = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/status',
+      });
+      const queueItems = JSON.parse(status.body).queueItems;
+      expect(queueItems).toHaveLength(1);
+      expect(queueItems[0]).toMatchObject({
+        id: secondJobId,
+        pumpId: 'ca',
+        amountMl: 2,
+        source: 'manual',
+      });
+      expect(typeof queueItems[0].estimatedFireAt).toBe('string');
     } finally {
       scheduler.stop();
       db.close();

@@ -378,4 +378,120 @@ describe('DoseEngine', () => {
     const finalEvent = calls[calls.length - 1]![0];
     expect(finalEvent.status).toBe('completed');
   });
+
+  it('removes a queued (not started) manual dose by job id', async () => {
+    const repo = createMockRepository();
+    const engine = createEngine(repo, { minInterDoseGapMs: 0 });
+
+    let resolveFirst: (() => void) | null = null;
+    vi.mocked(runSteps).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          // Only the FIRST run is held; later doses resolve immediately.
+          if (resolveFirst === null) resolveFirst = resolve;
+          else resolve();
+        }),
+    );
+
+    const first = engine.submitDose('alk', 1, 'manual');
+    const secondJobId = await engine.submitDose('ca', 2, 'manual');
+    // Wait until the first dose is actually inside runSteps.
+    await vi.waitFor(() => {
+      if (resolveFirst === null) throw new Error('first dose not started');
+    });
+    expect(engine.getQueueDepth()).toBe(2);
+
+    const withdrawn = engine.cancelQueuedById(secondJobId);
+    expect(withdrawn).toEqual({
+      id: secondJobId,
+      pumpId: 'ca',
+      amountMl: 2,
+      source: 'manual',
+    });
+    expect(engine.getQueueDepth()).toBe(1); // only the running dose remains
+
+    resolveFirst!();
+    await first;
+    await waitForQueueDrain(engine);
+
+    // The cancelled dose never touched the hardware.
+    expect(vi.mocked(runSteps)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runSteps).mock.calls[0]![0]).toBe('alk');
+
+    // The FIFO splice means execute() never saw the job, so the owner-cancel
+    // backstop never fired either: no saved event of ANY kind carries the
+    // cancelled job id.
+    const eventsForCancelledJob = vi
+      .mocked(repo.saveDoseEvent)
+      .mock.calls.map((c) => c[0] as DoseEvent)
+      .filter((e) => e.id === secondJobId);
+    expect(eventsForCancelledJob).toEqual([]);
+  });
+
+  it('refuses to cancel a manual dose that is executing or gap-waiting', async () => {
+    const repo = createMockRepository();
+    const engine = createEngine(repo, { minInterDoseGapMs: 200 });
+
+    let resolveFirst: (() => void) | null = null;
+    vi.mocked(runSteps).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          // Only the FIRST run is held; later doses resolve immediately.
+          if (resolveFirst === null) resolveFirst = resolve;
+          else resolve();
+        }),
+    );
+
+    const first = engine.submitDose('alk', 1, 'manual');
+    const firstJobId = await first;
+    const secondJobId = await engine.submitDose('ca', 1, 'manual');
+    await vi.waitFor(() => {
+      if (resolveFirst === null) throw new Error('first dose not started');
+    });
+
+    // Currently executing: not withdrawable.
+    expect(engine.isExecuting(firstJobId)).toBe(true);
+    expect(engine.cancelQueuedById(firstJobId)).toBeNull();
+
+    resolveFirst!();
+    await first;
+    // Give processQueue a beat to shift the second dose into its gap wait.
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Gap-waiting (active, not queued): still not withdrawable, and the dose
+    // fires normally once the gap elapses.
+    expect(engine.isExecuting(secondJobId)).toBe(true);
+    expect(engine.cancelQueuedById(secondJobId)).toBeNull();
+    expect(engine.getQueueDepth()).toBe(1);
+    await waitForQueueDrain(engine);
+    expect(vi.mocked(runSteps).mock.calls.some((c) => c[0] === 'ca')).toBe(true);
+  });
+
+  it('getQueueSnapshot items carry the stable job id from submitDose', async () => {
+    const repo = createMockRepository();
+    const engine = createEngine(repo, { minInterDoseGapMs: 0 });
+
+    // Hang every run so the queue state stays observable.
+    vi.mocked(runSteps).mockImplementation(() => new Promise(() => {}));
+
+    const firstJobId = await engine.submitDose('alk', 1, 'manual');
+    const secondJobId = await engine.submitDose('ca', 2, 'manual');
+    await vi.waitFor(() => {
+      if (engine.getStatus().current?.id !== firstJobId) {
+        throw new Error('first dose not running');
+      }
+    });
+
+    const snapshot = engine.getQueueSnapshot();
+    const queued = snapshot.find((item) => item.id === secondJobId);
+    expect(queued).toMatchObject({
+      id: secondJobId,
+      pumpId: 'ca',
+      amountMl: 2,
+      source: 'manual',
+    });
+    expect(typeof queued?.estimatedFireAt).toBe('string');
+    // The executing dose is not part of the queue snapshot.
+    expect(snapshot.some((item) => item.id === firstJobId)).toBe(false);
+  });
 });

@@ -3,6 +3,7 @@ import type {
   ContainerInfo,
   DoseEvent,
   DoseSchedule,
+  DoseSource,
   MissedDose,
   PumpId,
   PumpState,
@@ -19,6 +20,27 @@ export interface DoseResponse {
    * this same id is the DoseEvent id surfaced in /api/status.
    */
   jobId: string;
+}
+
+/**
+ * A dose waiting in the engine FIFO (any source), as exposed on
+ * /api/status's `queueItems`. `id` is the jobId returned by POST /api/dose
+ * and later the DoseEvent id — for a queued manual dose it is what a cancel
+ * request references. Position in the array IS the queue position (1-based
+ * from the front when the current dose is counted separately by the UI).
+ */
+export interface DoseQueueItem {
+  id: string;
+  pumpId: PumpId;
+  amountMl: number;
+  source: DoseSource;
+  /** Wall-clock estimate of when the engine expects to fire it. */
+  estimatedFireAt: string;
+}
+
+export interface CancelDoseResponse {
+  jobId: string;
+  cancelled: true;
 }
 
 export interface CalibrateStartRequest {
@@ -119,6 +141,12 @@ export interface StatusResponse {
   currentDose: DoseEvent | null;
   queue: DoseEvent[];
   queueDepth: number;
+  /**
+   * Every dose waiting in the engine FIFO, in firing order (index 0 fires
+   * next), with job ids. Present on current device builds; absent on older
+   * firmware, where the app falls back to `queue`/`queueDepth` only.
+   */
+  queueItems?: DoseQueueItem[];
   catchupQueue: CatchupQueueStatus;
   /** Live integrity audit findings; empty when the record agrees with itself. */
   integrityFindings: IntegrityFinding[];

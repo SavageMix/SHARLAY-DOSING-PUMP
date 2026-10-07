@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
+import type { DoseEvent } from '@reef/shared';
 import { ReefDatabase } from '../src/db.js';
 
 describe('ReefDatabase smoke', () => {
@@ -372,6 +373,69 @@ describe('ReefDatabase smoke', () => {
       }
     } finally {
       fs.unlinkSync(tmpPath);
+    }
+  });
+
+  it('recordCancelledDoseEvent inserts a cancelled row on an empty table', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      const event: DoseEvent = {
+        id: 'cancel-1',
+        pumpId: 'ca',
+        requestedMl: 2,
+        actualMl: null,
+        status: 'cancelled',
+        source: 'manual',
+        scheduleId: null,
+        missedDoseId: null,
+        startedAt: '2026-08-23T10:00:00.000Z',
+        finishedAt: '2026-08-23T10:00:00.000Z',
+        error: 'Cancelled by user before it fired',
+      };
+
+      expect(db.recordCancelledDoseEvent(event)).toBe(true);
+
+      const saved = db.getDoseEventById('cancel-1');
+      expect(saved).toEqual(event);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('recordCancelledDoseEvent loses to a pre-existing row: a started dose is never rewritten as cancelled', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      // The engine persisted the 'running' event before the dose fired; the
+      // cancel write lost the race. INSERT OR IGNORE must drop it.
+      const started: DoseEvent = {
+        id: 'job-1',
+        pumpId: 'no3',
+        requestedMl: 2,
+        actualMl: null,
+        status: 'running',
+        source: 'manual',
+        scheduleId: null,
+        missedDoseId: null,
+        startedAt: '2026-08-23T10:00:00.000Z',
+        finishedAt: null,
+        error: null,
+      };
+      db.saveDoseEvent(started);
+
+      const losingWrite: DoseEvent = {
+        ...started,
+        status: 'cancelled',
+        finishedAt: '2026-08-23T10:00:01.000Z',
+        error: 'Cancelled by user before it fired',
+      };
+      expect(db.recordCancelledDoseEvent(losingWrite)).toBe(false);
+
+      // The true outcome stands, every field byte-for-byte.
+      expect(db.getDoseEventById('job-1')).toEqual(started);
+    } finally {
+      db.close();
     }
   });
 

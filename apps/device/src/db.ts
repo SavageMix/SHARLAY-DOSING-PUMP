@@ -430,6 +430,58 @@ export class ReefDatabase
   }
 
   /**
+   * Record a queued manual dose the owner cancelled before it fired. The
+   * guard is the point: INSERT OR IGNORE loses to ANY pre-existing row with
+   * this id — if the engine already started the dose (a 'running' row
+   * exists), the cancel write is dropped and the true outcome stands. A
+   * cancelled dose can therefore never be recorded as completed. Returns
+   * true when this write won (no prior row).
+   */
+  recordCancelledDoseEvent(event: DoseEvent): boolean {
+    const result = this.db
+      .prepare(
+        `INSERT OR IGNORE INTO dose_events (
+          id, pump_id, requested_ml, actual_ml, status, source, schedule_id,
+          missed_dose_id, started_at, finished_at, error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        event.id,
+        event.pumpId,
+        event.requestedMl,
+        event.actualMl ?? null,
+        event.status,
+        event.source,
+        event.scheduleId ?? null,
+        event.missedDoseId ?? null,
+        event.startedAt,
+        event.finishedAt ?? null,
+        event.error ?? null,
+      );
+    return result.changes > 0;
+  }
+
+  getDoseEventById(id: string): DoseEvent | null {
+    const row = this.db
+      .prepare('SELECT * FROM dose_events WHERE id = ?')
+      .get(id) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      id: row.id as string,
+      pumpId: row.pump_id as PumpId,
+      requestedMl: row.requested_ml as number,
+      actualMl: (row.actual_ml as number | null) ?? null,
+      status: row.status as DoseEvent['status'],
+      source: row.source as DoseEvent['source'],
+      scheduleId: (row.schedule_id as string | null) ?? null,
+      missedDoseId: (row.missed_dose_id as string | null) ?? null,
+      startedAt: row.started_at as string,
+      finishedAt: (row.finished_at as string | null) ?? null,
+      error: (row.error as string | null) ?? null,
+    };
+  }
+
+  /**
    * Persist a finished dose event AND close its missed_doses entry in the
    * SAME transaction. A crash between the physical dose and this write must
    * never leave a confirmed entry eligible to re-fire (boot reconciliation

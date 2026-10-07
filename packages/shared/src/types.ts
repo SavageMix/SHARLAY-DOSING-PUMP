@@ -36,7 +36,13 @@ export type DoseEventStatus =
   | 'failed'
   | 'aborted'
   | 'skipped'
-  | 'interrupted';
+  | 'interrupted'
+  /**
+   * Deliberately withdrawn by the owner before it fired (a queued manual
+   * dose the user cancelled). Never a failure — the hardware never ran.
+   * Distinct from 'skipped', which the engine uses for withdrawn catch-ups.
+   */
+  | 'cancelled';
 
 export type MissedDoseStatus =
   | 'pending'

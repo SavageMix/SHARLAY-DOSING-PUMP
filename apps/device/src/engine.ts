@@ -53,6 +53,8 @@ export interface EngineStatus {
 }
 
 export interface EngineQueueSnapshotItem {
+  /** Queue item id — the jobId returned by POST /api/dose, later the DoseEvent id. */
+  id: string;
   pumpId: PumpId;
   amountMl: number;
   source: DoseSource;
@@ -60,6 +62,14 @@ export interface EngineQueueSnapshotItem {
   missedDoseId: string | null;
   /** Wall-clock estimate of when this item will start firing. */
   estimatedFireAt: string;
+}
+
+/** A queued dose withdrawn before it ever started — the cancel payload. */
+export interface WithdrawnQueueItem {
+  id: string;
+  pumpId: PumpId;
+  amountMl: number;
+  source: DoseSource;
 }
 
 export interface EngineOptions {
@@ -90,6 +100,13 @@ export class Engine {
   private lastRunEndAt: number | null = null;
   private minInterDoseGapMs: number;
   private isMotorBusy?: () => boolean;
+  /**
+   * Job ids the owner cancelled while queued. A spliced item can never reach
+   * execute() via the FIFO, but the set is checked again at fire time as
+   * defense in depth: a cancelled job that somehow still gets picked up is
+   * recorded as 'cancelled' and NEVER touches the hardware.
+   */
+  private cancelledJobIds = new Set<string>();
 
   constructor(
     private repository: DoseRepository,
@@ -150,6 +167,34 @@ export class Engine {
     );
   }
 
+  /**
+   * Remove a not-yet-started queued dose BY JOB ID — the manual-dose cancel
+   * path (POST /api/dose/:jobId/cancel). Mirrors cancelQueuedByMissedDoseId:
+   * only items still in the FIFO are withdrawn; an active (gap-waiting) or
+   * current (executing) item is NOT, so a cancel that loses the race gets a
+   * null here and the caller answers 409 instead of silently dropping a dose
+   * that already started. The id is also pinned in `cancelledJobIds` and
+   * re-checked at fire time, so a withdrawn dose can never run even through
+   * a path we failed to foresee.
+   */
+  cancelQueuedById(jobId: string): WithdrawnQueueItem | null {
+    const index = this.queue.findIndex((item) => item.id === jobId);
+    if (index === -1) return null;
+    const [item] = this.queue.splice(index, 1);
+    this.cancelledJobIds.add(item.id);
+    return {
+      id: item.id,
+      pumpId: item.pumpId,
+      amountMl: item.amountMl,
+      source: item.source,
+    };
+  }
+
+  /** True when this job id is currently executing (cancel answers 409). */
+  isExecuting(jobId: string): boolean {
+    return this.current?.id === jobId || this.active?.id === jobId;
+  }
+
   getStatus(): EngineStatus {
     return {
       current: this.current,
@@ -193,6 +238,7 @@ export class Engine {
       const estimatedFireAt = new Date(nextFireMs).toISOString();
       nextFireMs += this.minInterDoseGapMs;
       return {
+        id: item.id,
         pumpId: item.pumpId,
         amountMl: item.amountMl,
         source: item.source,
@@ -233,6 +279,32 @@ export class Engine {
   }
 
   private async execute(item: QueueItem): Promise<void> {
+    // Owner-cancel backstop: a withdrawn job must never touch the hardware,
+    // even through a path that bypassed the FIFO splice. Recorded honestly
+    // as 'cancelled' — a deliberate withdrawal, not a failure.
+    if (this.cancelledJobIds.has(item.id)) {
+      const now = new Date().toISOString();
+      const cancelledEvent: DoseEvent = {
+        id: item.id,
+        pumpId: item.pumpId,
+        requestedMl: item.amountMl,
+        actualMl: null,
+        status: 'cancelled',
+        source: item.source,
+        scheduleId: item.scheduleId,
+        missedDoseId: item.missedDoseId,
+        startedAt: now,
+        finishedAt: now,
+        error: 'Cancelled by user before it fired',
+      };
+      try {
+        await this.repository.saveDoseEvent(cancelledEvent);
+      } catch (saveError) {
+        console.error('Failed to save cancelled dose event:', saveError);
+      }
+      return;
+    }
+
     const event: DoseEvent = {
       // Reuse the queue item id so the jobId returned by POST /api/dose
       // matches the event id later surfaced in /api/status.
