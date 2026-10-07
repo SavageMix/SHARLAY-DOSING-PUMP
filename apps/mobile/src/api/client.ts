@@ -7,6 +7,7 @@ import type {
   CalibrateStopRequest,
   CalibrateStopResponse,
   CancelAllMissedDosesResponse,
+  CancelDoseResponse,
   CancelMissedDoseResponse,
   ConfirmMissedDoseResponse,
   ConfirmMissedDosesRequest,
@@ -127,6 +128,22 @@ export async function postDose(
   body: DoseRequest,
 ): Promise<DoseResponse> {
   return request<DoseResponse>(baseUrl, 'POST', '/api/dose', body);
+}
+
+/**
+ * Withdraw a queued manual dose before it fires. 409 when it is already
+ * firing or finished — the caller treats that as "refresh state", never as
+ * a raw error (same contract as cancelMissedDose).
+ */
+export async function cancelDose(
+  baseUrl: string,
+  jobId: string,
+): Promise<CancelDoseResponse> {
+  return request<CancelDoseResponse>(
+    baseUrl,
+    'POST',
+    `/api/dose/${encodeURIComponent(jobId)}/cancel`,
+  );
 }
 
 export async function setSystemVolume(

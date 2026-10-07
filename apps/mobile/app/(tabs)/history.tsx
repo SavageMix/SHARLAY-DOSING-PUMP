@@ -222,7 +222,9 @@ export default function HistoryScreen() {
                 ? styles.success
                 : item.status === 'running'
                   ? styles.info
-                  : styles.error,
+                  : item.status === 'cancelled'
+                    ? styles.cancelled
+                    : styles.error,
             ]}>
             {item.status}
           </ThemedText>
@@ -574,6 +576,12 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   sourceBadge: {
+    color: Colors.titanium,
+  },
+  // Deliberate withdrawal, never a failure — muted like 'skipped', not the
+  // red error badge.
+  cancelled: {
+    backgroundColor: Colors.midnight,
     color: Colors.titanium,
   },
   catchupBadge: {

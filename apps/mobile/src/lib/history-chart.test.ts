@@ -241,6 +241,24 @@ describe('history chart bucketing', () => {
     expect(buckets[11].values.alk).toBe(0);
     expect(buckets[11].failed).toBe(false);
   });
+
+  it('a cancelled (withdrawn before firing) dose neither counts nor flags the bucket', () => {
+    const now = local(2026, 9, 26, 12, 0);
+    const buckets = buildHistoryBuckets(
+      [
+        doseEvent(local(2026, 9, 26, 11, 0), {
+          status: 'cancelled',
+          actualMl: null,
+          finishedAt: null,
+          error: 'Cancelled by user before it fired',
+        }),
+      ],
+      1,
+      now,
+    );
+    expect(buckets[11].values.alk).toBe(0);
+    expect(buckets[11].failed).toBe(false);
+  });
 });
 
 describe('drill-down', () => {

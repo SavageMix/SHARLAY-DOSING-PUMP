@@ -34,23 +34,27 @@ import {
   getSchedules,
   getStatus,
   postDose,
+  cancelDose,
   resolveDeviceBaseUrl,
   type MissedDose,
   type StatusResponse,
 } from '@/src/api/client';
 import { Theme } from '@/constants/Theme';
 import { describeCatchupQueue } from '@/src/lib/catchup-banner';
-import { isBlockingMissedDose } from '@/src/lib/catchups-page';
+import { isBlockingMissedDose, settleCardMutation } from '@/src/lib/catchups-page';
 import {
   reconcileDoseStates,
   type DoseTrackingState,
 } from '@/src/lib/dose-states';
+import { buildQueuePanel } from '@/src/lib/dose-queue';
 import {
   activeFindings,
   loadDismissedFindingIds,
 } from '@/src/lib/integrity-findings';
 import {
   getNextDueDate,
+  type DoseEvent,
+  type DoseQueueItem,
   type DoseSchedule,
   type HistoryResponse,
   type LimitsResponse,
@@ -662,11 +666,31 @@ function NextDoseCard({
   );
 }
 
-function ConnectedDeviceCard({ offline, queueDepth }: { offline: boolean; queueDepth: number }) {
+function ConnectedDeviceCard({
+  offline,
+  queueDepth,
+  current,
+  queueItems,
+  onCancelRequest,
+}: {
+  offline: boolean;
+  queueDepth: number;
+  current: DoseEvent | null;
+  queueItems: DoseQueueItem[];
+  onCancelRequest: (jobId: string) => void;
+}) {
+  const [queueExpanded, setQueueExpanded] = useState(false);
+  const panelRows = buildQueuePanel(current, queueItems);
+
   return (
     <View style={styles.glassCard}>
       <ThemedText style={styles.cardOverline}>CONNECTED DEVICES</ThemedText>
-      <View style={styles.deviceRow}>
+      <Pressable
+        style={styles.deviceRow}
+        onPress={() => setQueueExpanded((v) => !v)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: queueExpanded }}
+        accessibilityLabel="SHARLAY Dosing Pump, toggle dose queue">
         <View style={styles.deviceIconBg}>
           <ThemedText style={styles.deviceIconText}>A</ThemedText>
         </View>
@@ -685,11 +709,60 @@ function ConnectedDeviceCard({ offline, queueDepth }: { offline: boolean; queueD
           <ThemedText style={styles.deviceMetaValue}>{queueDepth}</ThemedText>
         </View>
         <Ionicons
-          name="chevron-forward"
+          name={queueExpanded ? 'chevron-down' : 'chevron-forward'}
           size={20}
           color={T.colors.textMuted}
         />
-      </View>
+      </Pressable>
+
+      {queueExpanded ? (
+        panelRows.length === 0 ? (
+          <ThemedText style={styles.queueEmpty}>Queue is empty</ThemedText>
+        ) : (
+          <View style={styles.queuePanel}>
+            {panelRows.map((row) => {
+              const fireAt = new Date(row.estimatedFireAt);
+              const fireTime = Number.isNaN(fireAt.getTime())
+                ? '—'
+                : `~${formatTime(fireAt)}`;
+              return (
+                <View key={row.jobId} style={styles.queueRow}>
+                  <View
+                    style={[
+                      styles.queuePumpDot,
+                      { backgroundColor: PUMP_COLORS[row.pumpId] },
+                    ]}
+                  />
+                  <ThemedText style={styles.queuePumpName}>
+                    {PUMP_DISPLAY_NAMES[row.pumpId]}
+                  </ThemedText>
+                  <ThemedText style={styles.queueDetail}>
+                    {row.amountMl.toFixed(2)} mL · {row.sourceLabel}
+                  </ThemedText>
+                  <ThemedText style={styles.queuePosition}>
+                    {row.isCurrent ? 'Firing now' : `#${row.position}`}
+                  </ThemedText>
+                  <ThemedText style={styles.queueTime}>{fireTime}</ThemedText>
+                  {row.canCancel ? (
+                    <Pressable
+                      style={styles.queueCancelButton}
+                      onPress={() => onCancelRequest(row.jobId)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Cancel queued dose ${row.jobId}`}
+                      hitSlop={8}>
+                      <Ionicons
+                        name="close"
+                        size={16}
+                        color={T.colors.danger}
+                      />
+                    </Pressable>
+                  ) : null}
+                </View>
+              );
+            })}
+          </View>
+        )
+      ) : null}
     </View>
   );
 }
@@ -698,20 +771,29 @@ function DoseModal({
   visible,
   pumpId,
   maxSingleDoseMl,
+  doseState,
   onClose,
   onConfirm,
 }: {
   visible: boolean;
   pumpId: PumpId | null;
   maxSingleDoseMl: number;
+  doseState: DoseTrackingState | undefined;
   onClose: () => void;
   onConfirm: (pumpId: PumpId, volumeMl: number) => void;
 }) {
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
 
+  const busy =
+    doseState?.status === 'queued' || doseState?.status === 'running';
+  const busyLabel =
+    doseState?.status === 'running'
+      ? 'Dosing…'
+      : 'Queued — fires after current dose';
+
   const handleConfirm = () => {
-    if (!pumpId) return;
+    if (!pumpId || busy) return;
     const volumeMl = parseFloat(input);
     if (Number.isNaN(volumeMl) || volumeMl <= 0) {
       setError('Enter a positive volume');
@@ -762,9 +844,23 @@ function DoseModal({
               <ThemedText style={styles.cancelButtonText}>Cancel</ThemedText>
             </Pressable>
             <Pressable
-              style={[styles.modalButton, styles.confirmButton]}
+              style={[
+                styles.modalButton,
+                styles.confirmButton,
+                busy && styles.confirmButtonDisabled,
+              ]}
+              disabled={busy}
               onPress={handleConfirm}>
-              <ThemedText style={styles.confirmButtonText}>Confirm</ThemedText>
+              {busy ? (
+                <ActivityIndicator color={T.colors.background} size="small" />
+              ) : null}
+              <ThemedText
+                style={[
+                  styles.confirmButtonText,
+                  busy && styles.confirmButtonTextDisabled,
+                ]}>
+                {busy ? busyLabel : 'Confirm'}
+              </ThemedText>
             </Pressable>
           </ThemedView>
         </ThemedView>
@@ -802,6 +898,14 @@ export default function DashboardScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [modalPumpId, setModalPumpId] = useState<PumpId | null>(null);
   const [doseStates, setDoseStates] = useState<Record<string, DoseState>>({});
+  // Cancel-queued-dose dialog: the jobId awaiting confirmation, plus the
+  // in-flight guard and the note surfaced when the server rejects (409 =
+  // already firing/finished — a reconciliation signal, never a raw error).
+  const [confirmCancelJobId, setConfirmCancelJobId] = useState<string | null>(
+    null,
+  );
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelNote, setCancelNote] = useState<string | null>(null);
   // All pending missed-dose entries including snoozed ones. The Dashboard no
   // longer hosts the decision UI — the Catch-ups page does — but it stays the
   // alarm: the banner counts these, and snooze-lapsed (or never-snoozed)
@@ -911,6 +1015,7 @@ export default function DashboardScreen() {
       reconcileDoseStates(prev, {
         currentDose: data.status.currentDose ?? null,
         queue: data.status.queue ?? [],
+        queueItems: data.status.queueItems ?? [],
         history: data.history.events,
       }),
     );
@@ -958,6 +1063,10 @@ export default function DashboardScreen() {
 
   const handleDoseConfirm = async (pumpId: PumpId, volumeMl: number) => {
     if (!baseUrl) return;
+    // Double-tap guard, second line of defence after the modal's disabled
+    // Confirm: a pump already queued/running must not take another dose.
+    const existing = doseStates[pumpId];
+    if (existing?.status === 'queued' || existing?.status === 'running') return;
     setModalPumpId(null);
     setDoseStates((s) => ({
       ...s,
@@ -987,6 +1096,25 @@ export default function DashboardScreen() {
         },
       }));
     }
+  };
+
+  const handleCancelDose = async () => {
+    const jobId = confirmCancelJobId;
+    if (!baseUrl || !jobId || cancelling) return;
+    setCancelling(true);
+    // Never throws: a 409 ("already firing" / "Dose already finished") is a
+    // reconciliation signal — note it and refresh, exactly like the Catch-ups
+    // page's settleCardMutation contract.
+    const outcome = await settleCardMutation(
+      cancelDose(baseUrl, jobId),
+      'Could not cancel',
+    );
+    setCancelling(false);
+    setConfirmCancelJobId(null);
+    if (outcome.kind === 'noted') setCancelNote(outcome.note);
+    // Server is source of truth: the cancelled dose lands in history as
+    // status 'cancelled' and reconcile turns the pump idle.
+    load();
   };
 
   if (!baseUrl) {
@@ -1029,6 +1157,9 @@ export default function DashboardScreen() {
         <ConnectedDeviceCard
           offline={offline}
           queueDepth={data?.status.queueDepth ?? 0}
+          current={data?.status.currentDose ?? null}
+          queueItems={data?.status.queueItems ?? []}
+          onCancelRequest={setConfirmCancelJobId}
         />
 
         {catchupBanner.visible ? (
@@ -1092,6 +1223,9 @@ export default function DashboardScreen() {
           ([pumpId, state]) =>
             state.status !== 'idle' && (
               <View key={pumpId} style={styles.doseStateBanner}>
+                {state.status === 'queued' || state.status === 'running' ? (
+                  <ActivityIndicator color={T.colors.primary} size="small" />
+                ) : null}
                 <ThemedText
                   style={[
                     styles.doseStateText,
@@ -1106,15 +1240,71 @@ export default function DashboardScreen() {
                   ]}>
                   {PUMP_SHORT_NAMES[pumpId as PumpId]}: {state.message}
                 </ThemedText>
+                {state.status === 'queued' && state.eventId ? (
+                  <Pressable
+                    style={styles.queueCancelButton}
+                    onPress={() =>
+                      state.eventId && setConfirmCancelJobId(state.eventId)
+                    }
+                    accessibilityRole="button"
+                    accessibilityLabel={`Cancel queued dose ${state.eventId}`}
+                    hitSlop={8}>
+                    <Ionicons name="close" size={16} color={T.colors.danger} />
+                  </Pressable>
+                ) : null}
               </View>
             ),
         )}
+
+        {cancelNote ? (
+          <View style={styles.doseStateBanner}>
+            <ThemedText style={[styles.doseStateText, styles.cancelNoteText]}>
+              {cancelNote}
+            </ThemedText>
+            <Pressable
+              style={styles.queueCancelButton}
+              onPress={() => setCancelNote(null)}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss note"
+              hitSlop={8}>
+              <Ionicons name="close" size={16} color={T.colors.textMuted} />
+            </Pressable>
+          </View>
+        ) : null}
+
+        {confirmCancelJobId ? (
+          <View style={styles.cancelConfirmCard}>
+            <ThemedText style={styles.cancelConfirmText}>
+              Cancel this dose? It won't be delivered.
+            </ThemedText>
+            <View style={styles.cancelConfirmButtons}>
+              <Pressable
+                style={[styles.modalButton, styles.cancelButton]}
+                disabled={cancelling}
+                onPress={() => setConfirmCancelJobId(null)}>
+                <ThemedText style={styles.cancelButtonText}>Keep</ThemedText>
+              </Pressable>
+              <Pressable
+                style={[styles.modalButton, styles.cancelDoseButton]}
+                disabled={cancelling}
+                onPress={handleCancelDose}>
+                {cancelling ? (
+                  <ActivityIndicator color={T.colors.background} size="small" />
+                ) : null}
+                <ThemedText style={styles.cancelDoseButtonText}>
+                  Cancel dose
+                </ThemedText>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
       </ScrollView>
 
       <DoseModal
         visible={modalPumpId !== null}
         pumpId={modalPumpId}
         maxSingleDoseMl={data?.limits.effective.maxSingleDoseMl ?? 5}
+        doseState={modalPumpId ? doseStates[modalPumpId] : undefined}
         onClose={() => setModalPumpId(null)}
         onConfirm={handleDoseConfirm}
       />
@@ -1391,6 +1581,10 @@ const styles = StyleSheet.create({
     fontFamily: T.typography.fontFamily.semiBold,
   },
   doseStateBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: T.spacing.sm,
     backgroundColor: 'rgba(32, 227, 219, 0.08)',
     borderRadius: T.radius.sm,
     padding: T.spacing.md,
@@ -1399,6 +1593,92 @@ const styles = StyleSheet.create({
   doseStateText: {
     ...T.typography.body,
     textAlign: 'center',
+  },
+  cancelNoteText: {
+    color: T.colors.warning,
+  },
+  queuePanel: {
+    marginTop: T.spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: T.colors.border,
+    paddingTop: T.spacing.sm,
+    gap: T.spacing.xs,
+  },
+  queueEmpty: {
+    ...T.typography.small,
+    color: T.colors.textMuted,
+    marginTop: T.spacing.md,
+  },
+  queueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: T.spacing.sm,
+    paddingVertical: T.spacing.xs,
+  },
+  queuePumpDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  queuePumpName: {
+    ...T.typography.caption,
+    color: T.colors.textPrimary,
+    width: 72,
+  },
+  queueDetail: {
+    ...T.typography.caption,
+    color: T.colors.textSecondary,
+    flex: 1,
+  },
+  queuePosition: {
+    ...T.typography.caption,
+    color: T.colors.primary,
+  },
+  queueTime: {
+    ...T.typography.caption,
+    color: T.colors.textMuted,
+  },
+  queueCancelButton: {
+    padding: 2,
+  },
+  cancelConfirmCard: {
+    backgroundColor: 'rgba(255, 77, 90, 0.08)',
+    borderRadius: T.radius.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 77, 90, 0.35)',
+    padding: T.spacing.md,
+    marginBottom: T.spacing.md,
+    gap: T.spacing.md,
+  },
+  cancelConfirmText: {
+    ...T.typography.body,
+    color: T.colors.textPrimary,
+    textAlign: 'center',
+  },
+  cancelConfirmButtons: {
+    flexDirection: 'row',
+    gap: T.spacing.md,
+  },
+  cancelDoseButton: {
+    flex: 1,
+    height: 48,
+    borderRadius: T.radius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: T.spacing.sm,
+    backgroundColor: T.colors.danger,
+  },
+  cancelDoseButtonText: {
+    ...T.typography.title,
+    color: T.colors.background,
+    fontFamily: T.typography.fontFamily.semiBold,
+  },
+  confirmButtonDisabled: {
+    opacity: 0.6,
+  },
+  confirmButtonTextDisabled: {
+    fontFamily: T.typography.fontFamily.regular,
   },
   catchupBanner: {
     flexDirection: 'row',
@@ -1499,6 +1779,8 @@ const styles = StyleSheet.create({
   },
   confirmButton: {
     backgroundColor: T.colors.primary,
+    flexDirection: 'row',
+    gap: T.spacing.sm,
   },
   confirmButtonText: {
     ...T.typography.title,

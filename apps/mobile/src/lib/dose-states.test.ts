@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { DoseEvent } from '@reef/shared';
+import type { DoseEvent, DoseQueueItem } from '@reef/shared';
 import {
   reconcileDoseStates,
   type DoseStates,
@@ -29,6 +29,18 @@ function tracking(
 }
 
 const NO_LIVE = { currentDose: null, queue: [] as DoseEvent[] };
+
+function queueItem(
+  partial: Partial<DoseQueueItem> & { id: string },
+): DoseQueueItem {
+  return {
+    pumpId: 'ca',
+    amountMl: 2,
+    source: 'manual',
+    estimatedFireAt: '2026-09-14T09:05:00.000Z',
+    ...partial,
+  };
+}
 
 describe('reconcileDoseStates', () => {
   it('cap-rejected dose (failed in history) shows the server reason, never done', () => {
@@ -168,5 +180,65 @@ describe('reconcileDoseStates', () => {
     });
 
     expect(next).toEqual(prev);
+  });
+
+  it('queueItems membership drives the queued state and 1-based position', () => {
+    const prev: DoseStates = {
+      alk: tracking({ eventId: 'job-10' }),
+    };
+    const next = reconcileDoseStates(prev, {
+      ...NO_LIVE,
+      queueItems: [
+        queueItem({ id: 'job-11', pumpId: 'ca' }),
+        queueItem({ id: 'job-10', pumpId: 'alk' }),
+      ],
+      history: [],
+    });
+
+    expect(next.alk).toEqual({
+      status: 'queued',
+      message: 'Queued #2',
+      eventId: 'job-10',
+    });
+  });
+
+  it("a 'cancelled' history event resolves to idle — no banner, not an error", () => {
+    const prev: DoseStates = {
+      ca: tracking({ eventId: 'job-12' }),
+    };
+    const next = reconcileDoseStates(prev, {
+      ...NO_LIVE,
+      history: [
+        event({
+          id: 'job-12',
+          status: 'cancelled',
+          actualMl: null,
+          finishedAt: null,
+          error: 'Cancelled by user before it fired',
+        }),
+      ],
+    });
+
+    expect(next.ca).toEqual({ status: 'idle', message: '' });
+  });
+
+  it('reconciling the same status twice is idempotent', () => {
+    const prev: DoseStates = {
+      ca: tracking({ eventId: 'job-13' }),
+    };
+    const input = {
+      ...NO_LIVE,
+      queueItems: [queueItem({ id: 'job-13' })],
+      history: [],
+    };
+    const once = reconcileDoseStates(prev, input);
+    const twice = reconcileDoseStates(once, input);
+
+    expect(twice).toEqual(once);
+    expect(twice.ca).toEqual({
+      status: 'queued',
+      message: 'Queued #1',
+      eventId: 'job-13',
+    });
   });
 });

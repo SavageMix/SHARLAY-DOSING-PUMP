@@ -1,4 +1,4 @@
-import type { DoseEvent } from '@reef/shared';
+import type { DoseEvent, DoseQueueItem } from '@reef/shared';
 
 /**
  * Manual-dose tracking (Dashboard dose banners).
@@ -34,6 +34,11 @@ export type DoseStates = Record<string, DoseTrackingState>;
 export interface ReconcileDoseStatesInput {
   currentDose: DoseEvent | null;
   queue: DoseEvent[];
+  /**
+   * Job-id'd queue view from /api/status (absent on old firmware). When
+   * present it is the authority on queue membership and position.
+   */
+  queueItems?: DoseQueueItem[];
   /** Recent dose events (e.g. GET /api/history) — the only source of verdicts. */
   history: DoseEvent[];
 }
@@ -44,6 +49,11 @@ function outcomeState(
 ): DoseTrackingState {
   if (event.status === 'completed') {
     return { status: 'done', message: 'Dose finished', eventId };
+  }
+  if (event.status === 'cancelled') {
+    // Deliberately withdrawn by the owner before it fired — the hardware
+    // never ran. Not a failure and not a delivery: back to idle, no banner.
+    return { status: 'idle', message: '' };
   }
   // failed / interrupted / rejected: surface the server's own reason (e.g.
   // the daily-cap message) — never a green 'finished' for a dose that did
@@ -71,6 +81,20 @@ export function reconcileDoseStates(
       !state.eventId ||
       (state.status !== 'queued' && state.status !== 'running')
     ) {
+      continue;
+    }
+
+    // The job-id'd queue view is the authority on membership/position when
+    // the device provides it (index 0 fires next, so position = index + 1).
+    const queueIndex = input.queueItems
+      ? input.queueItems.findIndex((q) => q.id === state.eventId)
+      : -1;
+    if (queueIndex >= 0 && input.currentDose?.id !== state.eventId) {
+      next[pumpId] = {
+        status: 'queued',
+        message: `Queued #${queueIndex + 1}`,
+        eventId: state.eventId,
+      };
       continue;
     }
 
