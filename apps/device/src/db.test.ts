@@ -989,6 +989,157 @@ describe('containers (reservoir tracking)', () => {
         }),
       );
       expect(containerOf(db, 'alk').daysRemaining).toBeNull();
+
+      // A paused/disabled schedule alone contributes nothing either.
+      db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 10,
+        timesPerDay: 2,
+        startTime: '09:00',
+        repeatEveryNDays: 1,
+        enabled: false,
+        lastRunAt: null,
+      });
+      expect(containerOf(db, 'alk').daysRemaining).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('daysRemaining follows the enabled schedule immediately, without waiting for history', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      const schedule = db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 10,
+        timesPerDay: 2,
+        startTime: '09:00',
+        repeatEveryNDays: 1,
+        enabled: true,
+        lastRunAt: null,
+      });
+      // 10 mL × 2 times/day = 20 mL/day promised.
+      db.adjustReservoirLevel('alk', 100);
+      expect(containerOf(db, 'alk').daysRemaining).toBe(5);
+
+      // A same-day schedule change is reflected at the next request — no
+      // restart, no two-week lag while history catches up.
+      db.updateSchedule(schedule.id, { volumeMl: 20 });
+      expect(containerOf(db, 'alk').daysRemaining).toBe(2.5);
+
+      // repeatEveryNDays spreads the doses across an N-day cycle.
+      db.updateSchedule(schedule.id, {
+        volumeMl: 10,
+        timesPerDay: 2,
+        repeatEveryNDays: 2,
+      });
+      expect(containerOf(db, 'alk').daysRemaining).toBe(10);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('daysRemaining adds unscheduled extras on top of the schedule rate without double-counting scheduled history', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 10,
+        timesPerDay: 1,
+        startTime: '09:00',
+        repeatEveryNDays: 1,
+        enabled: true,
+        lastRunAt: null,
+      });
+      // 10 mL/day scheduled + 140 mL manual over 14 days (10 mL/day) = 20.
+      for (let i = 0; i < 14; i++) {
+        const startedAt = new Date(
+          Date.now() - i * 24 * 60 * 60 * 1000,
+        ).toISOString();
+        db.saveDoseEvent(
+          doseEvent({
+            id: `ev-manual-${i}`,
+            pumpId: 'alk',
+            requestedMl: 10,
+            actualMl: 10,
+            source: 'manual',
+            startedAt,
+            finishedAt: startedAt,
+          }),
+        );
+      }
+      db.adjustReservoirLevel('alk', 100);
+      expect(containerOf(db, 'alk').daysRemaining).toBe(5);
+
+      // Scheduled-source history inside the window is already represented by
+      // the schedule expansion — it must not inflate the rate further.
+      for (let i = 0; i < 14; i++) {
+        const startedAt = new Date(
+          Date.now() - i * 24 * 60 * 60 * 1000,
+        ).toISOString();
+        db.saveDoseEvent(
+          doseEvent({
+            id: `ev-sched-${i}`,
+            pumpId: 'alk',
+            requestedMl: 50,
+            actualMl: 50,
+            source: 'schedule',
+            startedAt,
+            finishedAt: startedAt,
+          }),
+        );
+      }
+      expect(containerOf(db, 'alk').daysRemaining).toBe(5);
+
+      // Catch-up volume counts as unscheduled consumption on top.
+      db.saveDoseEvent(
+        doseEvent({
+          id: 'ev-catchup',
+          pumpId: 'alk',
+          requestedMl: 140,
+          actualMl: 140,
+          source: 'catchup',
+        }),
+      );
+      // Rate is now 10 + (140+140)/14 = 30 → 100/30 ≈ 3.3 days.
+      expect(containerOf(db, 'alk').daysRemaining).toBe(3.3);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('daysRemaining falls back to trailing history when the schedule is disabled', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      db.createSchedule({
+        pumpId: 'alk',
+        volumeMl: 10,
+        timesPerDay: 2,
+        startTime: '09:00',
+        repeatEveryNDays: 1,
+        enabled: false,
+        lastRunAt: null,
+      });
+      for (let i = 0; i < 14; i++) {
+        const startedAt = new Date(
+          Date.now() - i * 24 * 60 * 60 * 1000,
+        ).toISOString();
+        db.saveDoseEvent(
+          doseEvent({
+            id: `ev-day-${i}`,
+            pumpId: 'alk',
+            requestedMl: 10,
+            actualMl: 10,
+            startedAt,
+            finishedAt: startedAt,
+          }),
+        );
+      }
+      db.adjustReservoirLevel('alk', 100);
+      expect(containerOf(db, 'alk').daysRemaining).toBe(10);
     } finally {
       db.close();
     }

@@ -26,13 +26,30 @@ export function levelBarState(container: ContainerStatus): LevelBarState {
   return 'ok';
 }
 
+/**
+ * Additive partial refill: the entered volume is ADDED to the current level,
+ * clamped at capacity. Filling beyond capacity spills — the level never
+ * exceeds capacityMl.
+ */
+export function additiveRefillTarget(
+  currentMl: number,
+  capacityMl: number,
+  addedMl: number,
+): number {
+  return Math.min(capacityMl, currentMl + addedMl);
+}
+
 /** "742 / 1000 mL" — integers, no decimals. */
 export function formatLevel(container: ContainerStatus): string {
   return `${Math.round(container.currentMl)} / ${Math.round(container.capacityMl)} mL`;
 }
 
+/**
+ * "≈ 23 days left" — or "Not dosing" when the device reports null (no
+ * enabled schedule and no recent consumption to extrapolate from).
+ */
 export function formatDaysRemaining(daysRemaining: number | null): string {
-  if (daysRemaining === null) return 'no usage yet';
+  if (daysRemaining === null) return 'Not dosing';
   if (daysRemaining < 1) return '< 1 day left';
   const days = Math.floor(daysRemaining);
   return `≈ ${days} ${days === 1 ? 'day' : 'days'} left`;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ContainerStatus } from '@reef/shared';
 import {
+  additiveRefillTarget,
   formatDaysRemaining,
   formatLevel,
   levelBarState,
@@ -75,6 +76,28 @@ describe('levelBarState', () => {
   });
 });
 
+describe('additiveRefillTarget', () => {
+  it('adds the entered volume to the current level', () => {
+    expect(additiveRefillTarget(400, 1000, 250)).toBe(650);
+  });
+
+  it('clamps at capacity when the sum exceeds it', () => {
+    expect(additiveRefillTarget(800, 1000, 400)).toBe(1000);
+  });
+
+  it('is a no-op clamp when the reservoir is already full', () => {
+    expect(additiveRefillTarget(1000, 1000, 100)).toBe(1000);
+  });
+
+  it('clamps an over-capacity add onto an empty reservoir', () => {
+    expect(additiveRefillTarget(0, 500, 900)).toBe(500);
+  });
+
+  it('handles fractional volumes', () => {
+    expect(additiveRefillTarget(100.5, 1000, 49.5)).toBe(150);
+  });
+});
+
 describe('formatLevel', () => {
   it('formats integers without decimals', () => {
     expect(
@@ -96,8 +119,8 @@ describe('formatLevel', () => {
 });
 
 describe('formatDaysRemaining', () => {
-  it('is honest when there is no usage data', () => {
-    expect(formatDaysRemaining(null)).toBe('no usage yet');
+  it('renders "Not dosing" when the device reports null', () => {
+    expect(formatDaysRemaining(null)).toBe('Not dosing');
   });
 
   it('formats many days', () => {

@@ -111,7 +111,13 @@ export interface Container {
 
 /** Container enriched with consumption-derived status for the API. */
 export interface ContainerStatus extends Container {
-  /** currentMl ÷ average daily consumption (mL/day) over the last 14 days; null when no usage. */
+  /**
+   * currentMl ÷ estimated daily draw: enabled schedules' promised daily mL
+   * plus the trailing 14-day average of unscheduled (manual/catch-up)
+   * completed doses; plain trailing average when there is no enabled
+   * schedule. Null when the pump is not dosing (no enabled schedule and no
+   * recent usage) — the UI renders this as "Not dosing".
+   */
   daysRemaining: number | null;
   /** True when currentMl is at or below lowThresholdMl. */
   low: boolean;

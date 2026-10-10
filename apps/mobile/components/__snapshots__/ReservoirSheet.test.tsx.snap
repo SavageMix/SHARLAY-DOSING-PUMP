@@ -1,0 +1,583 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ReservoirSheet — editing mode > matches the fully-expanded snapshot (labels + helper + Save) 1`] = `
+<RCTModalHostView
+  allowSwipeDismissal={undefined}
+  animationType="slide"
+  hardwareAccelerated={false}
+  identifier={11}
+  navigationBarTranslucent={undefined}
+  onDismiss={[Function onDismiss]}
+  onOrientationChange={undefined}
+  onRequestClose={[Function Mock]}
+  onShow={undefined}
+  onStartShouldSetResponder={[Function _shouldSetResponder]}
+  presentationStyle="overFullScreen"
+  statusBarTranslucent={undefined}
+  style={{"position":"absolute"}}
+  supportedOrientations={undefined}
+  testID={undefined}
+  transparent
+  visible
+>
+  <RCTView
+    collapsable={false}
+    style={[{"flex":1,"left":0,"top":0},{"backgroundColor":"transparent"}]}
+  >
+    <RCTView
+      pointerEvents="box-none"
+      style={{"flex":1}}
+    >
+      <RCTView
+        collapsable
+        pointerEvents="box-none"
+        style={{"flex":1}}
+      >
+        <RCTView
+          style={{"backgroundColor":"rgba(0, 0, 0, 0.7)","flex":1,"justifyContent":"flex-end"}}
+        >
+          <RCTView
+            accessibilityLabel="Close reservoir details"
+            accessibilityLiveRegion={undefined}
+            accessibilityState={{"busy":"[undefined]","checked":"[undefined]","disabled":"[undefined]","expanded":"[undefined]","selected":"[undefined]"}}
+            accessibilityValue={{"max":"[undefined]","min":"[undefined]","now":"[undefined]","text":"[undefined]"}}
+            accessibilityViewIsModal={undefined}
+            accessible
+            collapsable={false}
+            focusable
+            hitSlop={undefined}
+            onBlur={[Function onBlur]}
+            onClick={[Function onClick]}
+            onFocus={[Function onFocus]}
+            onResponderGrant={[Function onResponderGrant]}
+            onResponderMove={[Function onResponderMove]}
+            onResponderRelease={[Function onResponderRelease]}
+            onResponderTerminate={[Function onResponderTerminate]}
+            onResponderTerminationRequest={[Function onResponderTerminationRequest]}
+            onStartShouldSetResponder={[Function onStartShouldSetResponder]}
+            style={{"bottom":0,"left":0,"position":"absolute","right":0,"top":0}}
+          />
+          <RCTView
+            style={{"backgroundColor":"#111827","borderBottomWidth":0,"borderColor":"rgba(32, 227, 219, 0.12)","borderTopLeftRadius":16,"borderTopRightRadius":16,"borderWidth":1,"maxHeight":"88%","padding":24,"paddingBottom":32}}
+          >
+            <RCTView
+              style={{"alignSelf":"center","backgroundColor":"rgba(32, 227, 219, 0.35)","borderRadius":2,"height":4,"marginBottom":12,"width":40}}
+            />
+            <RCTScrollView
+              alwaysBounceHorizontal={undefined}
+              alwaysBounceVertical
+              endDraggingSensitivityMultiplier={undefined}
+              keyboardShouldPersistTaps="handled"
+              onContentSizeChange={null}
+              onLayout={[Function anonymous]}
+              onMomentumScrollBegin={[Function anonymous]}
+              onMomentumScrollEnd={[Function anonymous]}
+              onResponderGrant={[Function anonymous]}
+              onResponderReject={[Function anonymous]}
+              onResponderRelease={[Function anonymous]}
+              onResponderTerminationRequest={[Function anonymous]}
+              onScroll={[Function anonymous]}
+              onScrollBeginDrag={[Function anonymous]}
+              onScrollEndDrag={[Function anonymous]}
+              onScrollShouldSetResponder={[Function anonymous]}
+              onTouchCancel={[Function anonymous]}
+              onTouchEnd={[Function anonymous]}
+              onTouchMove={[Function anonymous]}
+              onTouchStart={[Function anonymous]}
+              pagingEnabled={false}
+              scrollEventThrottle={undefined}
+              sendMomentumEvents={false}
+              showsVerticalScrollIndicator={false}
+              snapToEnd
+              snapToStart
+              style={{"flexDirection":"column","flexGrow":1,"flexShrink":1,"overflow":"scroll"}}
+            >
+              <RCTScrollContentView
+                collapsable={false}
+                collapsableChildren
+                removeClippedSubviews={undefined}
+                style={[false,"[undefined]"]}
+              >
+                <RCTView
+                  style={{"alignItems":"center","flexDirection":"row","justifyContent":"space-between","marginBottom":12}}
+                >
+                  <RCTText
+                    accessibilityLabel={undefined}
+                    accessibilityState={undefined}
+                    accessible
+                    allowFontScaling
+                    disabled={undefined}
+                    ellipsizeMode="tail"
+                    nativeID={undefined}
+                    numberOfLines={undefined}
+                    selectable={undefined}
+                    selectionColor={undefined}
+                    style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_600SemiBold","fontSize":24,"lineHeight":32}]}
+                  >
+                    Alkalinity
+                  </RCTText>
+                  <RCTView
+                    accessibilityLabel="Close"
+                    accessibilityLiveRegion={undefined}
+                    accessibilityRole="button"
+                    accessibilityState={{"busy":"[undefined]","checked":"[undefined]","disabled":"[undefined]","expanded":"[undefined]","selected":"[undefined]"}}
+                    accessibilityValue={{"max":"[undefined]","min":"[undefined]","now":"[undefined]","text":"[undefined]"}}
+                    accessibilityViewIsModal={undefined}
+                    accessible
+                    collapsable={false}
+                    focusable
+                    hitSlop={8}
+                    onBlur={[Function onBlur]}
+                    onClick={[Function onClick]}
+                    onFocus={[Function onFocus]}
+                    onResponderGrant={[Function onResponderGrant]}
+                    onResponderMove={[Function onResponderMove]}
+                    onResponderRelease={[Function onResponderRelease]}
+                    onResponderTerminate={[Function onResponderTerminate]}
+                    onResponderTerminationRequest={[Function onResponderTerminationRequest]}
+                    onStartShouldSetResponder={[Function onStartShouldSetResponder]}
+                    style={undefined}
+                  >
+                    <Ionicons
+                      color="#6B7280"
+                      name="close"
+                      size={22}
+                    />
+                  </RCTView>
+                </RCTView>
+                <RCTView
+                  style={{"backgroundColor":"#182333","borderRadius":999,"height":8,"overflow":"hidden"}}
+                >
+                  <RCTView
+                    style={[{"borderRadius":999,"height":"100%"},{"backgroundColor":"#00D084","width":"50%"}]}
+                  />
+                </RCTView>
+                <RCTView
+                  style={{"alignItems":"center","flexDirection":"row","justifyContent":"space-between","marginBottom":16,"marginTop":8}}
+                >
+                  <RCTText
+                    accessibilityLabel={undefined}
+                    accessibilityState={undefined}
+                    accessible
+                    allowFontScaling
+                    disabled={undefined}
+                    ellipsizeMode="tail"
+                    nativeID={undefined}
+                    numberOfLines={undefined}
+                    selectable={undefined}
+                    selectionColor={undefined}
+                    style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_600SemiBold","fontSize":16,"lineHeight":24}]}
+                  >
+                    500 / 1000 mL
+                  </RCTText>
+                  <RCTText
+                    accessibilityLabel={undefined}
+                    accessibilityState={undefined}
+                    accessible
+                    allowFontScaling
+                    disabled={undefined}
+                    ellipsizeMode="tail"
+                    nativeID={undefined}
+                    numberOfLines={undefined}
+                    selectable={undefined}
+                    selectionColor={undefined}
+                    style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},[{"color":"#C6CED8","fontFamily":"PlusJakartaSans_400Regular","fontSize":14,"lineHeight":20},false]]}
+                  >
+                    ≈ 10 days left
+                  </RCTText>
+                </RCTView>
+                <RCTView
+                  accessibilityLabel={undefined}
+                  accessibilityLiveRegion={undefined}
+                  accessibilityRole="button"
+                  accessibilityState={{"busy":"[undefined]","checked":"[undefined]","disabled":false,"expanded":"[undefined]","selected":"[undefined]"}}
+                  accessibilityValue={{"max":"[undefined]","min":"[undefined]","now":"[undefined]","text":"[undefined]"}}
+                  accessibilityViewIsModal={undefined}
+                  accessible
+                  collapsable={false}
+                  focusable
+                  hitSlop={undefined}
+                  onBlur={[Function onBlur]}
+                  onClick={[Function onClick]}
+                  onFocus={[Function onFocus]}
+                  onResponderGrant={[Function onResponderGrant]}
+                  onResponderMove={[Function onResponderMove]}
+                  onResponderRelease={[Function onResponderRelease]}
+                  onResponderTerminate={[Function onResponderTerminate]}
+                  onResponderTerminationRequest={[Function onResponderTerminationRequest]}
+                  onStartShouldSetResponder={[Function onStartShouldSetResponder]}
+                  style={[{"alignItems":"center","borderRadius":12,"flex":1,"height":48,"justifyContent":"center"},{"backgroundColor":"#20E3DB","flexDirection":"row","gap":8},false]}
+                >
+                  <Ionicons
+                    color="#070A12"
+                    name="water"
+                    size={18}
+                  />
+                  <RCTText
+                    accessibilityLabel={undefined}
+                    accessibilityState={undefined}
+                    accessible
+                    allowFontScaling
+                    disabled={undefined}
+                    ellipsizeMode="tail"
+                    nativeID={undefined}
+                    numberOfLines={undefined}
+                    selectable={undefined}
+                    selectionColor={undefined}
+                    style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"color":"#070A12","fontFamily":"PlusJakartaSans_600SemiBold","fontSize":18,"lineHeight":24}]}
+                  >
+                    Refill to full
+                  </RCTText>
+                </RCTView>
+                <RCTText
+                  accessibilityLabel={undefined}
+                  accessibilityState={undefined}
+                  accessible
+                  allowFontScaling
+                  disabled={undefined}
+                  ellipsizeMode="tail"
+                  nativeID={undefined}
+                  numberOfLines={undefined}
+                  selectable={undefined}
+                  selectionColor={undefined}
+                  style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"color":"#6B7280","fontFamily":"PlusJakartaSans_500Medium","fontSize":12,"letterSpacing":1.2,"lineHeight":16,"marginBottom":8,"marginTop":16,"textTransform":"uppercase"}]}
+                >
+                  PARTIAL REFILL
+                </RCTText>
+                <TextInput
+                  keyboardType="decimal-pad"
+                  onChangeText={[Function bound dispatchSetState]}
+                  placeholder="Volume (mL)"
+                  placeholderTextColor="#6B7280"
+                  style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"backgroundColor":"#182333","borderColor":"rgba(32, 227, 219, 0.35)","borderRadius":12,"borderWidth":1,"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular","fontSize":16,"height":56,"marginBottom":12,"paddingHorizontal":12}]}
+                  value=""
+                />
+                <RCTText
+                  accessibilityLabel={undefined}
+                  accessibilityState={undefined}
+                  accessible
+                  allowFontScaling
+                  disabled={undefined}
+                  ellipsizeMode="tail"
+                  nativeID={undefined}
+                  numberOfLines={undefined}
+                  selectable={undefined}
+                  selectionColor={undefined}
+                  style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"color":"#6B7280","fontFamily":"PlusJakartaSans_400Regular","fontSize":14,"lineHeight":20,"marginBottom":12}]}
+                >
+                  Adds to current level, up to capacity
+                </RCTText>
+                <RCTView
+                  accessibilityLabel={undefined}
+                  accessibilityLiveRegion={undefined}
+                  accessibilityRole="button"
+                  accessibilityState={{"busy":"[undefined]","checked":"[undefined]","disabled":false,"expanded":"[undefined]","selected":"[undefined]"}}
+                  accessibilityValue={{"max":"[undefined]","min":"[undefined]","now":"[undefined]","text":"[undefined]"}}
+                  accessibilityViewIsModal={undefined}
+                  accessible
+                  collapsable={false}
+                  focusable
+                  hitSlop={undefined}
+                  onBlur={[Function onBlur]}
+                  onClick={[Function onClick]}
+                  onFocus={[Function onFocus]}
+                  onResponderGrant={[Function onResponderGrant]}
+                  onResponderMove={[Function onResponderMove]}
+                  onResponderRelease={[Function onResponderRelease]}
+                  onResponderTerminate={[Function onResponderTerminate]}
+                  onResponderTerminationRequest={[Function onResponderTerminationRequest]}
+                  onStartShouldSetResponder={[Function onStartShouldSetResponder]}
+                  style={[{"alignItems":"center","borderRadius":12,"flex":1,"height":48,"justifyContent":"center"},{"backgroundColor":"#20E3DB","flexDirection":"row","gap":8},false]}
+                >
+                  <RCTText
+                    accessibilityLabel={undefined}
+                    accessibilityState={undefined}
+                    accessible
+                    allowFontScaling
+                    disabled={undefined}
+                    ellipsizeMode="tail"
+                    nativeID={undefined}
+                    numberOfLines={undefined}
+                    selectable={undefined}
+                    selectionColor={undefined}
+                    style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"color":"#070A12","fontFamily":"PlusJakartaSans_600SemiBold","fontSize":18,"lineHeight":24}]}
+                  >
+                    Refill partial
+                  </RCTText>
+                </RCTView>
+                <RCTText
+                  accessibilityLabel={undefined}
+                  accessibilityState={undefined}
+                  accessible
+                  allowFontScaling
+                  disabled={undefined}
+                  ellipsizeMode="tail"
+                  nativeID={undefined}
+                  numberOfLines={undefined}
+                  selectable={undefined}
+                  selectionColor={undefined}
+                  style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"color":"#6B7280","fontFamily":"PlusJakartaSans_500Medium","fontSize":12,"letterSpacing":1.2,"lineHeight":16,"marginBottom":8,"marginTop":16,"textTransform":"uppercase"}]}
+                >
+                  ADJUST LEVEL
+                </RCTText>
+                <TextInput
+                  keyboardType="decimal-pad"
+                  onChangeText={[Function bound dispatchSetState]}
+                  placeholder="Current level (mL)"
+                  placeholderTextColor="#6B7280"
+                  style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"backgroundColor":"#182333","borderColor":"rgba(32, 227, 219, 0.35)","borderRadius":12,"borderWidth":1,"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular","fontSize":16,"height":56,"marginBottom":12,"paddingHorizontal":12}]}
+                  value=""
+                />
+                <RCTText
+                  accessibilityLabel={undefined}
+                  accessibilityState={undefined}
+                  accessible
+                  allowFontScaling
+                  disabled={undefined}
+                  ellipsizeMode="tail"
+                  nativeID={undefined}
+                  numberOfLines={undefined}
+                  selectable={undefined}
+                  selectionColor={undefined}
+                  style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"color":"#6B7280","fontFamily":"PlusJakartaSans_400Regular","fontSize":14,"lineHeight":20,"marginBottom":12}]}
+                >
+                  Overrides the current level exactly
+                </RCTText>
+                <RCTView
+                  accessibilityLabel={undefined}
+                  accessibilityLiveRegion={undefined}
+                  accessibilityRole="button"
+                  accessibilityState={{"busy":"[undefined]","checked":"[undefined]","disabled":false,"expanded":"[undefined]","selected":"[undefined]"}}
+                  accessibilityValue={{"max":"[undefined]","min":"[undefined]","now":"[undefined]","text":"[undefined]"}}
+                  accessibilityViewIsModal={undefined}
+                  accessible
+                  collapsable={false}
+                  focusable
+                  hitSlop={undefined}
+                  onBlur={[Function onBlur]}
+                  onClick={[Function onClick]}
+                  onFocus={[Function onFocus]}
+                  onResponderGrant={[Function onResponderGrant]}
+                  onResponderMove={[Function onResponderMove]}
+                  onResponderRelease={[Function onResponderRelease]}
+                  onResponderTerminate={[Function onResponderTerminate]}
+                  onResponderTerminationRequest={[Function onResponderTerminationRequest]}
+                  onStartShouldSetResponder={[Function onStartShouldSetResponder]}
+                  style={[{"alignItems":"center","borderRadius":12,"flex":1,"height":48,"justifyContent":"center"},{"backgroundColor":"#20E3DB","flexDirection":"row","gap":8},false]}
+                >
+                  <RCTText
+                    accessibilityLabel={undefined}
+                    accessibilityState={undefined}
+                    accessible
+                    allowFontScaling
+                    disabled={undefined}
+                    ellipsizeMode="tail"
+                    nativeID={undefined}
+                    numberOfLines={undefined}
+                    selectable={undefined}
+                    selectionColor={undefined}
+                    style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"color":"#070A12","fontFamily":"PlusJakartaSans_600SemiBold","fontSize":18,"lineHeight":24}]}
+                  >
+                    Set level
+                  </RCTText>
+                </RCTView>
+                <RCTView>
+                  <RCTText
+                    accessibilityLabel={undefined}
+                    accessibilityState={undefined}
+                    accessible
+                    allowFontScaling
+                    disabled={undefined}
+                    ellipsizeMode="tail"
+                    nativeID={undefined}
+                    numberOfLines={undefined}
+                    selectable={undefined}
+                    selectionColor={undefined}
+                    style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"color":"#6B7280","fontFamily":"PlusJakartaSans_500Medium","fontSize":12,"letterSpacing":1.2,"lineHeight":16,"marginBottom":8,"marginTop":16,"textTransform":"uppercase"}]}
+                  >
+                    EDIT RESERVOIR
+                  </RCTText>
+                  <RCTText
+                    accessibilityLabel={undefined}
+                    accessibilityState={undefined}
+                    accessible
+                    allowFontScaling
+                    disabled={undefined}
+                    ellipsizeMode="tail"
+                    nativeID={undefined}
+                    numberOfLines={undefined}
+                    selectable={undefined}
+                    selectionColor={undefined}
+                    style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"color":"#6B7280","fontFamily":"PlusJakartaSans_500Medium","fontSize":12,"letterSpacing":1.2,"lineHeight":16,"marginBottom":4,"marginTop":12,"textTransform":"uppercase"}]}
+                  >
+                    Reservoir name
+                  </RCTText>
+                  <TextInput
+                    accessibilityLabel="Reservoir name"
+                    onChangeText={[Function bound dispatchSetState]}
+                    placeholder="Name"
+                    placeholderTextColor="#6B7280"
+                    style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"backgroundColor":"#182333","borderColor":"rgba(32, 227, 219, 0.35)","borderRadius":12,"borderWidth":1,"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular","fontSize":16,"height":56,"marginBottom":12,"paddingHorizontal":12}]}
+                    value="Alkalinity"
+                  />
+                  <RCTText
+                    accessibilityLabel={undefined}
+                    accessibilityState={undefined}
+                    accessible
+                    allowFontScaling
+                    disabled={undefined}
+                    ellipsizeMode="tail"
+                    nativeID={undefined}
+                    numberOfLines={undefined}
+                    selectable={undefined}
+                    selectionColor={undefined}
+                    style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"color":"#6B7280","fontFamily":"PlusJakartaSans_500Medium","fontSize":12,"letterSpacing":1.2,"lineHeight":16,"marginBottom":4,"marginTop":12,"textTransform":"uppercase"}]}
+                  >
+                    Capacity (mL)
+                  </RCTText>
+                  <TextInput
+                    accessibilityLabel="Capacity (mL)"
+                    keyboardType="decimal-pad"
+                    onChangeText={[Function bound dispatchSetState]}
+                    placeholder="Capacity (mL)"
+                    placeholderTextColor="#6B7280"
+                    style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"backgroundColor":"#182333","borderColor":"rgba(32, 227, 219, 0.35)","borderRadius":12,"borderWidth":1,"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular","fontSize":16,"height":56,"marginBottom":12,"paddingHorizontal":12}]}
+                    value="1000"
+                  />
+                  <RCTText
+                    accessibilityLabel={undefined}
+                    accessibilityState={undefined}
+                    accessible
+                    allowFontScaling
+                    disabled={undefined}
+                    ellipsizeMode="tail"
+                    nativeID={undefined}
+                    numberOfLines={undefined}
+                    selectable={undefined}
+                    selectionColor={undefined}
+                    style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"color":"#6B7280","fontFamily":"PlusJakartaSans_500Medium","fontSize":12,"letterSpacing":1.2,"lineHeight":16,"marginBottom":4,"marginTop":12,"textTransform":"uppercase"}]}
+                  >
+                    Low alert threshold (mL)
+                  </RCTText>
+                  <TextInput
+                    accessibilityLabel="Low alert threshold (mL)"
+                    keyboardType="decimal-pad"
+                    onChangeText={[Function bound dispatchSetState]}
+                    placeholder="Low threshold (mL)"
+                    placeholderTextColor="#6B7280"
+                    style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"backgroundColor":"#182333","borderColor":"rgba(32, 227, 219, 0.35)","borderRadius":12,"borderWidth":1,"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular","fontSize":16,"height":56,"marginBottom":12,"paddingHorizontal":12}]}
+                    value="100"
+                  />
+                  <RCTText
+                    accessibilityLabel={undefined}
+                    accessibilityState={undefined}
+                    accessible
+                    allowFontScaling
+                    disabled={undefined}
+                    ellipsizeMode="tail"
+                    nativeID={undefined}
+                    numberOfLines={undefined}
+                    selectable={undefined}
+                    selectionColor={undefined}
+                    style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"color":"#6B7280","fontFamily":"PlusJakartaSans_400Regular","fontSize":14,"lineHeight":20,"marginBottom":12}]}
+                  >
+                    Banner alerts when level drops to this
+                  </RCTText>
+                  <RCTView
+                    style={{"flexDirection":"row","gap":12,"marginTop":12}}
+                  >
+                    <RCTView
+                      accessibilityLabel={undefined}
+                      accessibilityLiveRegion={undefined}
+                      accessibilityRole="button"
+                      accessibilityState={{"busy":"[undefined]","checked":"[undefined]","disabled":false,"expanded":"[undefined]","selected":"[undefined]"}}
+                      accessibilityValue={{"max":"[undefined]","min":"[undefined]","now":"[undefined]","text":"[undefined]"}}
+                      accessibilityViewIsModal={undefined}
+                      accessible
+                      collapsable={false}
+                      focusable
+                      hitSlop={undefined}
+                      onBlur={[Function onBlur]}
+                      onClick={[Function onClick]}
+                      onFocus={[Function onFocus]}
+                      onResponderGrant={[Function onResponderGrant]}
+                      onResponderMove={[Function onResponderMove]}
+                      onResponderRelease={[Function onResponderRelease]}
+                      onResponderTerminate={[Function onResponderTerminate]}
+                      onResponderTerminationRequest={[Function onResponderTerminationRequest]}
+                      onStartShouldSetResponder={[Function onStartShouldSetResponder]}
+                      style={[{"alignItems":"center","borderRadius":12,"flex":1,"height":48,"justifyContent":"center"},{"backgroundColor":"#182333","borderColor":"rgba(32, 227, 219, 0.12)","borderWidth":1}]}
+                    >
+                      <RCTText
+                        accessibilityLabel={undefined}
+                        accessibilityState={undefined}
+                        accessible
+                        allowFontScaling
+                        disabled={undefined}
+                        ellipsizeMode="tail"
+                        nativeID={undefined}
+                        numberOfLines={undefined}
+                        selectable={undefined}
+                        selectionColor={undefined}
+                        style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_500Medium","fontSize":18,"lineHeight":24}]}
+                      >
+                        Cancel
+                      </RCTText>
+                    </RCTView>
+                    <RCTView
+                      accessibilityLabel={undefined}
+                      accessibilityLiveRegion={undefined}
+                      accessibilityRole="button"
+                      accessibilityState={{"busy":"[undefined]","checked":"[undefined]","disabled":false,"expanded":"[undefined]","selected":"[undefined]"}}
+                      accessibilityValue={{"max":"[undefined]","min":"[undefined]","now":"[undefined]","text":"[undefined]"}}
+                      accessibilityViewIsModal={undefined}
+                      accessible
+                      collapsable={false}
+                      focusable
+                      hitSlop={undefined}
+                      onBlur={[Function onBlur]}
+                      onClick={[Function onClick]}
+                      onFocus={[Function onFocus]}
+                      onResponderGrant={[Function onResponderGrant]}
+                      onResponderMove={[Function onResponderMove]}
+                      onResponderRelease={[Function onResponderRelease]}
+                      onResponderTerminate={[Function onResponderTerminate]}
+                      onResponderTerminationRequest={[Function onResponderTerminationRequest]}
+                      onStartShouldSetResponder={[Function onStartShouldSetResponder]}
+                      style={[{"alignItems":"center","borderRadius":12,"flex":1,"height":48,"justifyContent":"center"},{"backgroundColor":"#20E3DB","flexDirection":"row","gap":8},false]}
+                    >
+                      <RCTText
+                        accessibilityLabel={undefined}
+                        accessibilityState={undefined}
+                        accessible
+                        allowFontScaling
+                        disabled={undefined}
+                        ellipsizeMode="tail"
+                        nativeID={undefined}
+                        numberOfLines={undefined}
+                        selectable={undefined}
+                        selectionColor={undefined}
+                        style={[{"color":"#F5F7FA","fontFamily":"PlusJakartaSans_400Regular"},[{"color":"#070A12","fontFamily":"PlusJakartaSans_600SemiBold","fontSize":18,"lineHeight":24},false]]}
+                      >
+                        Save
+                      </RCTText>
+                    </RCTView>
+                  </RCTView>
+                </RCTView>
+              </RCTScrollContentView>
+            </RCTScrollView>
+          </RCTView>
+        </RCTView>
+      </RCTView>
+      <RCTView
+        pointerEvents="none"
+        style={{"bottom":0,"left":0,"position":"absolute","right":0,"top":0}}
+      >
+        <DebuggingOverlay
+          style={{"bottom":0,"left":0,"position":"absolute","right":0,"top":0}}
+        />
+      </RCTView>
+    </RCTView>
+  </RCTView>
+</RCTModalHostView>
+`;

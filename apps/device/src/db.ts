@@ -1036,10 +1036,22 @@ export class ReefDatabase
 
   /**
    * Every reservoir with its consumption-derived status. daysRemaining is
-   * current_ml ÷ average daily draw over the last CONTAINER_USAGE_WINDOW_DAYS
-   * days (completed manual/schedule/catchup doses only — prime and
-   * calibration never count), rounded to one decimal; null when there is no
-   * usage to extrapolate from.
+   * current_ml ÷ estimated daily draw, computed per pump as a cascade:
+   *
+   * 1. Pump has ≥1 enabled schedule: daily draw = the schedules' promised
+   *    daily mL (volume × times-per-day ÷ repeat-every-N-days, summed) PLUS
+   *    the trailing CONTAINER_USAGE_WINDOW_DAYS-day average of completed
+   *    UNSCHEDULED doses (manual + catch-up). Scheduled-source history is
+   *    excluded here — it is already represented by the schedule expansion,
+   *    so counting it would double-count. Computed at request time from the
+   *    schedules table, so a schedule edit is reflected immediately.
+   * 2. No enabled schedule, but ≥1 completed dose in the window: plain
+   *    trailing-window average (all dosing sources), the pre-cascade
+   *    behaviour.
+   * 3. Neither: null — the pump is not dosing.
+   *
+   * Prime and calibration volume never counts toward any branch; a computed
+   * rate of zero yields null (division by zero is not a number of days).
    */
   getContainers(): ContainerStatus[] {
     const rows = this.db
@@ -1052,7 +1064,29 @@ export class ReefDatabase
       low_threshold_ml: number;
       updated_at: string;
     }>;
-    const usageStmt = this.db.prepare(
+
+    // Promised daily mL per pump from enabled schedules. repeatEveryNDays
+    // spreads timesPerDay doses across an N-day cycle, hence the division.
+    const scheduledDailyByPump = new Map<PumpId, number>();
+    for (const schedule of this.getEnabledSchedules()) {
+      const daily =
+        (schedule.volumeMl * schedule.timesPerDay) /
+        schedule.repeatEveryNDays;
+      scheduledDailyByPump.set(
+        schedule.pumpId,
+        (scheduledDailyByPump.get(schedule.pumpId) ?? 0) + daily,
+      );
+    }
+
+    const unscheduledStmt = this.db.prepare(
+      `SELECT COALESCE(SUM(actual_ml), 0) as total
+       FROM dose_events
+       WHERE pump_id = ?
+         AND status = 'completed'
+         AND source IN ('manual', 'catchup')
+         AND started_at >= datetime('now', '-' || ? || ' days')`,
+    );
+    const historyStmt = this.db.prepare(
       `SELECT COALESCE(SUM(actual_ml), 0) as total
        FROM dose_events
        WHERE pump_id = ?
@@ -1062,12 +1096,26 @@ export class ReefDatabase
     );
 
     return rows.map((row) => {
-      const total = (
-        usageStmt.get(row.pump_id, CONTAINER_USAGE_WINDOW_DAYS) as {
-          total: number;
-        }
-      ).total;
-      const avgDailyMl = total / CONTAINER_USAGE_WINDOW_DAYS;
+      const scheduledDaily = scheduledDailyByPump.get(row.pump_id);
+      let dailyRateMl: number | null;
+      if (scheduledDaily !== undefined) {
+        const unscheduledAvg =
+          (
+            unscheduledStmt.get(
+              row.pump_id,
+              CONTAINER_USAGE_WINDOW_DAYS,
+            ) as { total: number }
+          ).total / CONTAINER_USAGE_WINDOW_DAYS;
+        dailyRateMl = scheduledDaily + unscheduledAvg;
+      } else {
+        const historyTotal = (
+          historyStmt.get(row.pump_id, CONTAINER_USAGE_WINDOW_DAYS) as {
+            total: number;
+          }
+        ).total;
+        dailyRateMl =
+          historyTotal > 0 ? historyTotal / CONTAINER_USAGE_WINDOW_DAYS : null;
+      }
       return {
         pumpId: row.pump_id,
         name: row.name,
@@ -1077,8 +1125,8 @@ export class ReefDatabase
         updatedAt: row.updated_at,
         low: row.current_ml <= row.low_threshold_ml,
         daysRemaining:
-          avgDailyMl > 0
-            ? Math.round((row.current_ml / avgDailyMl) * 10) / 10
+          dailyRateMl !== null && dailyRateMl > 0
+            ? Math.round((row.current_ml / dailyRateMl) * 10) / 10
             : null,
       };
     });

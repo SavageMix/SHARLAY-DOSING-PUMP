@@ -30,9 +30,13 @@
     "react-native-worklets": "0.5.1"
   },
   "devDependencies": {
+    "@testing-library/react-native": "^13.3.3",
     "@types/react": "~19.1.10",
+    "@types/react-test-renderer": "^19.3.0",
+    "react-test-renderer": "^19.1.0",
     "typescript": "~5.9.2",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "vitest-native": "^0.13.0"
   },
   "scripts": {
     "start": "expo start",
