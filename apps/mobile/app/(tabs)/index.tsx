@@ -35,6 +35,12 @@ import {
   getStatus,
   postDose,
   cancelDose,
+  cancelMissedDose,
+  skipNextDose,
+  getContainers,
+  refillReservoir,
+  adjustReservoir,
+  updateReservoir,
   resolveDeviceBaseUrl,
   type MissedDose,
   type StatusResponse,
@@ -48,11 +54,26 @@ import {
 } from '@/src/lib/dose-states';
 import { buildQueuePanel } from '@/src/lib/dose-queue';
 import {
+  nextDoseActionPlan,
+  nextDoseSourceLabel,
+  nextDoseSourceTag,
+  resolveNextDose,
+  type NextDose,
+} from '@/src/lib/next-dose';
+import {
   activeFindings,
   loadDismissedFindingIds,
 } from '@/src/lib/integrity-findings';
 import {
-  getNextDueDate,
+  formatDaysRemaining,
+  formatLevel,
+  levelBarState,
+  lowBannerText,
+  lowReservoirs,
+  type LevelBarState,
+} from '@/src/lib/reservoirs';
+import {
+  type ContainerStatus,
   type DoseEvent,
   type DoseQueueItem,
   type DoseSchedule,
@@ -78,6 +99,12 @@ const PUMP_COLORS: Record<PumpId, string> = {
   ca: T.colors.accent,
   no3: T.colors.danger,
   po4: T.colors.success,
+};
+
+const LEVEL_BAR_COLORS: Record<LevelBarState, string> = {
+  low: T.colors.danger,
+  warning: T.colors.warning,
+  ok: T.colors.success,
 };
 
 interface DashboardData {
@@ -208,20 +235,33 @@ function computeTodayTotal(history: HistoryResponse, pumpId: PumpId): number {
     .reduce((total, e) => total + (e.actualMl ?? e.requestedMl), 0);
 }
 
-function computeNextDose(
-  schedules: DoseSchedule[],
-): { schedule: DoseSchedule; date: Date } | null {
-  const now = new Date();
-  let best: { schedule: DoseSchedule; date: Date } | null = null;
-  for (const schedule of schedules) {
-    if (!schedule.enabled) continue;
-    const date = getNextDueDate(schedule, now);
-    if (!date) continue;
-    if (!best || date < best.date) {
-      best = { schedule, date };
-    }
-  }
-  return best;
+interface NextDoseDetails {
+  pumpId: PumpId;
+  volumeMl: number;
+  fireAt: Date;
+}
+
+function nextDoseDetails(nextDose: NextDose): NextDoseDetails {
+  return nextDose.kind === 'scheduled'
+    ? {
+        pumpId: nextDose.schedule.pumpId,
+        volumeMl: nextDose.schedule.volumeMl,
+        fireAt: nextDose.date,
+      }
+    : {
+        pumpId: nextDose.item.pumpId,
+        volumeMl: nextDose.item.amountMl,
+        fireAt: nextDose.estimatedFireAt,
+      };
+}
+
+function useNowTicker(): Date {
+  const [now, setNow] = useState(new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
 }
 
 function Sparkline({ data, color }: { data: number[]; color: string }) {
@@ -614,29 +654,46 @@ function NextDoseCard({
   nextDose,
   onPress,
 }: {
-  nextDose: { schedule: DoseSchedule; date: Date } | null;
+  nextDose: NextDose | null;
   onPress: () => void;
 }) {
-  const [now, setNow] = useState(new Date());
+  const now = useNowTicker();
 
-  useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(id);
-  }, []);
+  if (!nextDose) {
+    // Informational resting state: not pressable, no chevron.
+    return (
+      <View style={styles.nextDoseCard}>
+        <View style={styles.nextDoseLeft}>
+          <View
+            style={[
+              styles.nextDoseIcon,
+              { backgroundColor: 'rgba(32, 227, 219, 0.12)' },
+            ]}>
+            <Ionicons name="water" size={22} color={T.colors.primary} />
+          </View>
+          <View>
+            <ThemedText style={styles.nextDoseOverline}>NEXT DOSE</ThemedText>
+            <ThemedText style={styles.nextDosePump}>
+              No doses scheduled
+            </ThemedText>
+          </View>
+        </View>
+      </View>
+    );
+  }
 
-  const pumpName = nextDose
-    ? PUMP_DISPLAY_NAMES[nextDose.schedule.pumpId]
-    : '—';
-  const volume = nextDose ? `${nextDose.schedule.volumeMl.toFixed(1)} mL` : '';
-  const countdown = nextDose
-    ? nextDose.date.getTime() > now.getTime()
-      ? formatDuration(nextDose.date.getTime() - now.getTime())
-      : 'Due now'
-    : 'No upcoming dose';
-  const timeStr = nextDose ? formatDateTime(nextDose.date) : '';
+  const details = nextDoseDetails(nextDose);
+  const countdown =
+    details.fireAt.getTime() > now.getTime()
+      ? formatDuration(details.fireAt.getTime() - now.getTime())
+      : 'Due now';
 
   return (
-    <Pressable style={styles.nextDoseCard} onPress={onPress}>
+    <Pressable
+      style={styles.nextDoseCard}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel="Next dose details">
       <View style={styles.nextDoseLeft}>
         <View
           style={[
@@ -648,14 +705,29 @@ function NextDoseCard({
         <View>
           <ThemedText style={styles.nextDoseOverline}>NEXT DOSE</ThemedText>
           <View style={styles.nextDoseRow}>
-            <ThemedText style={styles.nextDosePump}>{pumpName}</ThemedText>
-            <ThemedText style={styles.nextDoseVolume}>{volume}</ThemedText>
+            <ThemedText
+              style={[
+                styles.nextDosePump,
+                { color: PUMP_COLORS[details.pumpId] },
+              ]}>
+              {PUMP_DISPLAY_NAMES[details.pumpId]}
+            </ThemedText>
+            <View style={styles.sourceTag}>
+              <ThemedText style={styles.sourceTagText}>
+                {nextDoseSourceTag(nextDose)}
+              </ThemedText>
+            </View>
+            <ThemedText style={styles.nextDoseVolume}>
+              {details.volumeMl.toFixed(1)} mL
+            </ThemedText>
           </View>
         </View>
       </View>
       <View style={styles.nextDoseRight}>
         <ThemedText style={styles.nextDoseCountdown}>{countdown}</ThemedText>
-        <ThemedText style={styles.nextDoseTime}>{timeStr}</ThemedText>
+        <ThemedText style={styles.nextDoseTime}>
+          {formatDateTime(details.fireAt)}
+        </ThemedText>
         <Ionicons
           name="chevron-forward"
           size={20}
@@ -663,6 +735,249 @@ function NextDoseCard({
         />
       </View>
     </Pressable>
+  );
+}
+
+function NextDoseSheet({
+  nextDose,
+  busy,
+  error,
+  onClose,
+  onSkip,
+  onRemove,
+}: {
+  nextDose: NextDose;
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onSkip: () => void;
+  onRemove: () => void;
+}) {
+  const now = useNowTicker();
+  // Inline confirm step: one tap arms the destructive action, the second
+  // tap (or the sheet closing) is required to actually fire it.
+  const [confirming, setConfirming] = useState<'skip' | 'remove' | null>(null);
+
+  const details = nextDoseDetails(nextDose);
+  const plan = nextDoseActionPlan(nextDose);
+  const countdown =
+    details.fireAt.getTime() > now.getTime()
+      ? formatDuration(details.fireAt.getTime() - now.getTime())
+      : 'Due now';
+  const removeLabel =
+    nextDose.kind === 'queued' && nextDose.item.source === 'catchup'
+      ? 'Remove catch-up'
+      : 'Remove from queue';
+  const confirmText =
+    plan.kind === 'skip'
+      ? 'Skip this dose? It will not fire and is recorded as skipped in History.'
+      : `${removeLabel}? It won't be delivered.`;
+
+  return (
+    <Modal
+      visible
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}>
+      <View style={styles.sheetBackdrop}>
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={onClose}
+          accessibilityLabel="Close next dose details"
+        />
+        <View style={styles.sheetContent}>
+          <View style={styles.sheetHandle} />
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}>
+            <View style={styles.sheetHeaderRow}>
+              <ThemedText
+                style={[
+                  styles.sheetTitle,
+                  { color: PUMP_COLORS[details.pumpId] },
+                ]}>
+                {PUMP_DISPLAY_NAMES[details.pumpId]}
+              </ThemedText>
+              <Pressable
+                onPress={onClose}
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+                hitSlop={8}>
+                <Ionicons name="close" size={22} color={T.colors.textMuted} />
+              </Pressable>
+            </View>
+
+            <View style={styles.nextDoseSheetCountdownBlock}>
+              <ThemedText style={styles.nextDoseSheetCountdown}>
+                {countdown}
+              </ThemedText>
+              <ThemedText style={styles.nextDoseSheetTime}>
+                {formatDateTime(details.fireAt)}
+              </ThemedText>
+            </View>
+
+            <View style={styles.sheetDetailRow}>
+              <ThemedText style={styles.sheetDetailLabel}>Volume</ThemedText>
+              <ThemedText style={styles.sheetDetailValue}>
+                {details.volumeMl.toFixed(1)} mL
+              </ThemedText>
+            </View>
+            <View style={styles.sheetDetailRow}>
+              <ThemedText style={styles.sheetDetailLabel}>Source</ThemedText>
+              <ThemedText style={styles.sheetDetailValue}>
+                {nextDoseSourceLabel(nextDose)}
+              </ThemedText>
+            </View>
+            {nextDose.kind === 'queued' ? (
+              <>
+                <View style={styles.sheetDetailRow}>
+                  <ThemedText style={styles.sheetDetailLabel}>
+                    Queue position
+                  </ThemedText>
+                  <ThemedText style={styles.sheetDetailValue}>
+                    #{nextDose.position}
+                  </ThemedText>
+                </View>
+                <View style={styles.sheetDetailRow}>
+                  <ThemedText style={styles.sheetDetailLabel}>
+                    Estimated fire
+                  </ThemedText>
+                  <ThemedText style={styles.sheetDetailValue}>
+                    {formatDateTime(details.fireAt)}
+                  </ThemedText>
+                </View>
+              </>
+            ) : null}
+
+            {error ? (
+              <ThemedText style={styles.modalError}>{error}</ThemedText>
+            ) : null}
+
+            {plan.kind === 'skip' ? (
+              confirming === 'skip' ? (
+                <View style={styles.cancelConfirmCard}>
+                  <ThemedText style={styles.cancelConfirmText}>
+                    {confirmText}
+                  </ThemedText>
+                  <View style={styles.cancelConfirmButtons}>
+                    <Pressable
+                      style={[styles.modalButton, styles.cancelButton]}
+                      disabled={busy}
+                      onPress={() => setConfirming(null)}>
+                      <ThemedText style={styles.cancelButtonText}>
+                        Cancel
+                      </ThemedText>
+                    </Pressable>
+                    <Pressable
+                      style={[
+                        styles.modalButton,
+                        styles.confirmButton,
+                        busy && styles.confirmButtonDisabled,
+                      ]}
+                      disabled={busy}
+                      onPress={onSkip}>
+                      {busy ? (
+                        <ActivityIndicator
+                          color={T.colors.background}
+                          size="small"
+                        />
+                      ) : null}
+                      <ThemedText
+                        style={[
+                          styles.confirmButtonText,
+                          busy && styles.confirmButtonTextDisabled,
+                        ]}>
+                        Skip dose
+                      </ThemedText>
+                    </Pressable>
+                  </View>
+                </View>
+              ) : (
+                <Pressable
+                  style={[
+                    styles.modalButton,
+                    styles.confirmButton,
+                    busy && styles.confirmButtonDisabled,
+                  ]}
+                  disabled={busy}
+                  onPress={() => setConfirming('skip')}>
+                  <Ionicons
+                    name="play-skip-forward-outline"
+                    size={18}
+                    color={T.colors.background}
+                  />
+                  <ThemedText style={styles.confirmButtonText}>
+                    Skip this dose
+                  </ThemedText>
+                </Pressable>
+              )
+            ) : null}
+
+            {plan.kind === 'remove' ? (
+              confirming === 'remove' ? (
+                <View style={styles.cancelConfirmCard}>
+                  <ThemedText style={styles.cancelConfirmText}>
+                    {confirmText}
+                  </ThemedText>
+                  <View style={styles.cancelConfirmButtons}>
+                    <Pressable
+                      style={[styles.modalButton, styles.cancelButton]}
+                      disabled={busy}
+                      onPress={() => setConfirming(null)}>
+                      <ThemedText style={styles.cancelButtonText}>
+                        Cancel
+                      </ThemedText>
+                    </Pressable>
+                    <Pressable
+                      style={[
+                        styles.modalButton,
+                        styles.cancelDoseButton,
+                        busy && styles.confirmButtonDisabled,
+                      ]}
+                      disabled={busy}
+                      onPress={onRemove}>
+                      {busy ? (
+                        <ActivityIndicator
+                          color={T.colors.background}
+                          size="small"
+                        />
+                      ) : null}
+                      <ThemedText style={styles.cancelDoseButtonText}>
+                        {removeLabel}
+                      </ThemedText>
+                    </Pressable>
+                  </View>
+                </View>
+              ) : (
+                <Pressable
+                  style={[
+                    styles.modalButton,
+                    styles.cancelDoseButton,
+                    busy && styles.confirmButtonDisabled,
+                  ]}
+                  disabled={busy}
+                  onPress={() => setConfirming('remove')}>
+                  <Ionicons
+                    name="trash-outline"
+                    size={18}
+                    color={T.colors.background}
+                  />
+                  <ThemedText style={styles.cancelDoseButtonText}>
+                    {removeLabel}
+                  </ThemedText>
+                </Pressable>
+              )
+            ) : null}
+
+            {plan.kind === 'remove-unavailable' ? (
+              <ThemedText style={styles.nextDoseSheetUnavailable}>
+                This dose can't be withdrawn from here.
+              </ThemedText>
+            ) : null}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -876,6 +1191,436 @@ const PUMP_SHORT_NAMES: Record<PumpId, string> = {
   po4: 'PO4',
 };
 
+function LevelBar({
+  state,
+  fraction,
+}: {
+  state: LevelBarState;
+  fraction: number;
+}) {
+  const pct = Math.min(100, Math.max(0, fraction * 100));
+  return (
+    <View style={styles.levelBarTrack}>
+      <View
+        style={[
+          styles.levelBarFill,
+          { width: `${pct}%`, backgroundColor: LEVEL_BAR_COLORS[state] },
+        ]}
+      />
+    </View>
+  );
+}
+
+function levelFraction(container: ContainerStatus): number {
+  return container.capacityMl > 0
+    ? container.currentMl / container.capacityMl
+    : 0;
+}
+
+function ReservoirsCard({
+  containers,
+  error,
+  onRetry,
+  onSelect,
+}: {
+  containers: ContainerStatus[] | null;
+  error: boolean;
+  onRetry: () => void;
+  onSelect: (pumpId: PumpId) => void;
+}) {
+  return (
+    <View style={styles.glassCard}>
+      <ThemedText style={styles.cardOverline}>RESERVOIRS</ThemedText>
+      {error ? (
+        <Pressable style={styles.reservoirErrorRow} onPress={onRetry}>
+          <Ionicons name="alert-circle" size={18} color={T.colors.danger} />
+          <ThemedText style={styles.reservoirErrorText}>
+            Couldn't load reservoirs — tap to retry
+          </ThemedText>
+        </Pressable>
+      ) : containers === null ? (
+        <ActivityIndicator color={T.colors.primary} size="small" />
+      ) : containers.length === 0 ? (
+        <ThemedText style={styles.queueEmpty}>No reservoirs configured</ThemedText>
+      ) : (
+        <View style={styles.reservoirList}>
+          {containers.map((container) => {
+            const state = levelBarState(container);
+            const low = state === 'low';
+            return (
+              <Pressable
+                key={container.pumpId}
+                style={styles.reservoirRow}
+                onPress={() => onSelect(container.pumpId)}
+                accessibilityRole="button"
+                accessibilityLabel={`${container.name} reservoir, ${formatLevel(
+                  container,
+                )}`}>
+                {low ? <View style={styles.reservoirLowAccent} /> : null}
+                <View style={styles.reservoirRowMain}>
+                  <View style={styles.reservoirNameRow}>
+                    <ThemedText
+                      style={[
+                        styles.reservoirName,
+                        low && { color: T.colors.danger },
+                      ]}>
+                      {container.name}
+                    </ThemedText>
+                    <ThemedText style={styles.reservoirLevelText}>
+                      {formatLevel(container)}
+                    </ThemedText>
+                  </View>
+                  <View style={styles.reservoirBarRow}>
+                    <View style={styles.reservoirBar}>
+                      <LevelBar
+                        state={state}
+                        fraction={levelFraction(container)}
+                      />
+                    </View>
+                    <ThemedText
+                      style={[
+                        styles.reservoirDays,
+                        low && { color: T.colors.danger },
+                      ]}>
+                      {formatDaysRemaining(container.daysRemaining)}
+                    </ThemedText>
+                  </View>
+                </View>
+                <Ionicons
+                  name="chevron-forward"
+                  size={18}
+                  color={T.colors.textMuted}
+                />
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function ReservoirSheet({
+  container,
+  busy,
+  error,
+  onClose,
+  onRefillFull,
+  onRefillPartial,
+  onAdjust,
+  onUpdate,
+}: {
+  container: ContainerStatus;
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onRefillFull: () => void;
+  onRefillPartial: (volumeMl: number) => void;
+  onAdjust: (currentMl: number) => void;
+  onUpdate: (body: {
+    name: string;
+    capacityMl: number;
+    lowThresholdMl: number;
+  }) => void;
+}) {
+  const [confirmRefill, setConfirmRefill] = useState(false);
+  const [partialInput, setPartialInput] = useState('');
+  const [partialError, setPartialError] = useState('');
+  const [adjustInput, setAdjustInput] = useState('');
+  const [adjustError, setAdjustError] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [nameInput, setNameInput] = useState('');
+  const [capacityInput, setCapacityInput] = useState('');
+  const [thresholdInput, setThresholdInput] = useState('');
+  const [editError, setEditError] = useState('');
+
+  const state = levelBarState(container);
+  const low = state === 'low';
+
+  const handleRefillFull = () => {
+    if (busy) return;
+    setConfirmRefill(false);
+    onRefillFull();
+  };
+
+  const handleRefillPartial = () => {
+    if (busy) return;
+    const volumeMl = parseFloat(partialInput);
+    if (Number.isNaN(volumeMl) || volumeMl <= 0) {
+      setPartialError('Enter a positive volume');
+      return;
+    }
+    setPartialError('');
+    onRefillPartial(volumeMl);
+  };
+
+  const handleAdjust = () => {
+    if (busy) return;
+    // 0 is allowed here: draining a reservoir dry is a legitimate correction.
+    const currentMl = parseFloat(adjustInput);
+    if (Number.isNaN(currentMl) || currentMl < 0) {
+      setAdjustError('Enter 0 or a positive level');
+      return;
+    }
+    setAdjustError('');
+    onAdjust(currentMl);
+  };
+
+  const startEditing = () => {
+    setNameInput(container.name);
+    setCapacityInput(String(Math.round(container.capacityMl)));
+    setThresholdInput(String(Math.round(container.lowThresholdMl)));
+    setEditing(true);
+  };
+
+  const handleSaveEdit = () => {
+    if (busy) return;
+    const name = nameInput.trim();
+    if (!name) {
+      setEditError('Name cannot be empty');
+      return;
+    }
+    const capacityMl = parseFloat(capacityInput);
+    if (Number.isNaN(capacityMl) || capacityMl <= 0) {
+      setEditError('Capacity must be a positive number');
+      return;
+    }
+    const lowThresholdMl = parseFloat(thresholdInput);
+    if (Number.isNaN(lowThresholdMl) || lowThresholdMl < 0) {
+      setEditError('Threshold must be 0 or a positive number');
+      return;
+    }
+    setEditError('');
+    onUpdate({ name, capacityMl, lowThresholdMl });
+  };
+
+  return (
+    <Modal
+      visible
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}>
+      <View style={styles.sheetBackdrop}>
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={onClose}
+          accessibilityLabel="Close reservoir details"
+        />
+        <View style={styles.sheetContent}>
+          <View style={styles.sheetHandle} />
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}>
+            <View style={styles.sheetHeaderRow}>
+              <ThemedText style={styles.sheetTitle}>{container.name}</ThemedText>
+              <Pressable
+                onPress={onClose}
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+                hitSlop={8}>
+                <Ionicons name="close" size={22} color={T.colors.textMuted} />
+              </Pressable>
+            </View>
+
+            <LevelBar state={state} fraction={levelFraction(container)} />
+            <View style={styles.sheetStatsRow}>
+              <ThemedText style={styles.sheetLevel}>
+                {formatLevel(container)}
+              </ThemedText>
+              <ThemedText
+                style={[
+                  styles.sheetDays,
+                  low && { color: T.colors.danger },
+                ]}>
+                {formatDaysRemaining(container.daysRemaining)}
+              </ThemedText>
+            </View>
+
+            {error ? (
+              <ThemedText style={styles.modalError}>{error}</ThemedText>
+            ) : null}
+
+            {confirmRefill ? (
+              <View style={styles.cancelConfirmCard}>
+                <ThemedText style={styles.cancelConfirmText}>
+                  Refill {container.name} to full (
+                  {Math.round(container.capacityMl)} mL)?
+                </ThemedText>
+                <View style={styles.cancelConfirmButtons}>
+                  <Pressable
+                    style={[styles.modalButton, styles.cancelButton]}
+                    disabled={busy}
+                    onPress={() => setConfirmRefill(false)}>
+                    <ThemedText style={styles.cancelButtonText}>Cancel</ThemedText>
+                  </Pressable>
+                  <Pressable
+                    style={[
+                      styles.modalButton,
+                      styles.confirmButton,
+                      busy && styles.confirmButtonDisabled,
+                    ]}
+                    disabled={busy}
+                    onPress={handleRefillFull}>
+                    {busy ? (
+                      <ActivityIndicator color={T.colors.background} size="small" />
+                    ) : null}
+                    <ThemedText
+                      style={[
+                        styles.confirmButtonText,
+                        busy && styles.confirmButtonTextDisabled,
+                      ]}>
+                      Refill
+                    </ThemedText>
+                  </Pressable>
+                </View>
+              </View>
+            ) : (
+              <Pressable
+                style={[
+                  styles.modalButton,
+                  styles.confirmButton,
+                  busy && styles.confirmButtonDisabled,
+                ]}
+                disabled={busy}
+                onPress={() => setConfirmRefill(true)}>
+                <Ionicons name="water" size={18} color={T.colors.background} />
+                <ThemedText style={styles.confirmButtonText}>
+                  Refill to full
+                </ThemedText>
+              </Pressable>
+            )}
+
+            <ThemedText style={styles.sheetSectionLabel}>
+              PARTIAL REFILL
+            </ThemedText>
+            <View style={styles.sheetInputRow}>
+              <ThemedTextInput
+                style={[styles.modalInput, styles.sheetInput]}
+                keyboardType="decimal-pad"
+                placeholder="Volume (mL)"
+                placeholderTextColor={T.colors.textMuted}
+                value={partialInput}
+                onChangeText={setPartialInput}
+              />
+              <Pressable
+                style={[
+                  styles.modalButton,
+                  styles.sheetActionButton,
+                  busy && styles.confirmButtonDisabled,
+                ]}
+                disabled={busy}
+                onPress={handleRefillPartial}>
+                <ThemedText style={styles.sheetActionButtonText}>Refill</ThemedText>
+              </Pressable>
+            </View>
+            {partialError ? (
+              <ThemedText style={styles.modalError}>{partialError}</ThemedText>
+            ) : null}
+
+            <ThemedText style={styles.sheetSectionLabel}>ADJUST LEVEL</ThemedText>
+            <View style={styles.sheetInputRow}>
+              <ThemedTextInput
+                style={[styles.modalInput, styles.sheetInput]}
+                keyboardType="decimal-pad"
+                placeholder="Current level (mL)"
+                placeholderTextColor={T.colors.textMuted}
+                value={adjustInput}
+                onChangeText={setAdjustInput}
+              />
+              <Pressable
+                style={[
+                  styles.modalButton,
+                  styles.sheetActionButton,
+                  busy && styles.confirmButtonDisabled,
+                ]}
+                disabled={busy}
+                onPress={handleAdjust}>
+                <ThemedText style={styles.sheetActionButtonText}>Set</ThemedText>
+              </Pressable>
+            </View>
+            {adjustError ? (
+              <ThemedText style={styles.modalError}>{adjustError}</ThemedText>
+            ) : null}
+
+            {editing ? (
+              <View>
+                <ThemedText style={styles.sheetSectionLabel}>
+                  EDIT RESERVOIR
+                </ThemedText>
+                <ThemedTextInput
+                  style={styles.modalInput}
+                  placeholder="Name"
+                  placeholderTextColor={T.colors.textMuted}
+                  value={nameInput}
+                  onChangeText={setNameInput}
+                />
+                <ThemedTextInput
+                  style={styles.modalInput}
+                  keyboardType="decimal-pad"
+                  placeholder="Capacity (mL)"
+                  placeholderTextColor={T.colors.textMuted}
+                  value={capacityInput}
+                  onChangeText={setCapacityInput}
+                />
+                <ThemedTextInput
+                  style={styles.modalInput}
+                  keyboardType="decimal-pad"
+                  placeholder="Low threshold (mL)"
+                  placeholderTextColor={T.colors.textMuted}
+                  value={thresholdInput}
+                  onChangeText={setThresholdInput}
+                />
+                {editError ? (
+                  <ThemedText style={styles.modalError}>{editError}</ThemedText>
+                ) : null}
+                <View style={styles.modalButtons}>
+                  <Pressable
+                    style={[styles.modalButton, styles.cancelButton]}
+                    disabled={busy}
+                    onPress={() => setEditing(false)}>
+                    <ThemedText style={styles.cancelButtonText}>Cancel</ThemedText>
+                  </Pressable>
+                  <Pressable
+                    style={[
+                      styles.modalButton,
+                      styles.confirmButton,
+                      busy && styles.confirmButtonDisabled,
+                    ]}
+                    disabled={busy}
+                    onPress={handleSaveEdit}>
+                    {busy ? (
+                      <ActivityIndicator color={T.colors.background} size="small" />
+                    ) : null}
+                    <ThemedText
+                      style={[
+                        styles.confirmButtonText,
+                        busy && styles.confirmButtonTextDisabled,
+                      ]}>
+                      Save
+                    </ThemedText>
+                  </Pressable>
+                </View>
+              </View>
+            ) : (
+              <Pressable
+                style={[styles.modalButton, styles.cancelButton]}
+                disabled={busy}
+                onPress={startEditing}>
+                <Ionicons
+                  name="create-outline"
+                  size={18}
+                  color={T.colors.textPrimary}
+                />
+                <ThemedText style={styles.cancelButtonText}>Edit details</ThemedText>
+              </Pressable>
+            )}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function formatMissedWhen(scheduledFor: string): string {
   const d = new Date(scheduledFor);
   if (Number.isNaN(d.getTime())) return '—';
@@ -911,6 +1656,23 @@ export default function DashboardScreen() {
   // alarm: the banner counts these, and snooze-lapsed (or never-snoozed)
   // entries redirect straight into the forced-decision flow.
   const [missedAll, setMissedAll] = useState<MissedDose[]>([]);
+  // Per-pump reservoir levels (GET /api/containers). Null until the first
+  // successful fetch; `containersError` drives the card's retry state.
+  const [containers, setContainers] = useState<ContainerStatus[] | null>(null);
+  const [containersError, setContainersError] = useState(false);
+  // Reservoir detail sheet: which pump's sheet is open plus its in-flight
+  // action guard and server-rejection note.
+  const [sheetPumpId, setSheetPumpId] = useState<PumpId | null>(null);
+  const [sheetBusy, setSheetBusy] = useState(false);
+  const [sheetError, setSheetError] = useState<string | null>(null);
+  // Low-reservoir banner dismissals: purely local, NEVER persisted (contrast:
+  // integrity-findings dismissal). Reset on every fresh containers fetch, so
+  // the banner comes back on the next refresh while the server still reports
+  // the reservoir as low, and clears only when a refill/adjust moves the
+  // level above the threshold server-side.
+  const [dismissedLowPumpIds, setDismissedLowPumpIds] = useState<
+    readonly PumpId[]
+  >([]);
   // Integrity-audit findings the user has already read and dismissed
   // (device-side records are never touched by dismissal — this is local only).
   const [dismissedFindingIds, setDismissedFindingIds] = useState<ReadonlySet<string>>(
@@ -924,6 +1686,22 @@ export default function DashboardScreen() {
   const integrityFindings = useMemo(
     () => activeFindings(data?.status.integrityFindings ?? [], dismissedFindingIds),
     [data?.status, dismissedFindingIds],
+  );
+
+  // Reservoirs the server reports as low, emptiest first.
+  const lowContainers = useMemo(
+    () => lowReservoirs(containers ?? []),
+    [containers],
+  );
+
+  // Every fresh containers fetch (any poll, pull-refresh, or post-action
+  // reload) resets the banner dismissals — dismissal is only ever local.
+  useEffect(() => {
+    setDismissedLowPumpIds([]);
+  }, [containers]);
+
+  const visibleLowContainers = lowContainers.filter(
+    (c) => !dismissedLowPumpIds.includes(c.pumpId),
   );
 
   useFocusEffect(
@@ -948,15 +1726,23 @@ export default function DashboardScreen() {
     try {
       setLoading(true);
       setOffline(false);
-      const [status, schedules, limits, missed, history] = await Promise.all([
-        getStatus(baseUrl),
-        getSchedules(baseUrl),
-        getLimits(baseUrl),
-        getMissedDoses(baseUrl, { includeSnoozed: true }),
-        getHistory(baseUrl, { days: 30, limit: 10000, offset: 0 }),
-      ]);
+      const [status, schedules, limits, missed, history, containerList] =
+        await Promise.all([
+          getStatus(baseUrl),
+          getSchedules(baseUrl),
+          getLimits(baseUrl),
+          getMissedDoses(baseUrl, { includeSnoozed: true }),
+          getHistory(baseUrl, { days: 30, limit: 10000, offset: 0 }),
+          // Reservoir levels ride the same refresh cycle (no second timer).
+          // A containers failure must not take the whole dashboard offline
+          // (older firmware lacks /api/containers) — it settles into the
+          // Reservoirs card's own error state instead.
+          getContainers(baseUrl).catch(() => null),
+        ]);
       setData({ status, schedules, limits, history });
       setMissedAll(missed);
+      setContainers(containerList);
+      setContainersError(containerList === null);
       // Forced-decision flow: entries whose snooze has lapsed (or never had
       // one) open the Catch-ups page full-screen. Urgency must never require
       // the user to remember where the page lives — the alarm takes them
@@ -971,6 +1757,7 @@ export default function DashboardScreen() {
     } catch {
       setOffline(true);
       setData(null);
+      setContainersError(true);
       setMissedAll((prev) => (prev.length > 0 ? prev : []));
     } finally {
       setLoading(false);
@@ -1061,6 +1848,33 @@ export default function DashboardScreen() {
     });
   }, [data?.status]);
 
+  const sheetContainer = useMemo(
+    () => containers?.find((c) => c.pumpId === sheetPumpId) ?? null,
+    [containers, sheetPumpId],
+  );
+
+  // Shared runner for every reservoir-sheet action. The server owns level
+  // truth: on success close the sheet and let the next load repaint the card
+  // and banner from the device's response; on failure surface the server's
+  // own message inline and keep the sheet open.
+  const runSheetAction = async (
+    action: (url: string) => Promise<unknown>,
+  ) => {
+    if (!baseUrl || sheetBusy) return;
+    const url = baseUrl;
+    setSheetBusy(true);
+    setSheetError(null);
+    try {
+      await action(url);
+      setSheetPumpId(null);
+      load();
+    } catch (err) {
+      setSheetError(err instanceof Error ? err.message : 'Failed');
+    } finally {
+      setSheetBusy(false);
+    }
+  };
+
   const handleDoseConfirm = async (pumpId: PumpId, volumeMl: number) => {
     if (!baseUrl) return;
     // Double-tap guard, second line of defence after the modal's disabled
@@ -1138,6 +1952,33 @@ export default function DashboardScreen() {
           />
         }>
         <Header loading={loading && !refreshing} />
+
+        {visibleLowContainers.length > 0 ? (
+          <View style={styles.lowBanner}>
+            <View style={styles.lowBannerHeader}>
+              <Ionicons name="alert-circle" size={18} color={T.colors.danger} />
+              <ThemedText style={styles.lowBannerTitle}>
+                Reservoir levels low
+              </ThemedText>
+              <Pressable
+                style={styles.queueCancelButton}
+                onPress={() =>
+                  setDismissedLowPumpIds(lowContainers.map((c) => c.pumpId))
+                }
+                accessibilityRole="button"
+                accessibilityLabel="Dismiss reservoir alert"
+                hitSlop={8}>
+                <Ionicons name="close" size={18} color={T.colors.textMuted} />
+              </Pressable>
+            </View>
+            {visibleLowContainers.map((c) => (
+              <ThemedText key={c.pumpId} style={styles.lowBannerLine}>
+                {lowBannerText(c)}
+              </ThemedText>
+            ))}
+          </View>
+        ) : null}
+
         <SystemStatusCard offline={offline} />
         <ReefStabilityCard
           score={consistency.score}
@@ -1160,6 +2001,13 @@ export default function DashboardScreen() {
           current={data?.status.currentDose ?? null}
           queueItems={data?.status.queueItems ?? []}
           onCancelRequest={setConfirmCancelJobId}
+        />
+
+        <ReservoirsCard
+          containers={containers}
+          error={containersError}
+          onRetry={onRefresh}
+          onSelect={setSheetPumpId}
         />
 
         {catchupBanner.visible ? (
@@ -1308,6 +2156,34 @@ export default function DashboardScreen() {
         onClose={() => setModalPumpId(null)}
         onConfirm={handleDoseConfirm}
       />
+
+      {sheetContainer ? (
+        <ReservoirSheet
+          key={sheetContainer.pumpId}
+          container={sheetContainer}
+          busy={sheetBusy}
+          error={sheetError}
+          onClose={() => setSheetPumpId(null)}
+          onRefillFull={() =>
+            runSheetAction((url) => refillReservoir(url, sheetContainer.pumpId))
+          }
+          onRefillPartial={(volumeMl) =>
+            runSheetAction((url) =>
+              refillReservoir(url, sheetContainer.pumpId, { volumeMl }),
+            )
+          }
+          onAdjust={(currentMl) =>
+            runSheetAction((url) =>
+              adjustReservoir(url, sheetContainer.pumpId, currentMl),
+            )
+          }
+          onUpdate={(body) =>
+            runSheetAction((url) =>
+              updateReservoir(url, sheetContainer.pumpId, body),
+            )
+          }
+        />
+      ) : null}
     </ThemedView>
   );
 }
@@ -1785,6 +2661,181 @@ const styles = StyleSheet.create({
   confirmButtonText: {
     ...T.typography.title,
     color: T.colors.background,
+    fontFamily: T.typography.fontFamily.semiBold,
+  },
+  levelBarTrack: {
+    height: 8,
+    borderRadius: T.radius.pill,
+    backgroundColor: T.colors.surfaceElevated,
+    overflow: 'hidden',
+  },
+  levelBarFill: {
+    height: '100%',
+    borderRadius: T.radius.pill,
+  },
+  reservoirList: {
+    gap: T.spacing.md,
+  },
+  reservoirRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: T.spacing.sm,
+  },
+  reservoirLowAccent: {
+    width: 3,
+    alignSelf: 'stretch',
+    borderRadius: T.radius.pill,
+    backgroundColor: T.colors.danger,
+  },
+  reservoirRowMain: {
+    flex: 1,
+    gap: T.spacing.xs,
+  },
+  reservoirNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: T.spacing.sm,
+  },
+  reservoirName: {
+    ...T.typography.small,
+    color: T.colors.textPrimary,
+    fontFamily: T.typography.fontFamily.semiBold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  reservoirLevelText: {
+    ...T.typography.caption,
+    color: T.colors.textSecondary,
+  },
+  reservoirBarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: T.spacing.sm,
+  },
+  reservoirBar: {
+    flex: 1,
+  },
+  reservoirDays: {
+    ...T.typography.caption,
+    color: T.colors.textMuted,
+    minWidth: 88,
+    textAlign: 'right',
+  },
+  reservoirErrorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: T.spacing.sm,
+  },
+  reservoirErrorText: {
+    ...T.typography.small,
+    color: T.colors.danger,
+    flex: 1,
+  },
+  lowBanner: {
+    backgroundColor: 'rgba(255, 77, 90, 0.10)',
+    borderRadius: T.radius.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 77, 90, 0.35)',
+    padding: T.spacing.md,
+    marginBottom: T.spacing.md,
+    gap: T.spacing.xs,
+  },
+  lowBannerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: T.spacing.sm,
+    marginBottom: 2,
+  },
+  lowBannerTitle: {
+    ...T.typography.caption,
+    color: T.colors.danger,
+    flex: 1,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+  },
+  lowBannerLine: {
+    ...T.typography.small,
+    color: T.colors.textPrimary,
+  },
+  sheetBackdrop: {
+    flex: 1,
+    backgroundColor: T.colors.overlay,
+    justifyContent: 'flex-end',
+  },
+  sheetContent: {
+    backgroundColor: T.colors.surface,
+    borderTopLeftRadius: T.radius.md,
+    borderTopRightRadius: T.radius.md,
+    borderWidth: 1,
+    borderColor: T.colors.border,
+    borderBottomWidth: 0,
+    padding: T.spacing.xxl,
+    paddingBottom: T.spacing.hero,
+    maxHeight: '88%',
+  },
+  sheetHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: T.colors.borderActive,
+    marginBottom: T.spacing.md,
+  },
+  sheetHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: T.spacing.md,
+  },
+  sheetTitle: {
+    ...T.typography.h2,
+    color: T.colors.textPrimary,
+  },
+  sheetStatsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: T.spacing.sm,
+    marginBottom: T.spacing.lg,
+  },
+  sheetLevel: {
+    ...T.typography.body,
+    color: T.colors.textPrimary,
+    fontFamily: T.typography.fontFamily.semiBold,
+  },
+  sheetDays: {
+    ...T.typography.small,
+    color: T.colors.textSecondary,
+  },
+  sheetSectionLabel: {
+    ...T.typography.caption,
+    color: T.colors.textMuted,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+    marginTop: T.spacing.lg,
+    marginBottom: T.spacing.sm,
+  },
+  sheetInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: T.spacing.md,
+  },
+  sheetInput: {
+    flex: 1,
+    marginBottom: 0,
+  },
+  sheetActionButton: {
+    flex: 0,
+    width: 104,
+    height: 56,
+    backgroundColor: T.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: T.colors.borderActive,
+  },
+  sheetActionButtonText: {
+    ...T.typography.title,
+    color: T.colors.primary,
     fontFamily: T.typography.fontFamily.semiBold,
   },
 });

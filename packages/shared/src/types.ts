@@ -93,6 +93,30 @@ export interface ContainerInfo {
   lastRefilledAt: string | null;
 }
 
+/**
+ * Per-pump reservoir tracked in the dedicated `containers` table. current_ml
+ * is decremented atomically when a dose event finalizes as 'completed';
+ * prime and calibration runs never deduct.
+ */
+export interface Container {
+  pumpId: PumpId;
+  name: string;
+  capacityMl: number;
+  currentMl: number;
+  /** current_ml at or below this marks the reservoir low. */
+  lowThresholdMl: number;
+  /** Last time current_ml or settings changed (ISO). */
+  updatedAt: string;
+}
+
+/** Container enriched with consumption-derived status for the API. */
+export interface ContainerStatus extends Container {
+  /** currentMl ÷ average daily consumption (mL/day) over the last 14 days; null when no usage. */
+  daysRemaining: number | null;
+  /** True when currentMl is at or below lowThresholdMl. */
+  low: boolean;
+}
+
 export interface MissedDose {
   id: string;
   scheduleId: string;

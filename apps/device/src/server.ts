@@ -123,6 +123,20 @@ const refillBodySchema = z.object({
   containerSizeMl: z.number().positive().optional(),
 });
 
+const reservoirRefillBodySchema = z.object({
+  volumeMl: z.number().positive().optional(),
+});
+
+const reservoirAdjustBodySchema = z.object({
+  currentMl: z.number().nonnegative(),
+});
+
+const reservoirUpdateBodySchema = z.object({
+  name: z.string().min(1).optional(),
+  capacityMl: z.number().positive().optional(),
+  lowThresholdMl: z.number().nonnegative().optional(),
+});
+
 const systemVolumeBodySchema = z.object({
   systemVolumeLitres: z
     .number()
@@ -935,6 +949,84 @@ export async function createServer(
       remainingMl: remaining,
       capacityMl: capacity,
     };
+  });
+
+  fastify.get('/api/containers', async () => {
+    return { containers: db.getContainers() };
+  });
+
+  // Reservoir refill: no body tops up to capacity; { volumeMl } sets the
+  // level to that partial-refill amount (clamped to capacity).
+  fastify.post('/api/containers/:id/refill', async (request, reply) => {
+    const params = pumpParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.status(400).send({ error: firstZodMessage(params.error) });
+    }
+    const body = reservoirRefillBodySchema.safeParse(request.body ?? {});
+    if (!body.success) {
+      return reply.status(400).send({ error: firstZodMessage(body.error) });
+    }
+    const pumpId = params.data.id;
+
+    try {
+      db.getPumpCalibration(pumpId);
+    } catch {
+      return reply.status(404).send({ error: `Unknown pump ${pumpId}` });
+    }
+
+    db.refillReservoir(pumpId, body.data.volumeMl);
+    const container = db.getContainers().find((c) => c.pumpId === pumpId)!;
+    return { container };
+  });
+
+  // Manual level correction — the owner says what the reservoir actually
+  // contains; the stored level is clamped to [0, capacity].
+  fastify.post('/api/containers/:id/adjust', async (request, reply) => {
+    const params = pumpParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.status(400).send({ error: firstZodMessage(params.error) });
+    }
+    const body = reservoirAdjustBodySchema.safeParse(request.body);
+    if (!body.success) {
+      return reply.status(400).send({ error: firstZodMessage(body.error) });
+    }
+    const pumpId = params.data.id;
+
+    try {
+      db.getPumpCalibration(pumpId);
+    } catch {
+      return reply.status(404).send({ error: `Unknown pump ${pumpId}` });
+    }
+
+    db.adjustReservoirLevel(pumpId, body.data.currentMl);
+    const container = db.getContainers().find((c) => c.pumpId === pumpId)!;
+    return { container };
+  });
+
+  // Partial edit of reservoir settings: name, capacity (shrinks clamp the
+  // level), and/or the low-level threshold.
+  fastify.patch('/api/containers/:id', async (request, reply) => {
+    const params = pumpParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.status(400).send({ error: firstZodMessage(params.error) });
+    }
+    const body = reservoirUpdateBodySchema.safeParse(request.body ?? {});
+    if (!body.success) {
+      return reply.status(400).send({ error: firstZodMessage(body.error) });
+    }
+    const pumpId = params.data.id;
+
+    try {
+      db.updateReservoir(pumpId, body.data);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Unknown pump')) {
+        return reply.status(404).send({ error: error.message });
+      }
+      throw error;
+    }
+
+    const container = db.getContainers().find((c) => c.pumpId === pumpId)!;
+    return { container };
   });
 
   fastify.get('/api/missed-doses', async (request) => {

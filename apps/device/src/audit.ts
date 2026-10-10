@@ -53,6 +53,13 @@ export interface IntegrityAuditStore {
     scheduleId: string,
     scheduledForIso: string,
   ): boolean;
+  /** Reservoir rows (containers table) for the low-level check. */
+  listContainers(): Array<{
+    pumpId: PumpId;
+    name: string;
+    currentMl: number;
+    lowThresholdMl: number;
+  }>;
 }
 
 /** Read-only store over a raw connection. SQL lives here and nowhere else. */
@@ -86,6 +93,20 @@ export function createAuditStore(conn: Database.Database): IntegrityAuditStore {
     `SELECT 1 FROM missed_doses
      WHERE schedule_id = ? AND scheduled_for = ? LIMIT 1`,
   );
+  // Fixtures built by hand (no ReefDatabase constructor) may predate the
+  // containers table: guard on sqlite_master so createAuditStore still works
+  // there and the check degrades to "nothing to inspect" instead of throwing.
+  const containersTableExists =
+    conn
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'containers'",
+      )
+      .get() !== undefined;
+  const containersStmt = containersTableExists
+    ? conn.prepare(
+        'SELECT pump_id, name, current_ml, low_threshold_ml FROM containers',
+      )
+    : null;
 
   return {
     listMissedDoses: () =>
@@ -177,6 +198,22 @@ export function createAuditStore(conn: Database.Database): IntegrityAuditStore {
       })) as DoseEvent[],
     hasMissedDoseForSlotAnyStatus: (scheduleId, scheduledForIso) =>
       slotStmt.get(scheduleId, scheduledForIso) !== undefined,
+    listContainers: () => {
+      if (!containersStmt) return [];
+      return (
+        containersStmt.all() as Array<{
+          pump_id: PumpId;
+          name: string;
+          current_ml: number;
+          low_threshold_ml: number;
+        }>
+      ).map((row) => ({
+        pumpId: row.pump_id,
+        name: row.name,
+        currentMl: row.current_ml,
+        lowThresholdMl: row.low_threshold_ml,
+      }));
+    },
   };
 }
 
@@ -216,7 +253,7 @@ function slotLabel(iso: string): string {
 }
 
 /**
- * Run all three checks. `now` is injectable for tests; the audit reads nothing
+ * Run all four checks. `now` is injectable for tests; the audit reads nothing
  * but the store and never mutates either.
  *
  * There is deliberately NO 'still confirmed' check: boot reconciliation
@@ -343,6 +380,22 @@ export function runIntegrityAudit(
         missedSlotIso: slotIso,
       });
     }
+  }
+
+  // --- Check 4: every reservoir at or below its low threshold is reported
+  // so the owner refills before the pump runs dry mid-dose. A finding clears
+  // itself the moment a refill (or dose-driven drop below) moves the level —
+  // the audit only reports current truth and never acts on it.
+  for (const container of store.listContainers()) {
+    if (container.currentMl > container.lowThresholdMl) continue;
+    findings.push({
+      id: `container-low:${container.pumpId}`,
+      check: 'container-low',
+      message:
+        `${container.name} reservoir low — ${container.currentMl} mL left ` +
+        `(threshold ${container.lowThresholdMl} mL). Refill to clear.`,
+      pumpId: container.pumpId,
+    });
   }
 
   return { findings, verified };

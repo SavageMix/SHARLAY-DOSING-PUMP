@@ -1,6 +1,8 @@
 import type {
   ComputedDoseLimits,
+  Container,
   ContainerInfo,
+  ContainerStatus,
   DoseEvent,
   DoseSchedule,
   DoseSource,
@@ -122,7 +124,9 @@ export type IntegrityCheckKind =
   /** dose_events source 'catchup' with no matching missed_doses row. */
   | 'orphan-catchup-event'
   /** A past schedule slot has neither a handled dose event nor a missed-dose entry. */
-  | 'unresolved-slot';
+  | 'unresolved-slot'
+  /** A reservoir's current_ml is at or below its low_threshold_ml. */
+  | 'container-low';
 
 export interface IntegrityFinding {
   /** Stable key, e.g. "completed-without-event:<missedDoseId>". */
@@ -171,6 +175,43 @@ export interface RefillContainerResponse {
   remainingMl: number;
   capacityMl: number;
 }
+
+// ---------------------------------------------------------------------------
+// Reservoir tracking (dedicated `containers` table)
+// ---------------------------------------------------------------------------
+
+/** Response for GET /api/containers. */
+export interface ListContainersResponse {
+  containers: ContainerStatus[];
+}
+
+/**
+ * POST /api/containers/:pump/refill — without volume_ml the reservoir resets
+ * to full (current_ml = capacity_ml); with volume_ml it is set to that
+ * partial-refill level (clamped to capacity).
+ */
+export interface RefillReservoirRequest {
+  volumeMl?: number;
+}
+
+/** POST /api/containers/:pump/adjust — manual level correction. */
+export interface AdjustReservoirRequest {
+  currentMl: number;
+}
+
+/** PATCH /api/containers/:pump — edit name, capacity, and/or low threshold. */
+export interface UpdateReservoirRequest {
+  name?: string;
+  capacityMl?: number;
+  lowThresholdMl?: number;
+}
+
+/** Single-reservoir responses share one shape: the enriched container. */
+export interface ReservoirResponse {
+  container: ContainerStatus;
+}
+
+export type { Container, ContainerStatus };
 
 /** Response for POST /api/pumps/:id/skip-next and .../skip-next/cancel. */
 export interface SkipNextDoseResponse {

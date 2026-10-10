@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import Database from 'better-sqlite3';
 import { LIMITS } from '@reef/shared';
 import { ReefDatabase } from '../src/db.js';
 import { createEngine } from '../src/engine.js';
@@ -2254,6 +2255,227 @@ describe('Server endpoints', () => {
     } finally {
       scheduler.stop();
       db.close();
+    }
+  });
+
+  it('GET /api/containers lists the four seeded reservoirs with status', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      const res = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/containers',
+      });
+      expect(res.statusCode).toBe(200);
+      const containers = JSON.parse(res.body).containers;
+      expect(containers).toHaveLength(4);
+      expect(containers.map((c: { pumpId: string }) => c.pumpId).sort()).toEqual([
+        'alk',
+        'ca',
+        'no3',
+        'po4',
+      ]);
+      expect(containers[0]).toMatchObject({
+        name: expect.any(String),
+        capacityMl: 1000,
+        currentMl: 1000,
+        lowThresholdMl: 100,
+        low: false,
+        daysRemaining: null,
+        updatedAt: expect.any(String),
+      });
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/containers/:pump/refill tops up, sets a partial level, and clamps', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      await server.fastify.inject({
+        method: 'POST',
+        url: '/api/containers/alk/adjust',
+        payload: { currentMl: 400 },
+      });
+
+      const full = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/containers/alk/refill',
+      });
+      expect(full.statusCode).toBe(200);
+      expect(JSON.parse(full.body).container).toMatchObject({
+        pumpId: 'alk',
+        currentMl: 1000,
+      });
+
+      const partial = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/containers/alk/refill',
+        payload: { volumeMl: 400 },
+      });
+      expect(JSON.parse(partial.body).container.currentMl).toBe(400);
+
+      const clamped = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/containers/alk/refill',
+        payload: { volumeMl: 5000 },
+      });
+      expect(JSON.parse(clamped.body).container.currentMl).toBe(1000);
+
+      // The legacy column followed every change.
+      expect(db.getContainerRemainingMl('alk')).toBe(1000);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('POST /api/containers/:pump/adjust sets the level and clamps out-of-range values', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      const ok = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/containers/ca/adjust',
+        payload: { currentMl: 250 },
+      });
+      expect(ok.statusCode).toBe(200);
+      expect(JSON.parse(ok.body).container.currentMl).toBe(250);
+      expect(db.getContainerRemainingMl('ca')).toBe(250);
+
+      const negative = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/containers/ca/adjust',
+        payload: { currentMl: -5 },
+      });
+      expect(negative.statusCode).toBe(400);
+      expect(JSON.parse(negative.body).error).toBeTruthy();
+
+      const over = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/containers/ca/adjust',
+        payload: { currentMl: 99_999 },
+      });
+      expect(over.statusCode).toBe(200);
+      expect(JSON.parse(over.body).container.currentMl).toBe(1000);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('PATCH /api/containers/:pump edits name, threshold, and capacity (clamping the level)', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      await server.fastify.inject({
+        method: 'POST',
+        url: '/api/containers/no3/adjust',
+        payload: { currentMl: 500 },
+      });
+
+      const patched = await server.fastify.inject({
+        method: 'PATCH',
+        url: '/api/containers/no3',
+        payload: { name: 'Nitrate mix', lowThresholdMl: 50, capacityMl: 300 },
+      });
+      expect(patched.statusCode).toBe(200);
+      expect(JSON.parse(patched.body).container).toMatchObject({
+        pumpId: 'no3',
+        name: 'Nitrate mix',
+        lowThresholdMl: 50,
+        capacityMl: 300,
+        currentMl: 300, // clamped to the new capacity
+      });
+
+      // Legacy capacity column mirrored.
+      const legacy = db
+        .getAllPumps()
+        .find((p) => p.pumpId === 'no3');
+      expect(legacy?.containerCapacityMl).toBe(300);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('reservoir endpoints reject invalid params and bodies with 400', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      const badParam = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/containers/zz/refill',
+        payload: { volumeMl: 100 },
+      });
+      expect(badParam.statusCode).toBe(400);
+
+      const badRefill = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/containers/alk/refill',
+        payload: { volumeMl: -1 },
+      });
+      expect(badRefill.statusCode).toBe(400);
+
+      const badAdjust = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/containers/alk/adjust',
+        payload: { currentMl: 'lots' },
+      });
+      expect(badAdjust.statusCode).toBe(400);
+
+      const badPatch = await server.fastify.inject({
+        method: 'PATCH',
+        url: '/api/containers/alk',
+        payload: { capacityMl: 0 },
+      });
+      expect(badPatch.statusCode).toBe(400);
+
+      const emptyName = await server.fastify.inject({
+        method: 'PATCH',
+        url: '/api/containers/alk',
+        payload: { name: '' },
+      });
+      expect(emptyName.statusCode).toBe(400);
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  it('reservoir endpoints return 404 for a pump the database does not know', async () => {
+    // pumpParamsSchema only admits the four real ids, so the 404 path needs a
+    // database that is missing one of them — build one on disk with po4 absent.
+    const tmpPath = join(
+      tmpdir(),
+      `reef-containers-404-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+    );
+    const raw = new Database(tmpPath);
+    raw.exec(`
+      CREATE TABLE pumps (
+        pump_id TEXT PRIMARY KEY,
+        steps_per_ml REAL,
+        container_capacity_ml REAL NOT NULL,
+        container_remaining_ml REAL NOT NULL
+      );
+      INSERT INTO pumps (pump_id, steps_per_ml, container_capacity_ml, container_remaining_ml)
+      VALUES ('alk', NULL, 1000, 1000), ('ca', NULL, 1000, 1000), ('no3', NULL, 1000, 1000);
+    `);
+    raw.close();
+
+    const db = new ReefDatabase(tmpPath);
+    const server = await createServer(db, createEngine(db));
+    try {
+      for (const [method, url, payload] of [
+        ['POST', '/api/containers/po4/refill', { volumeMl: 100 }],
+        ['POST', '/api/containers/po4/adjust', { currentMl: 100 }],
+        ['PATCH', '/api/containers/po4', { name: 'X' }],
+      ] as Array<['POST' | 'PATCH', string, object]>) {
+        const res = await server.fastify.inject({ method, url, payload });
+        expect(res.statusCode).toBe(404);
+        expect(JSON.parse(res.body).error).toBe('Unknown pump po4');
+      }
+    } finally {
+      await server.close();
+      db.close();
+      await unlink(tmpPath);
     }
   });
 });

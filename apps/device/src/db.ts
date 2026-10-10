@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import type {
+  ContainerStatus,
   DoseEvent,
   DoseSchedule,
   MissedDose,
@@ -15,7 +16,18 @@ import {
 } from './audit.js';
 
 const DEFAULT_CONTAINER_CAPACITY_ML = 1000;
+const DEFAULT_CONTAINER_LOW_THRESHOLD_ML = 100;
 const DEFAULT_SYSTEM_VOLUME_LITRES = 380;
+
+/** Consumption window behind the days-remaining estimate in getContainers. */
+export const CONTAINER_USAGE_WINDOW_DAYS = 14;
+
+const CONTAINER_DEFAULT_NAMES: Record<PumpId, string> = {
+  alk: 'Alkalinity',
+  ca: 'Calcium',
+  no3: 'Nitrate',
+  po4: 'Phosphate',
+};
 
 export class ReefDatabase
   implements DoseRepository, SchedulerRepository, MissedDosesRepository
@@ -179,6 +191,15 @@ export class ReefDatabase
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS containers (
+        pump_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        capacity_ml REAL NOT NULL,
+        current_ml REAL NOT NULL,
+        low_threshold_ml REAL NOT NULL DEFAULT 100,
+        updated_at TEXT NOT NULL
       );
     `);
 
@@ -351,11 +372,59 @@ export class ReefDatabase
       }
     }
 
+    this.seedContainers();
+
     this.db
       .prepare(
         `INSERT OR IGNORE INTO settings (key, value) VALUES ('system_volume_litres', ?)`,
       )
       .run(DEFAULT_SYSTEM_VOLUME_LITRES.toString());
+  }
+
+  /**
+   * One containers row per pump on first run. A pump that already has dose
+   * history starts honest — current_ml = capacity minus everything completed
+   * non-prime/non-calibration doses ever delivered — so the level the app
+   * shows on upgrade matches what the pump has actually drawn. Fresh
+   * databases simply start full.
+   */
+  private seedContainers(): void {
+    const existing = this.db
+      .prepare('SELECT COUNT(*) as count FROM containers')
+      .get() as { count: number };
+    if (existing.count > 0) return;
+
+    const capacityStmt = this.db.prepare(
+      'SELECT container_capacity_ml FROM pumps WHERE pump_id = ?',
+    );
+    const usedStmt = this.db.prepare(
+      `SELECT COALESCE(SUM(COALESCE(actual_ml, requested_ml)), 0) as used
+       FROM dose_events
+       WHERE pump_id = ? AND status = 'completed'
+         AND source NOT IN ('prime', 'calibration')`,
+    );
+    const insert = this.db.prepare(
+      `INSERT INTO containers
+         (pump_id, name, capacity_ml, current_ml, low_threshold_ml, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    const now = new Date().toISOString();
+
+    for (const pumpId of ['alk', 'ca', 'no3', 'po4'] as PumpId[]) {
+      const pump = capacityStmt.get(pumpId) as
+        | { container_capacity_ml: number }
+        | undefined;
+      const capacity = pump?.container_capacity_ml ?? DEFAULT_CONTAINER_CAPACITY_ML;
+      const used = (usedStmt.get(pumpId) as { used: number }).used;
+      insert.run(
+        pumpId,
+        CONTAINER_DEFAULT_NAMES[pumpId],
+        capacity,
+        Math.max(0, capacity - used),
+        DEFAULT_CONTAINER_LOW_THRESHOLD_ML,
+        now,
+      );
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -487,6 +556,13 @@ export class ReefDatabase
    * never leave a confirmed entry eligible to re-fire (boot reconciliation
    * in the constructor recovers those). Non-catch-up events behave exactly
    * like saveDoseEvent.
+   *
+   * A dose that physically completed also deducts from the pump's reservoir
+   * here — same transaction, so the liquid count can never disagree with the
+   * dose record. Prime and calibration runs move liquid too, but from a
+   * supply line, not the reservoir: they never deduct. The legacy
+   * pumps.container_remaining_ml column is mirrored so /api/status consumers
+   * stay in sync.
    */
   finalizeDoseEvent(event: DoseEvent): void {
     const save = this.db.prepare(
@@ -500,12 +576,27 @@ export class ReefDatabase
        SET status = ?, confirm_after = NULL
        WHERE id = ? AND status = 'confirmed'`,
     );
+    const deductContainer = this.db.prepare(
+      `UPDATE containers
+       SET current_ml = MAX(0, current_ml - ?), updated_at = ?
+       WHERE pump_id = ?`,
+    );
+    const decrementLegacy = this.db.prepare(
+      `UPDATE pumps
+       SET container_remaining_ml = MAX(0, container_remaining_ml - ?)
+       WHERE pump_id = ?`,
+    );
     const entryStatus =
       event.status === 'completed'
         ? 'completed'
         : event.status === 'interrupted'
           ? 'interrupted'
           : 'failed';
+    const deducts =
+      event.status === 'completed' &&
+      event.source !== 'prime' &&
+      event.source !== 'calibration';
+    const amountMl = event.actualMl ?? event.requestedMl;
 
     this.db.transaction(() => {
       save.run(
@@ -524,17 +615,12 @@ export class ReefDatabase
       if (event.missedDoseId) {
         closeEntry.run(entryStatus, event.missedDoseId);
       }
+      if (deducts) {
+        const now = new Date().toISOString();
+        deductContainer.run(amountMl, now, event.pumpId);
+        decrementLegacy.run(amountMl, event.pumpId);
+      }
     })();
-  }
-
-  decrementContainer(pumpId: PumpId, amountMl: number): void {
-    this.db
-      .prepare(
-        `UPDATE pumps
-         SET container_remaining_ml = MAX(0, container_remaining_ml - ?)
-         WHERE pump_id = ?`,
-      )
-      .run(amountMl, pumpId);
   }
 
   // ---------------------------------------------------------------------------
@@ -948,7 +1034,187 @@ export class ReefDatabase
   // Containers
   // ---------------------------------------------------------------------------
 
+  /**
+   * Every reservoir with its consumption-derived status. daysRemaining is
+   * current_ml ÷ average daily draw over the last CONTAINER_USAGE_WINDOW_DAYS
+   * days (completed manual/schedule/catchup doses only — prime and
+   * calibration never count), rounded to one decimal; null when there is no
+   * usage to extrapolate from.
+   */
+  getContainers(): ContainerStatus[] {
+    const rows = this.db
+      .prepare('SELECT * FROM containers ORDER BY pump_id')
+      .all() as Array<{
+      pump_id: PumpId;
+      name: string;
+      capacity_ml: number;
+      current_ml: number;
+      low_threshold_ml: number;
+      updated_at: string;
+    }>;
+    const usageStmt = this.db.prepare(
+      `SELECT COALESCE(SUM(actual_ml), 0) as total
+       FROM dose_events
+       WHERE pump_id = ?
+         AND status = 'completed'
+         AND source IN ('manual', 'schedule', 'catchup')
+         AND started_at >= datetime('now', '-' || ? || ' days')`,
+    );
+
+    return rows.map((row) => {
+      const total = (
+        usageStmt.get(row.pump_id, CONTAINER_USAGE_WINDOW_DAYS) as {
+          total: number;
+        }
+      ).total;
+      const avgDailyMl = total / CONTAINER_USAGE_WINDOW_DAYS;
+      return {
+        pumpId: row.pump_id,
+        name: row.name,
+        capacityMl: row.capacity_ml,
+        currentMl: row.current_ml,
+        lowThresholdMl: row.low_threshold_ml,
+        updatedAt: row.updated_at,
+        low: row.current_ml <= row.low_threshold_ml,
+        daysRemaining:
+          avgDailyMl > 0
+            ? Math.round((row.current_ml / avgDailyMl) * 10) / 10
+            : null,
+      };
+    });
+  }
+
+  /**
+   * Full refill resets current_ml to capacity_ml; a partial refill SETS the
+   * level to volumeMl (clamped to capacity) — the owner is saying "the
+   * reservoir now contains this much". Mirrors into the legacy
+   * pumps.container_remaining_ml column.
+   */
+  refillReservoir(pumpId: PumpId, volumeMl?: number): void {
+    const now = new Date().toISOString();
+    let result;
+    if (volumeMl === undefined) {
+      result = this.db
+        .prepare(
+          `UPDATE containers
+           SET current_ml = capacity_ml, updated_at = ?
+           WHERE pump_id = ?`,
+        )
+        .run(now, pumpId);
+      this.db
+        .prepare(
+          `UPDATE pumps
+           SET container_remaining_ml = container_capacity_ml
+           WHERE pump_id = ?`,
+        )
+        .run(pumpId);
+    } else {
+      result = this.db
+        .prepare(
+          `UPDATE containers
+           SET current_ml = MIN(capacity_ml, ?), updated_at = ?
+           WHERE pump_id = ?`,
+        )
+        .run(volumeMl, now, pumpId);
+      this.db
+        .prepare(
+          `UPDATE pumps
+           SET container_remaining_ml = MIN(container_capacity_ml, ?)
+           WHERE pump_id = ?`,
+        )
+        .run(volumeMl, pumpId);
+    }
+    if (result.changes === 0) {
+      throw new Error(`Unknown pump ${pumpId}`);
+    }
+  }
+
+  /** Manual level correction, clamped to [0, capacity_ml]. Mirrored legacy. */
+  adjustReservoirLevel(pumpId: PumpId, currentMl: number): void {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE containers
+         SET current_ml = MIN(capacity_ml, MAX(0, ?)), updated_at = ?
+         WHERE pump_id = ?`,
+      )
+      .run(currentMl, now, pumpId);
+    if (result.changes === 0) {
+      throw new Error(`Unknown pump ${pumpId}`);
+    }
+    const level = this.db
+      .prepare('SELECT current_ml FROM containers WHERE pump_id = ?')
+      .get(pumpId) as { current_ml: number };
+    this.db
+      .prepare(
+        'UPDATE pumps SET container_remaining_ml = ? WHERE pump_id = ?',
+      )
+      .run(level.current_ml, pumpId);
+  }
+
+  /**
+   * Partial edit of name / capacity / low threshold. A capacity shrink
+   * clamps current_ml to the new capacity (both tables); a grow never
+   * inflates the level.
+   */
+  updateReservoir(
+    pumpId: PumpId,
+    partial: { name?: string; capacityMl?: number; lowThresholdMl?: number },
+  ): void {
+    const existing = this.db
+      .prepare('SELECT pump_id FROM pumps WHERE pump_id = ?')
+      .get(pumpId);
+    if (!existing) {
+      throw new Error(`Unknown pump ${pumpId}`);
+    }
+
+    const updates: string[] = [];
+    const values: (string | number)[] = [];
+    if (partial.name !== undefined) {
+      updates.push('name = ?');
+      values.push(partial.name);
+    }
+    if (partial.capacityMl !== undefined) {
+      updates.push('capacity_ml = ?');
+      values.push(partial.capacityMl);
+    }
+    if (partial.lowThresholdMl !== undefined) {
+      updates.push('low_threshold_ml = ?');
+      values.push(partial.lowThresholdMl);
+    }
+    updates.push('updated_at = ?');
+    values.push(new Date().toISOString());
+    values.push(pumpId);
+    this.db
+      .prepare(`UPDATE containers SET ${updates.join(', ')} WHERE pump_id = ?`)
+      .run(...values);
+
+    if (partial.capacityMl !== undefined) {
+      this.db
+        .prepare(
+          `UPDATE containers
+           SET current_ml = MIN(current_ml, capacity_ml)
+           WHERE pump_id = ?`,
+        )
+        .run(pumpId);
+      this.db
+        .prepare(
+          `UPDATE pumps
+           SET container_capacity_ml = ?,
+               container_remaining_ml = MIN(container_remaining_ml, ?)
+           WHERE pump_id = ?`,
+        )
+        .run(partial.capacityMl, partial.capacityMl, pumpId);
+    }
+  }
+
+  /**
+   * Legacy refill (used by POST /api/container/refill): without an amount it
+   * tops up to capacity; with one it ADDS that much (clamped). Every path
+   * mirrors into the containers table so both stay consistent.
+   */
   refillContainer(pumpId: PumpId, amountMl?: number): void {
+    const now = new Date().toISOString();
     if (amountMl === undefined) {
       this.db
         .prepare(
@@ -957,6 +1223,13 @@ export class ReefDatabase
            WHERE pump_id = ?`,
         )
         .run(pumpId);
+      this.db
+        .prepare(
+          `UPDATE containers
+           SET current_ml = capacity_ml, updated_at = ?
+           WHERE pump_id = ?`,
+        )
+        .run(now, pumpId);
     } else {
       this.db
         .prepare(
@@ -968,6 +1241,13 @@ export class ReefDatabase
            WHERE pump_id = ?`,
         )
         .run(amountMl, pumpId);
+      this.db
+        .prepare(
+          `UPDATE containers
+           SET current_ml = MIN(capacity_ml, current_ml + ?), updated_at = ?
+           WHERE pump_id = ?`,
+        )
+        .run(amountMl, now, pumpId);
     }
   }
 

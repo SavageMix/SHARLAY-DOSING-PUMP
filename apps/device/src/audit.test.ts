@@ -480,3 +480,53 @@ describe('unresolved-slot grace window', () => {
     }
   });
 });
+
+describe('container-low check', () => {
+  it('a reservoir at its low threshold produces a container-low finding', () => {
+    const db = new ReefDatabase(':memory:');
+    try {
+      // Default threshold is 100 mL; exactly at it counts as low.
+      db.adjustReservoirLevel('alk', 100);
+
+      const result = auditDb(db);
+      const finding = result.findings.find((f) => f.check === 'container-low');
+      expect(finding).toMatchObject({
+        id: 'container-low:alk',
+        check: 'container-low',
+        pumpId: 'alk',
+      });
+      expect(finding?.message).toContain('Alkalinity reservoir low');
+      expect(finding?.message).toContain('100 mL left');
+      expect(finding?.message).toContain('threshold 100 mL');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('a reservoir below its threshold produces a finding; above produces none', () => {
+    const db = new ReefDatabase(':memory:');
+    try {
+      db.adjustReservoirLevel('alk', 50);
+      db.adjustReservoirLevel('ca', 100.1);
+
+      const result = auditDb(db);
+      const low = result.findings.filter((f) => f.check === 'container-low');
+      expect(low).toHaveLength(1);
+      expect(low[0].pumpId).toBe('alk');
+      expect(low[0].message).toContain('50 mL left');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('fresh reservoirs (full, default threshold) are never flagged', () => {
+    const db = new ReefDatabase(':memory:');
+    try {
+      expect(
+        auditDb(db).findings.filter((f) => f.check === 'container-low'),
+      ).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+});

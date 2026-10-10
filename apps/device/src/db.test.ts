@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
-import type { DoseEvent } from '@reef/shared';
+import type { DoseEvent, PumpId } from '@reef/shared';
 import { ReefDatabase } from '../src/db.js';
 
 describe('ReefDatabase smoke', () => {
@@ -483,6 +483,12 @@ describe('ReefDatabase smoke', () => {
         missedDoseId: missed.id,
         status: 'completed',
       });
+
+      // The reservoir deduction is part of the SAME transaction: the entry
+      // closed and the level dropped together or not at all.
+      const container = db.getContainers().find((c) => c.pumpId === 'alk');
+      expect(container?.currentMl).toBeCloseTo(998.5, 10);
+      expect(db.getContainerRemainingMl('alk')).toBeCloseTo(998.5, 10);
     } finally {
       db.close();
     }
@@ -728,6 +734,383 @@ describe('ReefDatabase smoke', () => {
       }
     } finally {
       fs.unlinkSync(tmpPath);
+    }
+  });
+});
+
+
+describe('containers (reservoir tracking)', () => {
+  function doseEvent(partial: Partial<DoseEvent> & { id: string }): DoseEvent {
+    const now = new Date().toISOString();
+    return {
+      pumpId: 'alk',
+      requestedMl: 10,
+      actualMl: 10,
+      status: 'completed',
+      source: 'manual',
+      scheduleId: null,
+      missedDoseId: null,
+      startedAt: now,
+      finishedAt: now,
+      error: null,
+      ...partial,
+    };
+  }
+
+  function containerOf(db: ReefDatabase, pumpId: PumpId) {
+    const container = db.getContainers().find((c) => c.pumpId === pumpId);
+    expect(container).toBeDefined();
+    return container!;
+  }
+
+  it('seeds four named reservoirs full on a fresh database', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      const containers = db.getContainers();
+      expect(containers.map((c) => c.pumpId).sort()).toEqual([
+        'alk',
+        'ca',
+        'no3',
+        'po4',
+      ]);
+      const alk = containerOf(db, 'alk');
+      expect(alk).toMatchObject({
+        name: 'Alkalinity',
+        capacityMl: 1000,
+        currentMl: 1000,
+        lowThresholdMl: 100,
+        low: false,
+        daysRemaining: null,
+      });
+      expect(typeof alk.updatedAt).toBe('string');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('seeds an honest level from existing dose history on first run', () => {
+    const tmpPath = path.join(
+      os.tmpdir(),
+      `reef-container-seed-${Date.now()}.db`,
+    );
+
+    try {
+      // A database that already has dosing history: 80 mL of completed
+      // reservoir doses, plus prime/calibration/failed liquid that must NOT
+      // count against the reservoir.
+      const raw = new Database(tmpPath);
+      raw.exec(`
+        CREATE TABLE pumps (
+          pump_id TEXT PRIMARY KEY,
+          steps_per_ml REAL,
+          container_capacity_ml REAL NOT NULL,
+          container_remaining_ml REAL NOT NULL
+        );
+        INSERT INTO pumps (pump_id, steps_per_ml, container_capacity_ml, container_remaining_ml)
+        VALUES ('alk', NULL, 1000, 950), ('ca', NULL, 1000, 1000),
+               ('no3', NULL, 1000, 1000), ('po4', NULL, 1000, 1000);
+
+        CREATE TABLE dose_events (
+          id TEXT PRIMARY KEY,
+          pump_id TEXT NOT NULL,
+          requested_ml REAL NOT NULL,
+          actual_ml REAL,
+          status TEXT NOT NULL,
+          source TEXT NOT NULL,
+          schedule_id TEXT,
+          started_at TEXT NOT NULL,
+          finished_at TEXT,
+          error TEXT
+        );
+        INSERT INTO dose_events
+          (id, pump_id, requested_ml, actual_ml, status, source, schedule_id, started_at, finished_at, error)
+        VALUES
+          ('ev-manual', 'alk', 50, 50, 'completed', 'manual', NULL, '2026-08-01T09:00:00.000Z', '2026-08-01T09:00:10.000Z', NULL),
+          ('ev-sched', 'alk', 30, 30, 'completed', 'schedule', 'sched-1', '2026-08-02T09:00:00.000Z', '2026-08-02T09:00:10.000Z', NULL),
+          ('ev-prime', 'alk', 0, 500, 'completed', 'prime', NULL, '2026-08-03T09:00:00.000Z', '2026-08-03T00:01:00.000Z', NULL),
+          ('ev-cal', 'alk', 0, 40, 'completed', 'calibration', NULL, '2026-08-04T09:00:00.000Z', '2026-08-04T00:01:00.000Z', NULL),
+          ('ev-failed', 'alk', 25, NULL, 'failed', 'manual', NULL, '2026-08-05T09:00:00.000Z', '2026-08-05T09:00:02.000Z', 'stepper fault');
+      `);
+      raw.close();
+
+      const db = new ReefDatabase(tmpPath);
+
+      try {
+        expect(containerOf(db, 'alk').currentMl).toBe(920);
+        // Pumps without history start full.
+        expect(containerOf(db, 'ca').currentMl).toBe(1000);
+      } finally {
+        db.close();
+      }
+    } finally {
+      fs.unlinkSync(tmpPath);
+    }
+  });
+
+  it('deducts on completed doses only — never on failed/interrupted/skipped/cancelled', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      db.finalizeDoseEvent(
+        doseEvent({ id: 'ev-completed', pumpId: 'alk', requestedMl: 10, actualMl: 9.5 }),
+      );
+      expect(containerOf(db, 'alk').currentMl).toBeCloseTo(990.5, 10);
+      expect(db.getContainerRemainingMl('alk')).toBeCloseTo(990.5, 10);
+
+      for (const [pumpId, status] of [
+        ['ca', 'failed'],
+        ['no3', 'interrupted'],
+        ['po4', 'skipped'],
+        ['alk', 'cancelled'],
+      ] as Array<[PumpId, DoseEvent['status']]>) {
+        db.finalizeDoseEvent(
+          doseEvent({
+            id: `ev-${status}`,
+            pumpId,
+            status,
+            actualMl: null,
+            error: status,
+          }),
+        );
+      }
+
+      expect(containerOf(db, 'ca').currentMl).toBe(1000);
+      expect(containerOf(db, 'no3').currentMl).toBe(1000);
+      expect(containerOf(db, 'po4').currentMl).toBe(1000);
+      // The cancelled alk dose moved nothing either: still 990.5.
+      expect(containerOf(db, 'alk').currentMl).toBeCloseTo(990.5, 10);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('never deducts for prime or calibration completions', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      db.finalizeDoseEvent(
+        doseEvent({
+          id: 'ev-prime',
+          pumpId: 'alk',
+          requestedMl: 0,
+          actualMl: 300,
+          source: 'prime',
+        }),
+      );
+      db.finalizeDoseEvent(
+        doseEvent({
+          id: 'ev-cal',
+          pumpId: 'ca',
+          requestedMl: 0,
+          actualMl: 40,
+          source: 'calibration',
+        }),
+      );
+
+      expect(containerOf(db, 'alk').currentMl).toBe(1000);
+      expect(containerOf(db, 'ca').currentMl).toBe(1000);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('clamps the level at zero when a dose exceeds the remaining volume', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      db.adjustReservoirLevel('alk', 5);
+      db.finalizeDoseEvent(
+        doseEvent({ id: 'ev-big', pumpId: 'alk', requestedMl: 10, actualMl: 10 }),
+      );
+
+      expect(containerOf(db, 'alk').currentMl).toBe(0);
+      expect(db.getContainerRemainingMl('alk')).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('daysRemaining extrapolates the 14-day average and ignores prime volume', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      // 140 mL of completed reservoir doses inside the window → 10 mL/day.
+      for (let i = 0; i < 14; i++) {
+        const startedAt = new Date(
+          Date.now() - i * 24 * 60 * 60 * 1000,
+        ).toISOString();
+        db.saveDoseEvent(
+          doseEvent({
+            id: `ev-day-${i}`,
+            pumpId: 'alk',
+            requestedMl: 10,
+            actualMl: 10,
+            startedAt,
+            finishedAt: startedAt,
+          }),
+        );
+      }
+      // Prime volume inside the window must not inflate consumption.
+      db.saveDoseEvent(
+        doseEvent({
+          id: 'ev-prime',
+          pumpId: 'alk',
+          requestedMl: 0,
+          actualMl: 500,
+          source: 'prime',
+        }),
+      );
+
+      db.adjustReservoirLevel('alk', 100);
+      expect(containerOf(db, 'alk').daysRemaining).toBe(10);
+
+      db.adjustReservoirLevel('alk', 95);
+      expect(containerOf(db, 'alk').daysRemaining).toBe(9.5);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('daysRemaining is null with no consumption history', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      expect(containerOf(db, 'alk').daysRemaining).toBeNull();
+
+      // Only prime history exists: still null.
+      db.saveDoseEvent(
+        doseEvent({
+          id: 'ev-prime',
+          pumpId: 'alk',
+          requestedMl: 0,
+          actualMl: 500,
+          source: 'prime',
+        }),
+      );
+      expect(containerOf(db, 'alk').daysRemaining).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('refill resets to capacity; partial refill sets the level, clamped', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      db.adjustReservoirLevel('alk', 400);
+      db.refillReservoir('alk');
+      expect(containerOf(db, 'alk').currentMl).toBe(1000);
+      expect(db.getContainerRemainingMl('alk')).toBe(1000);
+
+      db.refillReservoir('alk', 400);
+      expect(containerOf(db, 'alk').currentMl).toBe(400);
+
+      db.refillReservoir('alk', 5000);
+      expect(containerOf(db, 'alk').currentMl).toBe(1000);
+      expect(db.getContainerRemainingMl('alk')).toBe(1000);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('adjust sets the level clamped to [0, capacity] and mirrors legacy', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      db.adjustReservoirLevel('alk', 250);
+      expect(containerOf(db, 'alk').currentMl).toBe(250);
+      expect(db.getContainerRemainingMl('alk')).toBe(250);
+
+      db.adjustReservoirLevel('alk', -10);
+      expect(containerOf(db, 'alk').currentMl).toBe(0);
+      expect(db.getContainerRemainingMl('alk')).toBe(0);
+
+      db.adjustReservoirLevel('alk', 10_000);
+      expect(containerOf(db, 'alk').currentMl).toBe(1000);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('low is true exactly at the threshold, false above it', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      db.adjustReservoirLevel('alk', 100.1);
+      expect(containerOf(db, 'alk').low).toBe(false);
+
+      db.adjustReservoirLevel('alk', 100);
+      expect(containerOf(db, 'alk').low).toBe(true);
+
+      db.adjustReservoirLevel('alk', 0);
+      expect(containerOf(db, 'alk').low).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('updateReservoir edits settings and clamps a capacity shrink', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      db.adjustReservoirLevel('alk', 500);
+      db.updateReservoir('alk', {
+        name: 'Kalkwasser',
+        capacityMl: 300,
+        lowThresholdMl: 50,
+      });
+
+      const alk = containerOf(db, 'alk');
+      expect(alk.name).toBe('Kalkwasser');
+      expect(alk.capacityMl).toBe(300);
+      expect(alk.currentMl).toBe(300); // clamped to the new capacity
+      expect(alk.lowThresholdMl).toBe(50);
+
+      // Legacy column mirrored.
+      const legacy = db.getAllPumps().find((p) => p.pumpId === 'alk');
+      expect(legacy?.containerCapacityMl).toBe(300);
+      expect(legacy?.containerRemainingMl).toBe(300);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('updateReservoir throws Unknown pump for an unseeded pump', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      expect(() =>
+        db.updateReservoir('nope' as PumpId, { name: 'X' }),
+      ).toThrow(/Unknown pump nope/);
+      expect(() => db.refillReservoir('nope' as PumpId)).toThrow(
+        /Unknown pump nope/,
+      );
+      expect(() => db.adjustReservoirLevel('nope' as PumpId, 100)).toThrow(
+        /Unknown pump nope/,
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it('legacy refillContainer mirrors into containers in both directions', () => {
+    const db = new ReefDatabase(':memory:');
+
+    try {
+      db.adjustReservoirLevel('alk', 400);
+      db.refillContainer('alk', 100); // legacy ADDS
+      expect(containerOf(db, 'alk').currentMl).toBe(500);
+      expect(db.getContainerRemainingMl('alk')).toBe(500);
+
+      db.refillContainer('alk'); // legacy tops up
+      expect(containerOf(db, 'alk').currentMl).toBe(1000);
+
+      // And the new refillReservoir mirrors back into the legacy column.
+      db.refillReservoir('alk', 600);
+      expect(db.getContainerRemainingMl('alk')).toBe(600);
+    } finally {
+      db.close();
     }
   });
 });

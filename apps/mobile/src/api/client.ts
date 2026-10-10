@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type {
+  AdjustReservoirRequest,
   CalibrateSaveRequest,
   CalibrateSaveResponse,
   CalibrateStartRequest,
@@ -13,6 +14,7 @@ import type {
   ConfirmMissedDosesRequest,
   ConfirmMissedDosesResponse,
   ContainerInfo,
+  ContainerStatus,
   CreateScheduleRequest,
   CreateScheduleResponse,
   DismissMissedDoseResponse,
@@ -23,6 +25,7 @@ import type {
   DoseSchedule,
   HistoryResponse,
   LimitsResponse,
+  ListContainersResponse,
   ListMissedDosesResponse,
   MissedDose,
   PrimeStartRequest,
@@ -33,12 +36,15 @@ import type {
   PumpState,
   RefillContainerRequest,
   RefillContainerResponse,
+  RefillReservoirRequest,
+  ReservoirResponse,
   SnoozeMissedDosesRequest,
   SnoozeMissedDosesResponse,
   StatusResponse,
   SetSystemVolumeRequest,
   SetSystemVolumeResponse,
   SkipNextDoseResponse,
+  UpdateReservoirRequest,
   UpdateScheduleRequest,
   UpdateScheduleResponse,
 } from '@reef/shared';
@@ -280,6 +286,64 @@ export async function refillContainer(
   );
 }
 
+/** Per-pump reservoirs with consumption-derived status (level, low flag, days left). */
+export async function getContainers(
+  baseUrl: string,
+): Promise<ContainerStatus[]> {
+  const data = await request<ListContainersResponse>(
+    baseUrl,
+    'GET',
+    '/api/containers',
+  );
+  return data.containers;
+}
+
+/**
+ * Reset a reservoir to full (no body) or set it to a partial-refill level.
+ * The bodyless call deliberately sends no JSON content-type — Fastify rejects
+ * an empty body otherwise (see `request` above).
+ */
+export async function refillReservoir(
+  baseUrl: string,
+  pumpId: PumpId,
+  body?: RefillReservoirRequest,
+): Promise<ReservoirResponse> {
+  return request<ReservoirResponse>(
+    baseUrl,
+    'POST',
+    `/api/containers/${pumpId}/refill`,
+    body,
+  );
+}
+
+/** Manual level correction: sets current_ml to exactly `currentMl`. */
+export async function adjustReservoir(
+  baseUrl: string,
+  pumpId: PumpId,
+  currentMl: number,
+): Promise<ReservoirResponse> {
+  return request<ReservoirResponse>(
+    baseUrl,
+    'POST',
+    `/api/containers/${pumpId}/adjust`,
+    { currentMl } satisfies AdjustReservoirRequest,
+  );
+}
+
+/** Edit reservoir settings: display name, capacity, and/or low threshold. */
+export async function updateReservoir(
+  baseUrl: string,
+  pumpId: PumpId,
+  body: UpdateReservoirRequest,
+): Promise<ReservoirResponse> {
+  return request<ReservoirResponse>(
+    baseUrl,
+    'PATCH',
+    `/api/containers/${pumpId}`,
+    body,
+  );
+}
+
 export async function getLimits(
   baseUrl: string,
 ): Promise<LimitsResponse> {
@@ -427,6 +491,7 @@ export async function cancelSkipNextDose(
 
 export type {
   ContainerInfo,
+  ContainerStatus,
   DoseSchedule,
   MissedDose,
   PumpState,

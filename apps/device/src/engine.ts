@@ -24,7 +24,6 @@ export interface DoseRepository {
    * absent, saveDoseEvent is used.
    */
   finalizeDoseEvent?(event: DoseEvent): void | Promise<void>;
-  decrementContainer(pumpId: PumpId, amountMl: number): void | Promise<void>;
   /**
    * OPTIONAL. Current status of a missed_doses entry. The engine consults
    * this before starting a catch-up dose so a user cancel that won the race
@@ -382,14 +381,11 @@ export class Engine {
       const steps = Math.round(item.amountMl * calibration.stepsPerMl);
       await runSteps(item.pumpId, steps);
 
+      // The reservoir deduction is NOT the engine's job: it happens inside
+      // the repository's finalizeDoseEvent, in the same transaction as the
+      // completed event, so liquid count and dose record can never disagree.
       event.actualMl = item.amountMl;
       event.status = 'completed';
-
-      try {
-        await this.repository.decrementContainer(item.pumpId, item.amountMl);
-      } catch (containerError) {
-        console.error('Failed to decrement container:', containerError);
-      }
     } catch (error) {
       if (error instanceof CancelledBeforeFireError) {
         event.status = 'skipped';
