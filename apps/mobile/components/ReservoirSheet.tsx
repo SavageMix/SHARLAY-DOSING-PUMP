@@ -8,6 +8,7 @@ import {
   View,
 } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedTextInput } from '@/components/Themed';
@@ -88,6 +89,7 @@ export function ReservoirSheet({
   const [capacityInput, setCapacityInput] = useState('');
   const [thresholdInput, setThresholdInput] = useState('');
   const [editError, setEditError] = useState('');
+  const insets = useSafeAreaInsets();
 
   const state = levelBarState(container);
   const low = state === 'low';
@@ -167,20 +169,30 @@ export function ReservoirSheet({
         />
         <View style={styles.sheetContent}>
           <View style={styles.sheetHandle} />
+          <View style={styles.sheetHeaderRow}>
+            <ThemedText style={styles.sheetTitle}>{container.name}</ThemedText>
+            <Pressable
+              onPress={onClose}
+              accessibilityRole="button"
+              accessibilityLabel="Close"
+              hitSlop={8}>
+              <Ionicons name="close" size={22} color={T.colors.textMuted} />
+            </Pressable>
+          </View>
+          {/*
+           * The ScrollView must stay BOUNDED (flex:1) inside the maxHeight'd
+           * sheetContent — an unbounded ScrollView sizes to its content and
+           * overflows the sheet instead of scrolling, which is what half-
+           * clipped the bottom button. The header/handle above are fixed so
+           * the close control is reachable no matter the content height.
+           */}
           <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={{
+              paddingBottom: insets.bottom + T.spacing.xxl,
+            }}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}>
-            <View style={styles.sheetHeaderRow}>
-              <ThemedText style={styles.sheetTitle}>{container.name}</ThemedText>
-              <Pressable
-                onPress={onClose}
-                accessibilityRole="button"
-                accessibilityLabel="Close"
-                hitSlop={8}>
-                <Ionicons name="close" size={22} color={T.colors.textMuted} />
-              </Pressable>
-            </View>
-
             <LevelBar state={state} fraction={levelFraction(container)} />
             <View style={styles.sheetStatsRow}>
               <ThemedText style={styles.sheetLevel}>
@@ -504,7 +516,10 @@ const styles = StyleSheet.create({
     borderColor: T.colors.border,
     borderBottomWidth: 0,
     padding: T.spacing.xxl,
-    paddingBottom: T.spacing.hero,
+    // No bottom padding here: scroll-end clearance lives on the ScrollView's
+    // contentContainer (safe-area inset + spacing) so the last element is
+    // never flush against the sheet edge, scrolled or not.
+    paddingBottom: 0,
     maxHeight: '88%',
   },
   sheetHandle: {

@@ -1,15 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   Dimensions,
+  ScrollView,
   StyleSheet,
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
 import { fireEvent, render, screen } from '@testing-library/react-native';
 import type { ReactTestInstance } from 'react-test-renderer';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { resetAllMocks, setDimensions } from 'vitest-native/helpers';
 import type { ContainerStatus } from '@reef/shared';
 
+import { Theme } from '@/constants/Theme';
 import { ReservoirSheet } from './ReservoirSheet';
 
 // Decorative icon font — no native font loading in the test runtime.
@@ -17,6 +20,13 @@ vi.mock('@expo/vector-icons/Ionicons', () => ({
   __esModule: true,
   default: 'Ionicons',
 }));
+
+// Short-phone viewport with a real home-indicator inset: the "Edit details
+// button is half-clipped" bug reproduced at test scale.
+const SAFE_AREA_METRICS = {
+  frame: { x: 0, y: 0, width: 390, height: 600 },
+  insets: { top: 0, right: 0, bottom: 34, left: 0 },
+};
 
 const container: ContainerStatus = {
   pumpId: 'alk',
@@ -41,6 +51,16 @@ function makeProps(overrides: Partial<Parameters<typeof ReservoirSheet>[0]> = {}
     onUpdate: vi.fn(),
     ...overrides,
   };
+}
+
+function renderSheet(props: Parameters<typeof ReservoirSheet>[0] = makeProps()) {
+  // SafeAreaProvider is required by useSafeAreaInsets; the metrics also let
+  // the test assert the safe-area-aware bottom clearance.
+  return render(
+    <SafeAreaProvider initialMetrics={SAFE_AREA_METRICS}>
+      <ReservoirSheet {...props} />
+    </SafeAreaProvider>,
+  );
 }
 
 function flatten(style: StyleProp<ViewStyle>): ViewStyle {
@@ -100,7 +120,7 @@ beforeEach(() => {
 
 describe('ReservoirSheet — default mode', () => {
   it('renders the partial refill and adjust sections at a 1280px viewport', () => {
-    render(<ReservoirSheet {...makeProps()} />);
+    renderSheet();
 
     expect(Dimensions.get('window').width).toBe(1280);
     expect(screen.getByText('PARTIAL REFILL')).toBeTruthy();
@@ -116,7 +136,7 @@ describe('ReservoirSheet — default mode', () => {
   });
 
   it('keeps every submit button unclipped at 1280px (structural proof)', () => {
-    render(<ReservoirSheet {...makeProps()} />);
+    renderSheet();
 
     expectUnclippedFullWidthButton('Refill to full');
     expectUnclippedFullWidthButton('Refill partial');
@@ -125,7 +145,7 @@ describe('ReservoirSheet — default mode', () => {
 
   it('partial refill ADDS the entered volume to the current level', () => {
     const props = makeProps();
-    render(<ReservoirSheet {...props} />);
+    renderSheet(props);
 
     fireEvent.changeText(screen.getByPlaceholderText('Volume (mL)'), '250');
     fireEvent.press(screen.getByRole('button', { name: 'Refill partial' }));
@@ -136,7 +156,7 @@ describe('ReservoirSheet — default mode', () => {
 
   it('partial refill clamps the total at capacity', () => {
     const props = makeProps();
-    render(<ReservoirSheet {...props} />);
+    renderSheet(props);
 
     fireEvent.changeText(screen.getByPlaceholderText('Volume (mL)'), '600');
     fireEvent.press(screen.getByRole('button', { name: 'Refill partial' }));
@@ -146,7 +166,7 @@ describe('ReservoirSheet — default mode', () => {
 
   it('rejects a non-positive partial refill volume', () => {
     const props = makeProps();
-    render(<ReservoirSheet {...props} />);
+    renderSheet(props);
 
     fireEvent.changeText(screen.getByPlaceholderText('Volume (mL)'), '-5');
     fireEvent.press(screen.getByRole('button', { name: 'Refill partial' }));
@@ -157,7 +177,7 @@ describe('ReservoirSheet — default mode', () => {
 
   it('adjust overrides the level exactly and allows zero', () => {
     const props = makeProps();
-    render(<ReservoirSheet {...props} />);
+    renderSheet(props);
 
     fireEvent.changeText(
       screen.getByPlaceholderText('Current level (mL)'),
@@ -176,7 +196,7 @@ describe('ReservoirSheet — default mode', () => {
 
   it('rejects a negative adjust level', () => {
     const props = makeProps();
-    render(<ReservoirSheet {...props} />);
+    renderSheet(props);
 
     fireEvent.changeText(
       screen.getByPlaceholderText('Current level (mL)'),
@@ -190,7 +210,7 @@ describe('ReservoirSheet — default mode', () => {
 
   it('starts the refill-to-full confirmation flow', () => {
     const props = makeProps();
-    render(<ReservoirSheet {...props} />);
+    renderSheet(props);
 
     fireEvent.press(screen.getByRole('button', { name: 'Refill to full' }));
     expect(
@@ -204,7 +224,7 @@ describe('ReservoirSheet — default mode', () => {
 
 describe('ReservoirSheet — editing mode', () => {
   function renderEditing() {
-    const view = render(<ReservoirSheet {...makeProps()} />);
+    const view = renderSheet();
     fireEvent.press(screen.getByRole('button', { name: 'Edit details' }));
     return view;
   }
@@ -230,7 +250,7 @@ describe('ReservoirSheet — editing mode', () => {
   });
 
   it('hides the edit fields until Edit details is pressed', () => {
-    render(<ReservoirSheet {...makeProps()} />);
+    renderSheet();
     expect(screen.queryByLabelText('Reservoir name')).toBeNull();
     expect(
       screen.queryByText('Banner alerts when level drops to this'),
@@ -239,7 +259,7 @@ describe('ReservoirSheet — editing mode', () => {
 
   it('saves the edited reservoir', () => {
     const props = makeProps();
-    render(<ReservoirSheet {...props} />);
+    renderSheet(props);
     fireEvent.press(screen.getByRole('button', { name: 'Edit details' }));
 
     fireEvent.changeText(screen.getByLabelText('Reservoir name'), 'Ca');
@@ -260,5 +280,91 @@ describe('ReservoirSheet — editing mode', () => {
   it('matches the fully-expanded snapshot (labels + helper + Save)', () => {
     const view = renderEditing();
     expect(view.toJSON()).toMatchSnapshot();
+  });
+});
+
+
+/**
+ * The original bug: at a short viewport the sheet's content exceeded its max
+ * height and the bottom "Edit details" button rendered half-clipped. The
+ * test-renderer cannot measure pixels, so "reachable via scroll and not
+ * clipped" is proven structurally at 600px: the content area is a BOUNDED
+ * ScrollView (flex:1 inside the maxHeight'd sheet) — an unbounded ScrollView
+ * sizes to its content and overflows the sheet instead of scrolling, which
+ * is exactly what clipped the button — with safe-area-aware end padding, and
+ * every action button present in the tree in both modes.
+ */
+describe('ReservoirSheet — short viewport (600px)', () => {
+  function scrollView(): ReactTestInstance {
+    return screen.UNSAFE_getByType(ScrollView);
+  }
+
+  function ancestorTypes(instance: ReactTestInstance): unknown[] {
+    const types: unknown[] = [];
+    let node = instance.parent;
+    while (node) {
+      types.push(node.type);
+      node = node.parent;
+    }
+    return types;
+  }
+
+  beforeEach(() => {
+    // Short viewport the clip reproduced on.
+    setDimensions({ width: 390, height: 600, scale: 1, fontScale: 1 });
+    expect(Dimensions.get('window').height).toBe(600);
+  });
+
+  it('bounds the content in a flexing ScrollView inside the maxHeight sheet', () => {
+    renderSheet();
+
+    const scroll = scrollView();
+    expect(flatten(scroll.props.style).flex).toBe(1);
+
+    // Scroll-end clearance: device safe-area inset + token spacing, so the
+    // last element clears the sheet edge and the home-indicator strip.
+    expect(scroll.props.contentContainerStyle.paddingBottom).toBe(
+      SAFE_AREA_METRICS.insets.bottom + Theme.spacing.xxl,
+    );
+
+    // The sheet itself is height-capped — that cap is what engages scrolling
+    // instead of overflow once content exceeds the viewport.
+    const sheet = scroll.parent!;
+    expect(flatten(sheet.props.style).maxHeight).toBe('88%');
+  });
+
+  it('keeps the close control fixed outside the scrolling area', () => {
+    renderSheet();
+
+    const close = screen.getByRole('button', { name: 'Close' });
+    expect(ancestorTypes(close)).not.toContain(ScrollView);
+    expect(screen.getByText('Alkalinity')).toBeTruthy();
+  });
+
+  it('renders every action button in the tree at 600px — reachable via scroll', () => {
+    renderSheet();
+
+    for (const name of [
+      'Close',
+      'Refill to full',
+      'Refill partial',
+      'Set level',
+      'Edit details',
+    ]) {
+      expect(screen.getByRole('button', { name })).toBeTruthy();
+    }
+
+    // Expand the edit form: its controls must be just as reachable.
+    fireEvent.press(screen.getByRole('button', { name: 'Edit details' }));
+    for (const name of ['Save', 'Cancel']) {
+      expect(screen.getByRole('button', { name })).toBeTruthy();
+    }
+    for (const label of [
+      'Reservoir name',
+      'Capacity (mL)',
+      'Low alert threshold (mL)',
+    ]) {
+      expect(screen.getByLabelText(label)).toBeTruthy();
+    }
   });
 });

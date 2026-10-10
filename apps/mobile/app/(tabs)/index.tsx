@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Circle,
   Defs,
@@ -752,6 +753,7 @@ function NextDoseSheet({
   onRemove: () => void;
 }) {
   const now = useNowTicker();
+  const insets = useSafeAreaInsets();
   // Inline confirm step: one tap arms the destructive action, the second
   // tap (or the sheet closing) is required to actually fire it.
   const [confirming, setConfirming] = useState<'skip' | 'remove' | null>(null);
@@ -785,26 +787,34 @@ function NextDoseSheet({
         />
         <View style={styles.sheetContent}>
           <View style={styles.sheetHandle} />
+          <View style={styles.sheetHeaderRow}>
+            <ThemedText
+              style={[
+                styles.sheetTitle,
+                { color: PUMP_COLORS[details.pumpId] },
+              ]}>
+              {PUMP_DISPLAY_NAMES[details.pumpId]}
+            </ThemedText>
+            <Pressable
+              onPress={onClose}
+              accessibilityRole="button"
+              accessibilityLabel="Close"
+              hitSlop={8}>
+              <Ionicons name="close" size={22} color={T.colors.textMuted} />
+            </Pressable>
+          </View>
+          {/*
+           * Bounded ScrollView (flex:1) inside the maxHeight'd sheetContent —
+           * an unbounded one sizes to content and overflows the sheet
+           * instead of scrolling. Header/handle stay fixed above it.
+           */}
           <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={{
+              paddingBottom: insets.bottom + T.spacing.xxl,
+            }}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}>
-            <View style={styles.sheetHeaderRow}>
-              <ThemedText
-                style={[
-                  styles.sheetTitle,
-                  { color: PUMP_COLORS[details.pumpId] },
-                ]}>
-                {PUMP_DISPLAY_NAMES[details.pumpId]}
-              </ThemedText>
-              <Pressable
-                onPress={onClose}
-                accessibilityRole="button"
-                accessibilityLabel="Close"
-                hitSlop={8}>
-                <Ionicons name="close" size={22} color={T.colors.textMuted} />
-              </Pressable>
-            </View>
-
             <View style={styles.nextDoseSheetCountdownBlock}>
               <ThemedText style={styles.nextDoseSheetCountdown}>
                 {countdown}
@@ -2556,7 +2566,10 @@ const styles = StyleSheet.create({
     borderColor: T.colors.border,
     borderBottomWidth: 0,
     padding: T.spacing.xxl,
-    paddingBottom: T.spacing.hero,
+    // No bottom padding: scroll-end clearance lives on the ScrollView's
+    // contentContainer (safe-area inset + spacing), shared with the
+    // ReservoirSheet pattern.
+    paddingBottom: 0,
     maxHeight: '88%',
   },
   sheetHandle: {
