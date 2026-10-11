@@ -8,6 +8,9 @@ import { LIMITS } from '@reef/shared';
 import { ReefDatabase } from '../src/db.js';
 import { createEngine } from '../src/engine.js';
 import { createScheduler } from '../src/scheduler.js';
+import { createNotificationAdapter } from '../src/notification-hooks.js';
+import { createNotificationManager } from '../src/notifications.js';
+import type { Notifier } from '../src/notifier.js';
 
 vi.mock('../src/gpio.js', () => ({
   driversDisable: vi.fn(),
@@ -2476,6 +2479,306 @@ describe('Server endpoints', () => {
       await server.close();
       db.close();
       await unlink(tmpPath);
+    }
+  });
+
+  it('notification routes answer 503 when no adapter is supplied', async () => {
+    const { db, server, scheduler } = await buildServer();
+    try {
+      for (const [method, url, payload] of [
+        ['GET', '/api/notifications/settings', undefined],
+        ['PUT', '/api/notifications/settings', { enabled: true }],
+        ['POST', '/api/notifications/test', undefined],
+      ] as Array<['GET' | 'PUT' | 'POST', string, object | undefined]>) {
+        const res = await server.fastify.inject({ method, url, payload });
+        expect(res.statusCode).toBe(503);
+        expect(JSON.parse(res.body).error).toBe('Notifications not available');
+      }
+    } finally {
+      scheduler.stop();
+      db.close();
+    }
+  });
+
+  // Build a server wired to the REAL manager + adapter over a real database,
+  // with a controllable notifier stub — the same composition index.ts uses.
+  async function buildNotificationServer(options: {
+    notifier?: Notifier;
+  } = {}) {
+    const db = new ReefDatabase(':memory:');
+    const notifier: Notifier =
+      options.notifier ??
+      {
+        async send() {
+          /* no-op */
+        },
+      };
+    const manager = createNotificationManager({
+      getSettings: () => db.getNotificationSettings(),
+      createNotifier: () => notifier,
+    });
+    const server = await createServer(db, createEngine(db), {
+      notifications: createNotificationAdapter(db, manager),
+    });
+    return { db, manager, server };
+  }
+
+  it('GET /api/notifications/settings masks secrets (hasBotToken only)', async () => {
+    const { db, server } = await buildNotificationServer();
+    try {
+      // Configure via PUT — the real path, which also rebuilds the notifier.
+      await server.fastify.inject({
+        method: 'PUT',
+        url: '/api/notifications/settings',
+        payload: {
+          enabled: true,
+          botToken: 'super-secret-token-abc',
+          chatId: 'super-secret-chat-xyz',
+        },
+      });
+
+      const res = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/notifications/settings',
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.settings.hasBotToken).toBe(true);
+      expect(body.settings.hasChatId).toBe(true);
+      expect(res.body).not.toContain('super-secret-token-abc');
+      expect(res.body).not.toContain('super-secret-chat-xyz');
+    } finally {
+      await server.close();
+      db.close();
+    }
+  });
+
+  it('PUT /api/notifications/settings round-trips toggles, intervals and topic, masked', async () => {
+    const { db, server } = await buildNotificationServer();
+    try {
+      const put = await server.fastify.inject({
+        method: 'PUT',
+        url: '/api/notifications/settings',
+        payload: {
+          enabled: true,
+          service: 'ntfy',
+          topic: 'reef-alerts',
+          baseUrl: 'http://192.168.0.5:8080',
+          toggles: { dose_failed: false, container_low: false },
+          repeatIntervals: { dose_failed: '30m', audit_finding: 'off' },
+        },
+      });
+      expect(put.statusCode).toBe(200);
+      const settings = JSON.parse(put.body).settings;
+      expect(settings).toMatchObject({
+        enabled: true,
+        service: 'ntfy',
+        topic: 'reef-alerts',
+        baseUrl: 'http://192.168.0.5:8080',
+        hasBotToken: false,
+        hasChatId: false,
+      });
+      expect(settings.toggles.dose_failed).toBe(false);
+      expect(settings.toggles.container_low).toBe(false);
+      expect(settings.toggles.audit_finding).toBe(true);
+      expect(settings.repeatIntervals.dose_failed).toBe('30m');
+      expect(settings.repeatIntervals.audit_finding).toBe('off');
+
+      // Persisted: a fresh GET sees the same values.
+      const get = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/notifications/settings',
+      });
+      expect(JSON.parse(get.body).settings).toEqual(settings);
+      expect(db.getNotificationSettings().topic).toBe('reef-alerts');
+    } finally {
+      await server.close();
+      db.close();
+    }
+  });
+
+  it('PUT with a new bot token persists it but GET still masks it', async () => {
+    const { db, server } = await buildNotificationServer();
+    try {
+      const put = await server.fastify.inject({
+        method: 'PUT',
+        url: '/api/notifications/settings',
+        payload: {
+          service: 'telegram',
+          botToken: 'write-only-token',
+          chatId: '555',
+        },
+      });
+      expect(put.statusCode).toBe(200);
+      expect(JSON.parse(put.body).settings.hasBotToken).toBe(true);
+      expect(put.body).not.toContain('write-only-token');
+
+      // Stored in full internally…
+      expect(db.getNotificationSettings().telegramBotToken).toBe(
+        'write-only-token',
+      );
+
+      // …but the GET response carries only the mask.
+      const get = await server.fastify.inject({
+        method: 'GET',
+        url: '/api/notifications/settings',
+      });
+      expect(get.body).not.toContain('write-only-token');
+      expect(JSON.parse(get.body).settings.hasBotToken).toBe(true);
+      expect(JSON.parse(get.body).settings.hasChatId).toBe(true);
+    } finally {
+      await server.close();
+      db.close();
+    }
+  });
+
+  it('PUT rejects invalid payloads with 400 and leaves settings unchanged', async () => {
+    const { db, server } = await buildNotificationServer();
+    try {
+      for (const payload of [
+        { service: 'smoke-signal' },
+        { topic: 'x'.repeat(201) },
+        { baseUrl: 'ftp://example.com' },
+        { baseUrl: '' },
+        { toggles: { not_an_event: true } },
+        { repeatIntervals: { dose_failed: 'fortnightly' } },
+      ]) {
+        const res = await server.fastify.inject({
+          method: 'PUT',
+          url: '/api/notifications/settings',
+          payload,
+        });
+        expect(res.statusCode).toBe(400);
+        expect(JSON.parse(res.body).error).toBeTruthy();
+      }
+      expect(db.getNotificationSettings().service).toBe('ntfy');
+      expect(db.getNotificationSettings().topic).toBe('');
+    } finally {
+      await server.close();
+      db.close();
+    }
+  });
+
+  it('POST /api/notifications/test returns the adapter result (ok path)', async () => {
+    const { db, server } = await buildNotificationServer();
+    try {
+      await server.fastify.inject({
+        method: 'PUT',
+        url: '/api/notifications/settings',
+        payload: { enabled: true, topic: 'reef' },
+      });
+      const res = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/notifications/test',
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true });
+    } finally {
+      await server.close();
+      db.close();
+    }
+  });
+
+  it('POST /api/notifications/test reports "Notifications not configured" when incomplete', async () => {
+    const { db, server } = await buildNotificationServer();
+    try {
+      // Disabled by default.
+      const res = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/notifications/test',
+      });
+      expect(JSON.parse(res.body)).toEqual({
+        ok: false,
+        error: 'Notifications not configured',
+      });
+
+      // Enabled but no topic.
+      await server.fastify.inject({
+        method: 'PUT',
+        url: '/api/notifications/settings',
+        payload: { enabled: true },
+      });
+      const still = await server.fastify.inject({
+        method: 'POST',
+        url: '/api/notifications/test',
+      });
+      expect(JSON.parse(still.body)).toEqual({
+        ok: false,
+        error: 'Notifications not configured',
+      });
+    } finally {
+      await server.close();
+      db.close();
+    }
+  });
+
+  it('POST /api/notifications/test passes a sanitized upstream error through and strips secrets', async () => {
+    // Case 1: token-free upstream error passes through verbatim.
+    {
+      const { db, server } = await buildNotificationServer({
+        notifier: {
+          async send() {
+            throw new Error('Bad Request: chat not found');
+          },
+        },
+      });
+      try {
+        await server.fastify.inject({
+          method: 'PUT',
+          url: '/api/notifications/settings',
+          payload: {
+            enabled: true,
+            service: 'telegram',
+            botToken: 'tok-123',
+            chatId: '99',
+          },
+        });
+        const res = await server.fastify.inject({
+          method: 'POST',
+          url: '/api/notifications/test',
+        });
+        expect(JSON.parse(res.body)).toEqual({
+          ok: false,
+          error: 'Bad Request: chat not found',
+        });
+      } finally {
+        await server.close();
+        db.close();
+      }
+    }
+
+    // Case 2: an upstream error echoing the token is replaced wholesale.
+    {
+      const { db, server } = await buildNotificationServer({
+        notifier: {
+          async send() {
+            throw new Error('rejected: tok-123 is not a valid token');
+          },
+        },
+      });
+      try {
+        await server.fastify.inject({
+          method: 'PUT',
+          url: '/api/notifications/settings',
+          payload: {
+            enabled: true,
+            service: 'telegram',
+            botToken: 'tok-123',
+            chatId: '99',
+          },
+        });
+        const res = await server.fastify.inject({
+          method: 'POST',
+          url: '/api/notifications/test',
+        });
+        const body = JSON.parse(res.body);
+        expect(body.ok).toBe(false);
+        expect(body.error).toBe('upstream error');
+        expect(res.body).not.toContain('tok-123');
+      } finally {
+        await server.close();
+        db.close();
+      }
     }
   });
 });

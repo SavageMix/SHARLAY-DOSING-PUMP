@@ -1265,3 +1265,268 @@ describe('containers (reservoir tracking)', () => {
     }
   });
 });
+
+describe('ReefDatabase notification settings', () => {
+  it('returns factory defaults from a fresh database', () => {
+    const db = new ReefDatabase(':memory:');
+    try {
+      const settings = db.getNotificationSettings();
+      expect(settings.enabled).toBe(false);
+      expect(settings.service).toBe('ntfy');
+      expect(settings.topic).toBe('');
+      expect(settings.baseUrl).toBe('https://ntfy.sh');
+      expect(settings.telegramBotToken).toBeNull();
+      expect(settings.telegramChatId).toBeNull();
+      expect(settings.toggles).toEqual({
+        dose_failed: true,
+        dose_interrupted: true,
+        container_low: true,
+        audit_finding: true,
+        schedule_silent: true,
+      });
+      expect(settings.repeatIntervals).toEqual({
+        dose_failed: '2h',
+        dose_interrupted: '2h',
+        container_low: '2h',
+        audit_finding: '24h',
+        schedule_silent: 'off',
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('applies partial updates and persists secrets across a reopen', () => {
+    const tmpPath = path.join(
+      os.tmpdir(),
+      `reef-notif-settings-${process.pid}-${Date.now()}.db`,
+    );
+    let db = new ReefDatabase(tmpPath);
+    try {
+      const updated = db.updateNotificationSettings({
+        enabled: true,
+        service: 'telegram',
+        topic: 'reef-alerts',
+        baseUrl: 'http://192.168.0.5:8080',
+        botToken: 'secret-token-123',
+        chatId: 'chat-456',
+        toggles: { dose_failed: false, container_low: false },
+        repeatIntervals: { dose_failed: '30m', audit_finding: 'off' },
+      });
+      // Full internal shape incl. secrets (masking is the server layer's job).
+      expect(updated.telegramBotToken).toBe('secret-token-123');
+      expect(updated.telegramChatId).toBe('chat-456');
+      expect(updated.enabled).toBe(true);
+      expect(updated.service).toBe('telegram');
+      expect(updated.topic).toBe('reef-alerts');
+      expect(updated.baseUrl).toBe('http://192.168.0.5:8080');
+      expect(updated.toggles.dose_failed).toBe(false);
+      expect(updated.toggles.container_low).toBe(false);
+      expect(updated.toggles.audit_finding).toBe(true);
+      expect(updated.repeatIntervals.dose_failed).toBe('30m');
+      expect(updated.repeatIntervals.audit_finding).toBe('off');
+      expect(updated.repeatIntervals.container_low).toBe('2h');
+    } finally {
+      db.close();
+    }
+
+    // Secrets survive a full reopen; untouched fields keep their values.
+    db = new ReefDatabase(tmpPath);
+    try {
+      const settings = db.getNotificationSettings();
+      expect(settings.telegramBotToken).toBe('secret-token-123');
+      expect(settings.telegramChatId).toBe('chat-456');
+      expect(settings.enabled).toBe(true);
+      expect(settings.service).toBe('telegram');
+      expect(settings.toggles.dose_failed).toBe(false);
+      expect(settings.repeatIntervals.dose_failed).toBe('30m');
+    } finally {
+      db.close();
+    }
+    fs.unlinkSync(tmpPath);
+  });
+
+  it('clearBotToken/clearChatId erase the stored secrets', () => {
+    const db = new ReefDatabase(':memory:');
+    try {
+      db.updateNotificationSettings({
+        botToken: 'secret-token-123',
+        chatId: 'chat-456',
+      });
+      expect(db.getNotificationSettings().telegramBotToken).toBe('secret-token-123');
+
+      const cleared = db.updateNotificationSettings({ clearBotToken: true });
+      expect(cleared.telegramBotToken).toBeNull();
+      expect(cleared.telegramChatId).toBe('chat-456');
+
+      const clearedBoth = db.updateNotificationSettings({ clearChatId: true });
+      expect(clearedBoth.telegramChatId).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('an empty update leaves every field untouched', () => {
+    const db = new ReefDatabase(':memory:');
+    try {
+      const before = db.getNotificationSettings();
+      const after = db.updateNotificationSettings({});
+      expect(after).toEqual(before);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('getLastDoseActivityAt counts any-status manual/schedule/catchup doses, ignoring prime/calibration', () => {
+    const db = new ReefDatabase(':memory:');
+    try {
+      expect(db.getLastDoseActivityAt('alk')).toBeNull();
+
+      const base = {
+        pumpId: 'alk' as const,
+        requestedMl: 1,
+        scheduleId: null,
+        missedDoseId: null,
+      };
+      db.saveDoseEvent({
+        ...base,
+        id: 'prime-1',
+        actualMl: 1,
+        status: 'completed',
+        source: 'prime',
+        startedAt: '2026-08-24T06:00:00.000Z',
+        finishedAt: '2026-08-24T06:00:00.000Z',
+        error: null,
+      });
+      expect(db.getLastDoseActivityAt('alk')).toBeNull();
+
+      db.saveDoseEvent({
+        ...base,
+        id: 'manual-1',
+        actualMl: null,
+        status: 'failed',
+        source: 'manual',
+        startedAt: '2026-08-24T07:00:00.000Z',
+        finishedAt: '2026-08-24T07:00:00.000Z',
+        error: 'fault',
+      });
+      expect(db.getLastDoseActivityAt('alk')).toBe('2026-08-24T07:00:00.000Z');
+
+      db.saveDoseEvent({
+        ...base,
+        id: 'sched-1',
+        actualMl: 1,
+        status: 'completed',
+        source: 'schedule',
+        startedAt: '2026-08-24T08:00:00.000Z',
+        finishedAt: '2026-08-24T08:00:00.000Z',
+        error: null,
+      });
+      expect(db.getLastDoseActivityAt('alk')).toBe('2026-08-24T08:00:00.000Z');
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('ReefDatabase boot reconciliation callback', () => {
+  it('invokes onReconciledInterruptedDose per event closed as interrupted', () => {
+    const tmpPath = path.join(
+      os.tmpdir(),
+      `reef-reconcile-cb-${process.pid}-${Date.now()}.db`,
+    );
+    const base = {
+      pumpId: 'alk' as const,
+      requestedMl: 2,
+      source: 'manual' as const,
+      scheduleId: null,
+      missedDoseId: null,
+    };
+    let db = new ReefDatabase(tmpPath);
+    try {
+      db.saveDoseEvent({
+        ...base,
+        id: 'running-1',
+        actualMl: null,
+        status: 'running',
+        startedAt: '2026-08-24T06:00:00.000Z',
+        finishedAt: null,
+        error: null,
+      });
+      db.saveDoseEvent({
+        ...base,
+        id: 'queued-1',
+        actualMl: null,
+        status: 'queued',
+        startedAt: '2026-08-24T06:05:00.000Z',
+        finishedAt: null,
+        error: null,
+      });
+      db.saveDoseEvent({
+        ...base,
+        id: 'done-1',
+        actualMl: 2,
+        status: 'completed',
+        startedAt: '2026-08-24T05:00:00.000Z',
+        finishedAt: '2026-08-24T05:00:00.000Z',
+        error: null,
+      });
+    } finally {
+      db.close();
+    }
+
+    const reconciled: DoseEvent[] = [];
+    db = new ReefDatabase(tmpPath, {
+      onReconciledInterruptedDose: (event) => reconciled.push(event),
+    });
+    try {
+      const ids = reconciled.map((e) => e.id).sort();
+      expect(ids).toEqual(['queued-1', 'running-1']);
+      for (const event of reconciled) {
+        expect(event.status).toBe('interrupted');
+        expect(event.finishedAt).not.toBeNull();
+      }
+    } finally {
+      db.close();
+    }
+    fs.unlinkSync(tmpPath);
+  });
+
+  it('a throwing callback never breaks database construction', () => {
+    const tmpPath = path.join(
+      os.tmpdir(),
+      `reef-reconcile-cb-throw-${process.pid}-${Date.now()}.db`,
+    );
+    let db = new ReefDatabase(tmpPath);
+    try {
+      db.saveDoseEvent({
+        id: 'running-1',
+        pumpId: 'alk',
+        requestedMl: 2,
+        actualMl: null,
+        status: 'running',
+        source: 'manual',
+        scheduleId: null,
+        missedDoseId: null,
+        startedAt: '2026-08-24T06:00:00.000Z',
+        finishedAt: null,
+        error: null,
+      });
+    } finally {
+      db.close();
+    }
+
+    db = new ReefDatabase(tmpPath, {
+      onReconciledInterruptedDose: () => {
+        throw new Error('callback exploded');
+      },
+    });
+    try {
+      // The reconciliation itself still did its job.
+      expect(db.getDoseEventById('running-1')?.status).toBe('interrupted');
+    } finally {
+      db.close();
+    }
+    fs.unlinkSync(tmpPath);
+  });
+});

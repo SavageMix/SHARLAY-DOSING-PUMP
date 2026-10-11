@@ -11,6 +11,13 @@ import {
   detectMissedDosesWithUntrustedClock,
 } from './missed-doses.js';
 import { runIntegrityAudit } from './audit.js';
+import {
+  createNotificationLayer,
+  handleFinalizedDose,
+  startNotificationSweeper,
+} from './notification-hooks.js';
+import type { NotificationManager } from './notifications.js';
+import type { DoseEvent } from '@reef/shared';
 
 // The default DB lives next to the compiled output (apps/device/reef-doser.db)
 // rather than being resolved from the process CWD. A relative './reef-doser.db'
@@ -25,7 +32,27 @@ const HOST = process.env.REEF_HOST ?? '0.0.0.0';
 
 async function main(): Promise<void> {
   console.log(`Database: ${DB_PATH}`);
-  const db = new ReefDatabase(DB_PATH);
+
+  // The DB constructor reconciles orphaned 'running' doses from a power loss
+  // BEFORE the notification manager exists — buffer those events and flush
+  // them once the manager is up, so a boot-interrupted dose still notifies.
+  const bootInterrupted: DoseEvent[] = [];
+  let notificationManager: NotificationManager | undefined;
+  const db = new ReefDatabase(DB_PATH, {
+    onReconciledInterruptedDose: (event) => {
+      if (notificationManager) {
+        handleFinalizedDose(db, notificationManager, event);
+      } else {
+        bootInterrupted.push(event);
+      }
+    },
+  });
+
+  const { manager, adapter: notifications } = createNotificationLayer(db);
+  notificationManager = manager;
+  for (const event of bootInterrupted) {
+    handleFinalizedDose(db, manager, event);
+  }
 
   const engine = createEngine(db, {
     // Global motor lock: prime and calibration own the motor outside the
@@ -33,8 +60,16 @@ async function main(): Promise<void> {
     isMotorBusy: () =>
       isPriming() ||
       (['alk', 'ca', 'no3', 'po4'] as const).some((id) => isCalibrating(id)),
+    // Fire-and-forget: runs after the final event is persisted, wrapped so a
+    // notification failure can never touch the queue.
+    onDoseFinalized: (event) => handleFinalizedDose(db, manager, event),
   });
   const scheduler = createScheduler(db, engine);
+
+  // Live integrity findings getter — shared by /api/status and the
+  // notification sweeper so both see the same audit truth.
+  const getFindings = () =>
+    runIntegrityAudit(db.createAuditStore(), new Date()).findings;
 
   // Integrity findings are served LIVE: the getter re-runs the SELECT-only
   // audit on every /api/status request (the DB is ~1k records, so this is
@@ -43,9 +78,13 @@ async function main(): Promise<void> {
   // as a boot-time snapshot, and new inconsistencies surface without a
   // restart. The audit never writes, so this is safe to re-run.
   const server = await createServer(db, engine, {
-    getIntegrityFindings: () =>
-      runIntegrityAudit(db.createAuditStore(), new Date()).findings,
+    getIntegrityFindings: getFindings,
+    notifications,
   });
+
+  // Hourly sweep of persistent conditions (reservoir low, audit findings,
+  // silent schedules) plus one run shortly after boot. Timers are unref'd.
+  const sweeper = startNotificationSweeper(db, manager, getFindings);
 
   // Start the API server immediately so the app can connect and show status
   // even while we wait for the system clock to become trustworthy.
@@ -98,6 +137,7 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     console.log('Shutting down...');
     scheduler.stop();
+    sweeper.stop();
     await server.close();
     db.close();
     process.exit(0);

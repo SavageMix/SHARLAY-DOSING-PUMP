@@ -28,6 +28,7 @@ import type {
   ListContainersResponse,
   ListMissedDosesResponse,
   MissedDose,
+  NotificationSettingsResponse,
   PrimeStartRequest,
   PrimeStartResponse,
   PrimeStopRequest,
@@ -44,6 +45,8 @@ import type {
   SetSystemVolumeRequest,
   SetSystemVolumeResponse,
   SkipNextDoseResponse,
+  TestNotificationResponse,
+  UpdateNotificationSettingsRequest,
   UpdateReservoirRequest,
   UpdateScheduleRequest,
   UpdateScheduleResponse,
@@ -486,6 +489,39 @@ export async function cancelSkipNextDose(
     baseUrl,
     'POST',
     `/api/pumps/${pumpId}/skip-next/cancel`,
+  );
+}
+
+export async function getNotificationSettings(
+  baseUrl: string,
+): Promise<NotificationSettingsResponse> {
+  return request<NotificationSettingsResponse>(
+    baseUrl,
+    'GET',
+    '/api/notifications/settings',
+  );
+}
+
+export async function updateNotificationSettings(
+  baseUrl: string,
+  body: UpdateNotificationSettingsRequest,
+): Promise<NotificationSettingsResponse> {
+  return request<NotificationSettingsResponse>(
+    baseUrl,
+    'PUT',
+    '/api/notifications/settings',
+    body,
+  );
+}
+
+/** Real send through the configured service — the server reports upstream errors. */
+export async function sendTestNotification(
+  baseUrl: string,
+): Promise<TestNotificationResponse> {
+  return request<TestNotificationResponse>(
+    baseUrl,
+    'POST',
+    '/api/notifications/test',
   );
 }
 

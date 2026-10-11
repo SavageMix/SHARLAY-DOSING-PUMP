@@ -10,6 +10,7 @@ import { computeDoseLimits, getNextDueDate, LIMITS, SYSTEM_VOLUME_BOUNDS } from 
 import type {
   ContainerInfo,
   IntegrityFinding,
+  NotificationSettings,
   PumpId,
   PumpState,
 } from '@reef/shared';
@@ -142,6 +143,52 @@ const systemVolumeBodySchema = z.object({
     .number()
     .min(SYSTEM_VOLUME_BOUNDS.minLitres)
     .max(SYSTEM_VOLUME_BOUNDS.maxLitres),
+});
+
+const notificationEventTypeEnum = z.enum([
+  'dose_failed',
+  'dose_interrupted',
+  'container_low',
+  'audit_finding',
+  'schedule_silent',
+]);
+
+const notificationRepeatIntervalEnum = z.enum([
+  'off',
+  '30m',
+  '1h',
+  '2h',
+  '6h',
+  '24h',
+]);
+
+// z.string().url() rejects LAN hosts (http://192.168.0.5:8080), so the base
+// URL is validated loosely: any non-empty string up to 500 chars, and when it
+// carries a scheme separator it must be http(s).
+const notificationBaseUrlSchema = z
+  .string()
+  .min(1)
+  .max(500)
+  .refine(
+    (value) => !value.includes('://') || /^https?:\/\//i.test(value),
+    'baseUrl must be an http(s) URL',
+  );
+
+const notificationSettingsUpdateSchema = z.object({
+  enabled: z.boolean().optional(),
+  service: z.enum(['ntfy', 'telegram']).optional(),
+  topic: z.string().max(200).optional(),
+  baseUrl: notificationBaseUrlSchema.optional(),
+  botToken: z.string().max(300).optional(),
+  chatId: z.string().max(300).optional(),
+  clearBotToken: z.boolean().optional(),
+  clearChatId: z.boolean().optional(),
+  // zod v4: z.record(enum, value) requires EVERY enum key; partialRecord is
+  // the partial-map validator that matches UpdateNotificationSettingsRequest.
+  toggles: z.partialRecord(notificationEventTypeEnum, z.boolean()).optional(),
+  repeatIntervals: z
+    .partialRecord(notificationEventTypeEnum, notificationRepeatIntervalEnum)
+    .optional(),
 });
 
 function buildPumpState(db: ReefDatabase): PumpState[] {
@@ -465,6 +512,20 @@ export async function createServer(
      * boot-time snapshot. Takes precedence over `integrityFindings`.
      */
     getIntegrityFindings?: () => IntegrityFinding[];
+    /**
+     * Push-notification layer. Optional purely to keep older compositions
+     * (and their tests) working: when absent, the /api/notifications routes
+     * answer 503 instead of crashing. index.ts always supplies it. The
+     * adapter returns the MASKED settings shape — secrets never reach this
+     * file.
+     */
+    notifications?: {
+      getSettings: () => NotificationSettings;
+      updateSettings: (
+        partial: import('@reef/shared').UpdateNotificationSettingsRequest,
+      ) => NotificationSettings;
+      test: () => Promise<{ ok: boolean; error?: string }>;
+    };
   } = {},
 ) {
   const fastify = Fastify({
@@ -657,6 +718,40 @@ export async function createServer(
     return {
       systemVolumeLitres: db.getSystemVolumeLitres(),
     };
+  });
+
+  // -------------------------------------------------------------------------
+  // Push notifications. The adapter (options.notifications) returns the
+  // MASKED settings shape — bot tokens / chat ids surface only as
+  // hasBotToken/hasChatId booleans and never appear in responses or logs.
+  // -------------------------------------------------------------------------
+
+  fastify.get('/api/notifications/settings', async (_request, reply) => {
+    if (!options.notifications) {
+      return reply.status(503).send({ error: 'Notifications not available' });
+    }
+    return { settings: options.notifications.getSettings() };
+  });
+
+  fastify.put('/api/notifications/settings', async (request, reply) => {
+    if (!options.notifications) {
+      return reply.status(503).send({ error: 'Notifications not available' });
+    }
+    const body = notificationSettingsUpdateSchema.safeParse(request.body);
+    if (!body.success) {
+      return reply.status(400).send({ error: firstZodMessage(body.error) });
+    }
+    // The adapter applies the update, rebuilds the notifier, and returns the
+    // masked result.
+    const settings = options.notifications.updateSettings(body.data);
+    return { settings };
+  });
+
+  fastify.post('/api/notifications/test', async (_request, reply) => {
+    if (!options.notifications) {
+      return reply.status(503).send({ error: 'Notifications not available' });
+    }
+    return options.notifications.test();
   });
 
   fastify.post('/api/dose', async (request, reply) => {

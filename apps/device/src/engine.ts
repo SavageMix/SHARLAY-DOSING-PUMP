@@ -88,6 +88,14 @@ export interface EngineOptions {
    * polls this before touching the hardware).
    */
   isMotorBusy?: () => boolean;
+  /**
+   * OPTIONAL. Invoked in execute()'s finally, AFTER the final event has been
+   * persisted, with the terminal event — for ANY final status (completed,
+   * failed, interrupted, skipped, cancelled). Used by the notification layer;
+   * wrapped in its own try/catch so a throwing hook can never affect the
+   * queue. Runs after the DB write so hooks observe the persisted outcome.
+   */
+  onDoseFinalized?: (event: DoseEvent) => void;
 }
 
 export class Engine {
@@ -99,6 +107,7 @@ export class Engine {
   private lastRunEndAt: number | null = null;
   private minInterDoseGapMs: number;
   private isMotorBusy?: () => boolean;
+  private onDoseFinalized?: (event: DoseEvent) => void;
   /**
    * Job ids the owner cancelled while queued. A spliced item can never reach
    * execute() via the FIFO, but the set is checked again at fire time as
@@ -114,6 +123,7 @@ export class Engine {
     this.minInterDoseGapMs =
       options.minInterDoseGapMs ?? PUMP_STAGGER_MS_PER_INDEX;
     this.isMotorBusy = options.isMotorBusy;
+    this.onDoseFinalized = options.onDoseFinalized;
   }
 
   /**
@@ -415,6 +425,17 @@ export class Engine {
         // Persistence failure must not stop the queue or mask the fact that
         // the hardware has already been shut down.
         console.error('Failed to save dose event:', saveError);
+      }
+      // Notification hook: fire-and-forget, strictly AFTER the finalize/save
+      // attempt, in its own try/catch — a throwing hook must never affect
+      // the queue. Note this runs even when the save above failed; the event
+      // still carries the honest terminal status.
+      if (this.onDoseFinalized) {
+        try {
+          this.onDoseFinalized(event);
+        } catch (hookError) {
+          console.error('onDoseFinalized hook failed:', hookError);
+        }
       }
     }
   }

@@ -5,11 +5,19 @@ import type {
   DoseSchedule,
   MissedDose,
   MissedDoseStatus,
+  NotificationEventType,
+  NotificationRepeatInterval,
+  NotificationService,
   PumpId,
+} from '@reef/shared';
+import {
+  NOTIFICATION_EVENT_TYPES,
+  type UpdateNotificationSettingsRequest,
 } from '@reef/shared';
 import type { DoseRepository, PumpCalibration } from './engine.js';
 import type { SchedulerRepository } from './scheduler.js';
 import type { MissedDosesRepository } from './missed-doses.js';
+import type { FullNotificationSettings } from './notifications.js';
 import {
   createAuditStore,
   type IntegrityAuditStore,
@@ -33,8 +41,21 @@ export class ReefDatabase
   implements DoseRepository, SchedulerRepository, MissedDosesRepository
 {
   private db: Database.Database;
+  private onReconciledInterruptedDose?: (event: DoseEvent) => void;
 
-  constructor(path: string) {
+  constructor(
+    path: string,
+    options: {
+      /**
+       * OPTIONAL. Invoked once per dose event the boot reconciliation closes
+       * as 'interrupted' (running/queued rows left behind by a process that
+       * died). Used by the notification layer; wrapped in try/catch here so
+       * a throwing callback can never break database construction.
+       */
+      onReconciledInterruptedDose?: (event: DoseEvent) => void;
+    } = {},
+  ) {
+    this.onReconciledInterruptedDose = options.onReconciledInterruptedDose;
     this.db = new Database(path);
     this.db.pragma('journal_mode = WAL');
     this.initSchema();
@@ -60,6 +81,11 @@ export class ReefDatabase
    */
   private reconcileInterruptedDoses(): void {
     const finishedAt = new Date().toISOString();
+    const orphaned = this.db
+      .prepare(
+        `SELECT id FROM dose_events WHERE status IN ('running', 'queued')`,
+      )
+      .all() as Array<{ id: string }>;
     const running = this.db
       .prepare(
         `UPDATE dose_events
@@ -83,6 +109,22 @@ export class ReefDatabase
       console.log(
         `[db] Marked ${changes} dose event(s) as interrupted (left running/queued by a previous run)`,
       );
+    }
+    // Notify per closed event AFTER the updates, so the callback observes
+    // the reconciled (interrupted) state. Callback failures are swallowed:
+    // reconciliation itself has already done its job.
+    for (const row of orphaned) {
+      try {
+        const event = this.getDoseEventById(row.id);
+        if (event && this.onReconciledInterruptedDose) {
+          this.onReconciledInterruptedDose(event);
+        }
+      } catch (error) {
+        console.error(
+          '[db] onReconciledInterruptedDose callback failed:',
+          error,
+        );
+      }
     }
   }
 
@@ -200,6 +242,26 @@ export class ReefDatabase
         current_ml REAL NOT NULL,
         low_threshold_ml REAL NOT NULL DEFAULT 100,
         updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS notification_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        enabled INTEGER NOT NULL DEFAULT 0,
+        service TEXT NOT NULL DEFAULT 'ntfy',
+        ntfy_topic TEXT NOT NULL DEFAULT '',
+        ntfy_base_url TEXT NOT NULL DEFAULT 'https://ntfy.sh',
+        telegram_bot_token TEXT,
+        telegram_chat_id TEXT,
+        toggle_dose_failed INTEGER NOT NULL DEFAULT 1,
+        toggle_dose_interrupted INTEGER NOT NULL DEFAULT 1,
+        toggle_container_low INTEGER NOT NULL DEFAULT 1,
+        toggle_audit_finding INTEGER NOT NULL DEFAULT 1,
+        toggle_schedule_silent INTEGER NOT NULL DEFAULT 1,
+        repeat_dose_failed TEXT NOT NULL DEFAULT '2h',
+        repeat_dose_interrupted TEXT NOT NULL DEFAULT '2h',
+        repeat_container_low TEXT NOT NULL DEFAULT '2h',
+        repeat_audit_finding TEXT NOT NULL DEFAULT '24h',
+        repeat_schedule_silent TEXT NOT NULL DEFAULT 'off'
       );
     `);
 
@@ -379,6 +441,12 @@ export class ReefDatabase
         `INSERT OR IGNORE INTO settings (key, value) VALUES ('system_volume_litres', ?)`,
       )
       .run(DEFAULT_SYSTEM_VOLUME_LITRES.toString());
+
+    // The settings row is a singleton (id CHECK = 1); defaults come from the
+    // column DEFAULTs above.
+    this.db
+      .prepare('INSERT OR IGNORE INTO notification_settings (id) VALUES (1)')
+      .run();
   }
 
   /**
@@ -1447,5 +1515,126 @@ export class ReefDatabase
     }));
 
     return { events, total: totalRow.total };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Notification settings (singleton row) — full internal shape incl. secrets.
+  // Masking to the API's hasBotToken/hasChatId view is a server-layer concern.
+  // ---------------------------------------------------------------------------
+
+  private mapNotificationSettingsRow(row: Record<string, unknown>): FullNotificationSettings {
+    const toggles = {} as Record<NotificationEventType, boolean>;
+    const repeatIntervals = {} as Record<
+      NotificationEventType,
+      NotificationRepeatInterval
+    >;
+    for (const eventType of NOTIFICATION_EVENT_TYPES) {
+      toggles[eventType] = row[`toggle_${eventType}`] === 1;
+      repeatIntervals[eventType] = row[
+        `repeat_${eventType}`
+      ] as NotificationRepeatInterval;
+    }
+    return {
+      enabled: row.enabled === 1,
+      service: row.service as NotificationService,
+      topic: row.ntfy_topic as string,
+      baseUrl: row.ntfy_base_url as string,
+      telegramBotToken: (row.telegram_bot_token as string | null) ?? null,
+      telegramChatId: (row.telegram_chat_id as string | null) ?? null,
+      toggles,
+      repeatIntervals,
+    };
+  }
+
+  /** Full settings incl. secrets. Internal only — never log or return this. */
+  getNotificationSettings(): FullNotificationSettings {
+    this.db
+      .prepare('INSERT OR IGNORE INTO notification_settings (id) VALUES (1)')
+      .run();
+    const row = this.db
+      .prepare('SELECT * FROM notification_settings WHERE id = 1')
+      .get() as Record<string, unknown>;
+    return this.mapNotificationSettingsRow(row);
+  }
+
+  /**
+   * Apply a partial update (the PUT body semantics). Providing botToken/
+   * chatId sets/replaces the stored secret; clearBotToken/clearChatId erase
+   * it. Omitted fields keep their current values. Returns the full result.
+   */
+  updateNotificationSettings(
+    partial: UpdateNotificationSettingsRequest,
+  ): FullNotificationSettings {
+    const updates: string[] = [];
+    const values: (string | number | null)[] = [];
+
+    if (partial.enabled !== undefined) {
+      updates.push('enabled = ?');
+      values.push(partial.enabled ? 1 : 0);
+    }
+    if (partial.service !== undefined) {
+      updates.push('service = ?');
+      values.push(partial.service);
+    }
+    if (partial.topic !== undefined) {
+      updates.push('ntfy_topic = ?');
+      values.push(partial.topic);
+    }
+    if (partial.baseUrl !== undefined) {
+      updates.push('ntfy_base_url = ?');
+      values.push(partial.baseUrl);
+    }
+    if (partial.botToken !== undefined) {
+      updates.push('telegram_bot_token = ?');
+      values.push(partial.botToken);
+    }
+    if (partial.chatId !== undefined) {
+      updates.push('telegram_chat_id = ?');
+      values.push(partial.chatId);
+    }
+    if (partial.clearBotToken) {
+      updates.push('telegram_bot_token = NULL');
+    }
+    if (partial.clearChatId) {
+      updates.push('telegram_chat_id = NULL');
+    }
+    if (partial.toggles) {
+      for (const [eventType, value] of Object.entries(partial.toggles)) {
+        updates.push(`toggle_${eventType} = ?`);
+        values.push(value ? 1 : 0);
+      }
+    }
+    if (partial.repeatIntervals) {
+      for (const [eventType, value] of Object.entries(partial.repeatIntervals)) {
+        updates.push(`repeat_${eventType} = ?`);
+        values.push(value);
+      }
+    }
+
+    if (updates.length > 0) {
+      this.db
+        .prepare(
+          `UPDATE notification_settings SET ${updates.join(', ')} WHERE id = 1`,
+        )
+        .run(...values);
+    }
+
+    return this.getNotificationSettings();
+  }
+
+  /**
+   * Most recent dose START for a pump across the "real dosing" sources
+   * (manual, schedule, catchup), counting EVERY status — a failed or
+   * interrupted attempt still proves the schedule is not silent. Feeds the
+   * schedule_silent notification check.
+   */
+  getLastDoseActivityAt(pumpId: PumpId): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT MAX(started_at) AS last_at FROM dose_events
+         WHERE pump_id = ? AND source IN ('manual', 'schedule', 'catchup')`,
+      )
+      .get(pumpId) as { last_at: string | null } | undefined;
+    return row?.last_at ?? null;
   }
 }

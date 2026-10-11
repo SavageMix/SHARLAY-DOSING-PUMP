@@ -11,6 +11,7 @@ import {
 import { useFocusEffect, useRouter } from 'expo-router';
 
 import { OfflineCard } from '@/components/OfflineCard';
+import { NotificationSettingsSection } from '@/components/NotificationSettingsSection';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedTextInput, ThemedView } from '@/components/Themed';
 import {
@@ -1037,6 +1038,8 @@ export default function SettingsScreen() {
             );
           })}
         </ThemedView>
+
+        {savedUrl ? <NotificationSettingsSection baseUrl={savedUrl} /> : null}
 
         <ThemedView style={styles.card}>
           <ThemedText style={styles.label}>Connection</ThemedText>

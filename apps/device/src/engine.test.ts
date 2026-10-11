@@ -494,4 +494,96 @@ describe('DoseEngine', () => {
     // The executing dose is not part of the queue snapshot.
     expect(snapshot.some((item) => item.id === firstJobId)).toBe(false);
   });
+
+  it('fires onDoseFinalized with the terminal event for a completed dose', async () => {
+    const repo = createMockRepository();
+    const finalized: DoseEvent[] = [];
+    const engine = createEngine(repo, {
+      minInterDoseGapMs: 0,
+      onDoseFinalized: (event) => finalized.push(event),
+    });
+    // Earlier tests leave runSteps hanging; this dose must complete.
+    vi.mocked(runSteps).mockResolvedValue(undefined);
+
+    await engine.submitDose('alk', 1, 'manual');
+    await waitForQueueDrain(engine);
+
+    expect(finalized).toHaveLength(1);
+    expect(finalized[0]).toMatchObject({
+      pumpId: 'alk',
+      status: 'completed',
+      actualMl: 1,
+      source: 'manual',
+    });
+    expect(finalized[0].finishedAt).not.toBeNull();
+  });
+
+  it('fires onDoseFinalized with the terminal event for a failed dose', async () => {
+    const repo = createMockRepository();
+    const finalized: DoseEvent[] = [];
+    const engine = createEngine(repo, {
+      minInterDoseGapMs: 0,
+      onDoseFinalized: (event) => finalized.push(event),
+    });
+    vi.mocked(runSteps).mockRejectedValue(new Error('stepper fault'));
+
+    await engine.submitDose('alk', 1, 'manual');
+    await waitForQueueDrain(engine);
+
+    expect(finalized).toHaveLength(1);
+    expect(finalized[0]).toMatchObject({
+      pumpId: 'alk',
+      status: 'failed',
+      actualMl: null,
+    });
+    expect(finalized[0].error).toMatch(/stepper fault/);
+  });
+
+  it('fires onDoseFinalized with the terminal event for an interrupted dose', async () => {
+    const repo = createMockRepository();
+    const finalized: DoseEvent[] = [];
+    const engine = createEngine(repo, {
+      minInterDoseGapMs: 0,
+      onDoseFinalized: (event) => finalized.push(event),
+    });
+    // The repository closes the event as 'interrupted' (as the boot-time
+    // reconciliation does for doses a previous process left behind); the
+    // hook must observe exactly the status the finalize step produced.
+    vi.mocked(repo.saveDoseEvent).mockImplementation(async (event) => {
+      if (event.status !== 'running') event.status = 'interrupted';
+    });
+
+    await engine.submitDose('alk', 1, 'manual');
+    await waitForQueueDrain(engine);
+
+    expect(finalized).toHaveLength(1);
+    expect(finalized[0].status).toBe('interrupted');
+  });
+
+  it('a throwing onDoseFinalized hook never affects the queue', async () => {
+    const repo = createMockRepository();
+    const engine = createEngine(repo, {
+      minInterDoseGapMs: 0,
+      onDoseFinalized: () => {
+        throw new Error('hook exploded');
+      },
+    });
+    vi.mocked(runSteps).mockResolvedValue(undefined);
+
+    // Snapshot each event at save time: the engine mutates the same object
+    // (running → completed), so recorded calls would all show the final
+    // status if we kept the reference.
+    const saved: DoseEvent[] = [];
+    vi.mocked(repo.saveDoseEvent).mockImplementation(async (event) => {
+      saved.push({ ...event });
+    });
+
+    await engine.submitDose('alk', 1, 'manual');
+    await engine.submitDose('ca', 1, 'manual');
+    await waitForQueueDrain(engine);
+
+    // Both doses ran to completion despite the exploding hook.
+    expect(runSteps).toHaveBeenCalledTimes(2);
+    expect(saved.filter((e) => e.status === 'completed')).toHaveLength(2);
+  });
 });

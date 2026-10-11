@@ -379,6 +379,90 @@ export interface SnoozeMissedDosesRequest {
   until?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Push notifications (pluggable notifier: ntfy, Telegram)
+// ---------------------------------------------------------------------------
+
+export type NotificationService = 'ntfy' | 'telegram';
+
+export type NotificationEventType =
+  | 'dose_failed'
+  | 'dose_interrupted'
+  | 'container_low'
+  | 'audit_finding'
+  | 'schedule_silent';
+
+export type NotificationRepeatInterval =
+  | 'off'
+  | '30m'
+  | '1h'
+  | '2h'
+  | '6h'
+  | '24h';
+
+export const NOTIFICATION_EVENT_TYPES: readonly NotificationEventType[] = [
+  'dose_failed',
+  'dose_interrupted',
+  'container_low',
+  'audit_finding',
+  'schedule_silent',
+];
+
+export const NOTIFICATION_REPEAT_INTERVALS: readonly NotificationRepeatInterval[] =
+  ['off', '30m', '1h', '2h', '6h', '24h'];
+
+/**
+ * Notification settings as exposed by the API. Secrets are MASKED: the
+ * Telegram bot token and chat ID are write-only and surface only as
+ * booleans — the values are never returned or logged.
+ */
+export interface NotificationSettings {
+  enabled: boolean;
+  service: NotificationService;
+  /** ntfy topic (empty when unconfigured). */
+  topic: string;
+  /** ntfy server base URL (default https://ntfy.sh). */
+  baseUrl: string;
+  /** A Telegram bot token is stored (value never returned). */
+  hasBotToken: boolean;
+  /** A Telegram chat ID is stored (value never returned). */
+  hasChatId: boolean;
+  toggles: Record<NotificationEventType, boolean>;
+  repeatIntervals: Record<NotificationEventType, NotificationRepeatInterval>;
+}
+
+/**
+ * PUT /api/notifications/settings. All fields optional. botToken/chatId are
+ * write-only: provide a value to set/replace, or pass clearBotToken/
+ * clearChatId to erase the stored secret.
+ */
+export interface UpdateNotificationSettingsRequest {
+  enabled?: boolean;
+  service?: NotificationService;
+  topic?: string;
+  baseUrl?: string;
+  botToken?: string;
+  chatId?: string;
+  clearBotToken?: boolean;
+  clearChatId?: boolean;
+  toggles?: Partial<Record<NotificationEventType, boolean>>;
+  repeatIntervals?: Partial<
+    Record<NotificationEventType, NotificationRepeatInterval>
+  >;
+}
+
+export interface NotificationSettingsResponse {
+  settings: NotificationSettings;
+}
+
+/** POST /api/notifications/test — result of a real send through the configured service. */
+export interface TestNotificationResponse {
+  ok: boolean;
+  /** Upstream error description when ok is false (secrets never included). */
+  error?: string;
+}
+
+
 export interface SnoozeMissedDosesResponse {
   deferredUntil: string;
 }
