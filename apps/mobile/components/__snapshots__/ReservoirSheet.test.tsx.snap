@@ -8,7 +8,7 @@ exports[`ReservoirSheet — editing mode > matches the fully-expanded snapshot (
     allowSwipeDismissal={undefined}
     animationType="slide"
     hardwareAccelerated={false}
-    identifier={11}
+    identifier={12}
     navigationBarTranslucent={undefined}
     onDismiss={[Function onDismiss]}
     onOrientationChange={undefined}
@@ -510,7 +510,7 @@ exports[`ReservoirSheet — editing mode > matches the fully-expanded snapshot (
                         onResponderTerminate={[Function onResponderTerminate]}
                         onResponderTerminationRequest={[Function onResponderTerminationRequest]}
                         onStartShouldSetResponder={[Function onStartShouldSetResponder]}
-                        style={[{"alignItems":"center","borderRadius":12,"flex":1,"height":48,"justifyContent":"center"},{"backgroundColor":"#182333","borderColor":"rgba(32, 227, 219, 0.12)","borderWidth":1}]}
+                        style={[{"alignItems":"center","borderRadius":12,"flex":1,"height":48,"justifyContent":"center"},{"backgroundColor":"#182333","borderColor":"rgba(32, 227, 219, 0.12)","borderWidth":1,"flexDirection":"row","gap":8}]}
                       >
                         <RCTText
                           accessibilityLabel={undefined}

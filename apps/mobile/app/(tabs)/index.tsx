@@ -27,6 +27,7 @@ import {
 import { SharlayWordmark } from '@/components/SharlayWordmark';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedTextInput, ThemedView } from '@/components/Themed';
+import { NextDoseCard, useNowTicker } from '@/components/NextDoseCard';
 import {
   LevelBar,
   levelFraction,
@@ -61,11 +62,19 @@ import {
 import { buildQueuePanel } from '@/src/lib/dose-queue';
 import {
   nextDoseActionPlan,
+  nextDoseDetails,
   nextDoseSourceLabel,
   nextDoseSourceTag,
   resolveNextDose,
   type NextDose,
 } from '@/src/lib/next-dose';
+import { formatDateTime, formatDuration } from '@/src/lib/format';
+import {
+  PUMP_COLORS,
+  PUMP_DISPLAY_NAMES,
+  PUMP_ORDER,
+  PUMP_SHORT_NAMES,
+} from '@/src/lib/pumps';
 import {
   activeFindings,
   loadDismissedFindingIds,
@@ -89,22 +98,7 @@ import {
 } from '@reef/shared';
 
 const T = Theme;
-const PUMP_ORDER: PumpId[] = ['alk', 'ca', 'no3', 'po4'];
 const SCREEN_WIDTH = Dimensions.get('window').width;
-
-const PUMP_DISPLAY_NAMES: Record<PumpId, string> = {
-  alk: 'Alkalinity',
-  ca: 'Calcium',
-  no3: 'Nitrate',
-  po4: 'Phosphate',
-};
-
-const PUMP_COLORS: Record<PumpId, string> = {
-  alk: T.colors.primary,
-  ca: T.colors.accent,
-  no3: T.colors.danger,
-  po4: T.colors.success,
-};
 
 interface DashboardData {
   status: StatusResponse;
@@ -119,10 +113,6 @@ function formatTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function formatDateTime(date: Date): string {
-  return `${date.toLocaleDateString()} ${formatTime(date)}`;
-}
-
 function getGreeting(): string {
   const hour = new Date().getHours();
   if (hour < 12) return 'Good morning';
@@ -134,17 +124,6 @@ function startOfDay(date: Date): Date {
   const d = new Date(date);
   d.setHours(0, 0, 0, 0);
   return d;
-}
-
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  const hh = hours.toString().padStart(2, '0');
-  const mm = minutes.toString().padStart(2, '0');
-  const ss = seconds.toString().padStart(2, '0');
-  return `In ${hh}:${mm}:${ss}`;
 }
 
 function polarToCartesian(cx: number, cy: number, r: number, angle: number) {
@@ -232,35 +211,6 @@ function computeTodayTotal(history: HistoryResponse, pumpId: PumpId): number {
         new Date(e.startedAt).getTime() >= today,
     )
     .reduce((total, e) => total + (e.actualMl ?? e.requestedMl), 0);
-}
-
-interface NextDoseDetails {
-  pumpId: PumpId;
-  volumeMl: number;
-  fireAt: Date;
-}
-
-function nextDoseDetails(nextDose: NextDose): NextDoseDetails {
-  return nextDose.kind === 'scheduled'
-    ? {
-        pumpId: nextDose.schedule.pumpId,
-        volumeMl: nextDose.schedule.volumeMl,
-        fireAt: nextDose.date,
-      }
-    : {
-        pumpId: nextDose.item.pumpId,
-        volumeMl: nextDose.item.amountMl,
-        fireAt: nextDose.estimatedFireAt,
-      };
-}
-
-function useNowTicker(): Date {
-  const [now, setNow] = useState(new Date());
-  useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(id);
-  }, []);
-  return now;
 }
 
 function Sparkline({ data, color }: { data: number[]; color: string }) {
@@ -646,94 +596,6 @@ function ReefStabilityCard({
         ))}
       </View>
     </View>
-  );
-}
-
-function NextDoseCard({
-  nextDose,
-  onPress,
-}: {
-  nextDose: NextDose | null;
-  onPress: () => void;
-}) {
-  const now = useNowTicker();
-
-  if (!nextDose) {
-    // Informational resting state: not pressable, no chevron.
-    return (
-      <View style={styles.nextDoseCard}>
-        <View style={styles.nextDoseLeft}>
-          <View
-            style={[
-              styles.nextDoseIcon,
-              { backgroundColor: 'rgba(32, 227, 219, 0.12)' },
-            ]}>
-            <Ionicons name="water" size={22} color={T.colors.primary} />
-          </View>
-          <View>
-            <ThemedText style={styles.nextDoseOverline}>NEXT DOSE</ThemedText>
-            <ThemedText style={styles.nextDosePump}>
-              No doses scheduled
-            </ThemedText>
-          </View>
-        </View>
-      </View>
-    );
-  }
-
-  const details = nextDoseDetails(nextDose);
-  const countdown =
-    details.fireAt.getTime() > now.getTime()
-      ? formatDuration(details.fireAt.getTime() - now.getTime())
-      : 'Due now';
-
-  return (
-    <Pressable
-      style={styles.nextDoseCard}
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel="Next dose details">
-      <View style={styles.nextDoseLeft}>
-        <View
-          style={[
-            styles.nextDoseIcon,
-            { backgroundColor: 'rgba(32, 227, 219, 0.12)' },
-          ]}>
-          <Ionicons name="water" size={22} color={T.colors.primary} />
-        </View>
-        <View>
-          <ThemedText style={styles.nextDoseOverline}>NEXT DOSE</ThemedText>
-          <View style={styles.nextDoseRow}>
-            <ThemedText
-              style={[
-                styles.nextDosePump,
-                { color: PUMP_COLORS[details.pumpId] },
-              ]}>
-              {PUMP_DISPLAY_NAMES[details.pumpId]}
-            </ThemedText>
-            <View style={styles.sourceTag}>
-              <ThemedText style={styles.sourceTagText}>
-                {nextDoseSourceTag(nextDose)}
-              </ThemedText>
-            </View>
-            <ThemedText style={styles.nextDoseVolume}>
-              {details.volumeMl.toFixed(1)} mL
-            </ThemedText>
-          </View>
-        </View>
-      </View>
-      <View style={styles.nextDoseRight}>
-        <ThemedText style={styles.nextDoseCountdown}>{countdown}</ThemedText>
-        <ThemedText style={styles.nextDoseTime}>
-          {formatDateTime(details.fireAt)}
-        </ThemedText>
-        <Ionicons
-          name="chevron-forward"
-          size={20}
-          color={T.colors.textMuted}
-        />
-      </View>
-    </Pressable>
   );
 }
 
@@ -1191,13 +1053,6 @@ function DoseModal({
     </Modal>
   );
 }
-
-const PUMP_SHORT_NAMES: Record<PumpId, string> = {
-  alk: 'Alk',
-  ca: 'Ca',
-  no3: 'NO3',
-  po4: 'PO4',
-};
 
 function ReservoirsCard({
   containers,
@@ -2102,58 +1957,6 @@ const styles = StyleSheet.create({
   miniStatSparkline: {
     marginTop: T.spacing.sm,
   },
-  nextDoseCard: {
-    ...glassBase,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: T.spacing.md,
-    marginBottom: 0,
-  },
-  nextDoseLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: T.spacing.md,
-  },
-  nextDoseIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  nextDoseOverline: {
-    ...T.typography.caption,
-    color: T.colors.textMuted,
-    marginBottom: 2,
-  },
-  nextDoseRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: T.spacing.sm,
-  },
-  nextDosePump: {
-    ...T.typography.title,
-    color: T.colors.textPrimary,
-  },
-  nextDoseVolume: {
-    ...T.typography.body,
-    color: T.colors.accent,
-    fontFamily: T.typography.fontFamily.medium,
-  },
-  nextDoseRight: {
-    alignItems: 'flex-end',
-    gap: 2,
-  },
-  nextDoseCountdown: {
-    ...T.typography.body,
-    color: T.colors.textPrimary,
-    fontFamily: T.typography.fontFamily.semiBold,
-  },
-  nextDoseTime: {
-    ...T.typography.caption,
-    color: T.colors.textMuted,
-  },
   nextDoseSection: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2170,18 +1973,6 @@ const styles = StyleSheet.create({
     backgroundColor: T.colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  sourceTag: {
-    backgroundColor: 'rgba(32, 227, 219, 0.12)',
-    borderRadius: T.radius.pill,
-    paddingHorizontal: T.spacing.sm,
-    paddingVertical: 2,
-  },
-  sourceTagText: {
-    ...T.typography.caption,
-    color: T.colors.primary,
-    fontFamily: T.typography.fontFamily.semiBold,
-    letterSpacing: 0.5,
   },
   sheetDetailRow: {
     flexDirection: 'row',

@@ -7,6 +7,7 @@ import type {
 import {
   matchCatchupMissedId,
   nextDoseActionPlan,
+  nextDoseDetails,
   nextDoseSourceLabel,
   nextDoseSourceTag,
   resolveNextDose,
@@ -164,6 +165,28 @@ describe('resolveNextDose', () => {
 
   it('returns null for empty input', () => {
     expect(resolveNextDose([], [], [], NOW)).toBeNull();
+  });
+});
+
+describe('nextDoseDetails', () => {
+  it('flattens a scheduled dose to pump, volume and fire time', () => {
+    const next = resolveNextDose([schedule()], [], [], NOW);
+    if (next?.kind !== 'scheduled') throw new Error('expected scheduled');
+    const details = nextDoseDetails(next);
+    expect(details.pumpId).toBe('alk');
+    expect(details.volumeMl).toBe(1.5);
+    expect(details.fireAt).toBe(next.date);
+  });
+
+  it('flattens a queued dose from the queue item', () => {
+    const next = resolveNextDose([], [queueItem()], [], NOW);
+    if (next?.kind !== 'queued') throw new Error('expected queued');
+    const details = nextDoseDetails(next);
+    expect(details.pumpId).toBe('ca');
+    expect(details.volumeMl).toBe(2);
+    expect(details.fireAt.getTime()).toBe(
+      new Date(NOW.getTime() + 60 * 60 * 1000).getTime(),
+    );
   });
 });
 

@@ -2,6 +2,7 @@ import type {
   CatchupQueueItem,
   DoseQueueItem,
   DoseSchedule,
+  PumpId,
 } from '@reef/shared';
 import { getNextDueDate } from '@reef/shared';
 
@@ -89,6 +90,27 @@ export function resolveNextDose(
   });
 
   return best;
+}
+
+/** Flat {pumpId, volumeMl, fireAt} view of either NextDose flavour. */
+export interface NextDoseDetails {
+  pumpId: PumpId;
+  volumeMl: number;
+  fireAt: Date;
+}
+
+export function nextDoseDetails(nextDose: NextDose): NextDoseDetails {
+  return nextDose.kind === 'scheduled'
+    ? {
+        pumpId: nextDose.schedule.pumpId,
+        volumeMl: nextDose.schedule.volumeMl,
+        fireAt: nextDose.date,
+      }
+    : {
+        pumpId: nextDose.item.pumpId,
+        volumeMl: nextDose.item.amountMl,
+        fireAt: nextDose.estimatedFireAt,
+      };
 }
 
 /** Long-form source line for the detail sheet. */

@@ -453,6 +453,12 @@ const styles = StyleSheet.create({
     backgroundColor: T.colors.surfaceElevated,
     borderWidth: 1,
     borderColor: T.colors.border,
+    // Icon + label buttons ("Edit details") must lay out on ONE line inside
+    // the button: the base modalButton has no flexDirection, so children
+    // stacked vertically and overflowed the fixed height. Matches the
+    // confirmButton row layout.
+    flexDirection: 'row',
+    gap: T.spacing.sm,
   },
   cancelButtonText: {
     ...T.typography.title,

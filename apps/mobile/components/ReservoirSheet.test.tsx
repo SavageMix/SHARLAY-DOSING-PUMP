@@ -119,6 +119,32 @@ beforeEach(() => {
 });
 
 describe('ReservoirSheet — default mode', () => {
+  it('contains the Edit details icon and label within the button bounds', () => {
+    renderSheet();
+
+    const button = screen.getByRole('button', { name: 'Edit details' });
+    const style = flatten(button.props.style);
+    // The old bug: modalButton has no flexDirection, so the icon and label
+    // stacked vertically in the fixed-height button and overflowed it. The
+    // test renderer cannot measure pixels, so containment is proven
+    // structurally: a single centred row inside the fixed-height button
+    // places icon and label side-by-side on one line, fully within its
+    // bounds (same layout contract as the confirmButton siblings).
+    expect(style.flexDirection).toBe('row');
+    expect(style.alignItems).toBe('center');
+    expect(style.justifyContent).toBe('center');
+    expect(style.height).toBeGreaterThan(0);
+    // Both contents render as children of the button itself.
+    expect(button.findAll((node) => String(node.type) === 'Ionicons').length).toBe(1);
+    expect(
+      button.findAll(
+        (node) =>
+          typeof node.children[0] === 'string' &&
+          node.children[0].includes('Edit details'),
+      ).length,
+    ).toBe(1);
+  });
+
   it('renders the partial refill and adjust sections at a 1280px viewport', () => {
     renderSheet();
 
